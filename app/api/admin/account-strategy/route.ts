@@ -156,15 +156,11 @@ function scoreBucketMatch(strategy: any, bucketMeta: ReturnType<typeof getBucket
   let score = 0;
 
   for (const alias of bucketMeta.aliases) {
-    if (haystack.includes(normalize(alias))) {
-      score += 10;
-    }
+    if (haystack.includes(normalize(alias))) score += 10;
   }
 
   for (const keyword of bucketMeta.keywords) {
-    if (haystack.includes(normalize(keyword))) {
-      score += 4;
-    }
+    if (haystack.includes(normalize(keyword))) score += 4;
   }
 
   if (bucketMeta.key === '121_plus') {
@@ -186,13 +182,22 @@ function scoreBucketMatch(strategy: any, bucketMeta: ReturnType<typeof getBucket
   }
 
   if (bucketMeta.key === '1_30') {
-    if (haystack.includes('early stage') || haystack.includes('soft collections') || haystack.includes('self-cure') || haystack.includes('self cure')) {
+    if (
+      haystack.includes('early stage') ||
+      haystack.includes('soft collections') ||
+      haystack.includes('self-cure') ||
+      haystack.includes('self cure')
+    ) {
       score += 6;
     }
   }
 
   if (bucketMeta.key === 'current') {
-    if (haystack.includes('pre-delinquency') || haystack.includes('predelinquency') || haystack.includes('before due')) {
+    if (
+      haystack.includes('pre-delinquency') ||
+      haystack.includes('predelinquency') ||
+      haystack.includes('before due')
+    ) {
       score += 6;
     }
   }
@@ -202,20 +207,19 @@ function scoreBucketMatch(strategy: any, bucketMeta: ReturnType<typeof getBucket
 
 function chooseBestBucketStrategy(strategies: any[], bucketMeta: ReturnType<typeof getBucketMeta>) {
   const scored = strategies
-    .map((strategy) => ({
-      strategy,
-      score: scoreBucketMatch(strategy, bucketMeta),
-    }))
+    .map((strategy) => ({ strategy, score: scoreBucketMatch(strategy, bucketMeta) }))
     .sort((a, b) => b.score - a.score);
 
   if (!scored.length) return null;
   if (scored[0].score <= 0) return null;
-
   return scored[0].strategy;
 }
 
-async function resolveAutoStrategy(accountId: string) {
-  const { data: acct, error: acctErr } = await supabaseAdmin
+async function resolveAutoStrategy(
+  admin: NonNullable<typeof supabaseAdmin>,
+  accountId: string
+) {
+  const { data: acct, error: acctErr } = await admin
     .from(ACCOUNTS_TABLE)
     .select('id,product_code,dpd,created_at,outsource_date')
     .eq('id', accountId)
@@ -240,7 +244,7 @@ async function resolveAutoStrategy(accountId: string) {
   const dpd = getAccountDpd(acct);
   const bucket = getBucketMeta(dpd);
 
-  const { data: product, error: pErr } = await supabaseAdmin
+  const { data: product, error: pErr } = await admin
     .from(PRODUCTS_TABLE)
     .select('id,code,is_active')
     .eq('code', productCode)
@@ -257,7 +261,7 @@ async function resolveAutoStrategy(accountId: string) {
     };
   }
 
-  const { data: mapped, error: mErr } = await supabaseAdmin
+  const { data: mapped, error: mErr } = await admin
     .from(MAP_TABLE)
     .select('strategy_id,is_active')
     .eq('product_id', product.id);
@@ -277,7 +281,7 @@ async function resolveAutoStrategy(accountId: string) {
     };
   }
 
-  const { data: strategies, error: strategiesErr } = await supabaseAdmin
+  const { data: strategies, error: strategiesErr } = await admin
     .from(STRATEGIES_TABLE)
     .select('id,name,description,is_active,sort_order,created_at')
     .in('id', mappedStrategyIds)
@@ -321,6 +325,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
   }
 
+  const admin = supabaseAdmin;
   const url = new URL(req.url);
   const accountId = url.searchParams.get('accountId')?.trim() || '';
 
@@ -328,7 +333,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: 'accountId is required' }, { status: 400 });
   }
 
-  const { data: assignment, error: aErr } = await supabaseAdmin
+  const { data: assignment, error: aErr } = await admin
     .from(ASSIGN_TABLE)
     .select('id,account_id,strategy_id,assigned_at,assigned_by,source,notes,is_active')
     .eq('account_id', accountId)
@@ -345,7 +350,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ assignment: null, strategy: null });
   }
 
-  const { data: strategy, error: sErr } = await supabaseAdmin
+  const { data: strategy, error: sErr } = await admin
     .from(STRATEGIES_TABLE)
     .select('id,name,description,is_active,sort_order,steps,created_at,updated_at')
     .eq('id', assignment.strategy_id)
@@ -367,6 +372,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
   }
 
+  const admin = supabaseAdmin;
   const body = await readJsonSafe(req);
 
   const accountId = body.accountId != null ? String(body.accountId).trim() : '';
@@ -381,7 +387,7 @@ export async function POST(req: NextRequest) {
   let autoMeta: Record<string, unknown> | null = null;
 
   if (!strategyId) {
-    const resolved = await resolveAutoStrategy(accountId);
+    const resolved = await resolveAutoStrategy(admin, accountId);
 
     if ('error' in resolved) {
       return NextResponse.json({ error: resolved.error }, { status: resolved.status });
@@ -402,7 +408,7 @@ export async function POST(req: NextRequest) {
     notes = notes ? `${notes} | ${autoNote}` : autoNote;
   }
 
-  const { data: currentActive, error: currentErr } = await supabaseAdmin
+  const { data: currentActive, error: currentErr } = await admin
     .from(ASSIGN_TABLE)
     .select('id,strategy_id,source,notes,is_active')
     .eq('account_id', accountId)
@@ -416,7 +422,7 @@ export async function POST(req: NextRequest) {
   }
 
   if (currentActive && String(currentActive.strategy_id) === strategyId) {
-    const { data: strategy, error: sErr } = await supabaseAdmin
+    const { data: strategy, error: sErr } = await admin
       .from(STRATEGIES_TABLE)
       .select('id,name,is_active')
       .eq('id', strategyId)
@@ -435,7 +441,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const { error: offErr } = await supabaseAdmin
+  const { error: offErr } = await admin
     .from(ASSIGN_TABLE)
     .update({ is_active: false })
     .eq('account_id', accountId)
@@ -445,7 +451,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: offErr.message }, { status: 500 });
   }
 
-  const { data: inserted, error: insErr } = await supabaseAdmin
+  const { data: inserted, error: insErr } = await admin
     .from(ASSIGN_TABLE)
     .insert({
       account_id: accountId,
@@ -461,7 +467,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: insErr.message }, { status: 500 });
   }
 
-  const { data: strategy, error: sErr } = await supabaseAdmin
+  const { data: strategy, error: sErr } = await admin
     .from(STRATEGIES_TABLE)
     .select('id,name,is_active')
     .eq('id', strategyId)

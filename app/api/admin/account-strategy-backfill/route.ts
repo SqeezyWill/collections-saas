@@ -215,7 +215,10 @@ function chooseBestBucketStrategy(strategies: any[], bucketMeta: ReturnType<type
   return scored[0].strategy;
 }
 
-async function resolveAutoStrategyForAccount(account: any) {
+async function resolveAutoStrategyForAccount(
+  admin: NonNullable<typeof supabaseAdmin>,
+  account: any
+) {
   const productCode = normalize(account.product_code);
   if (!productCode) {
     return { ok: false as const, error: 'Account has no product_code.' };
@@ -224,7 +227,7 @@ async function resolveAutoStrategyForAccount(account: any) {
   const dpd = getAccountDpd(account);
   const bucket = getBucketMeta(dpd);
 
-  const { data: product, error: pErr } = await supabaseAdmin
+  const { data: product, error: pErr } = await admin
     .from(PRODUCTS_TABLE)
     .select('id,code,is_active')
     .eq('code', productCode)
@@ -235,7 +238,7 @@ async function resolveAutoStrategyForAccount(account: any) {
     return { ok: false as const, error: `Unknown or inactive product_code: ${productCode}` };
   }
 
-  const { data: mapped, error: mErr } = await supabaseAdmin
+  const { data: mapped, error: mErr } = await admin
     .from(MAP_TABLE)
     .select('strategy_id,is_active')
     .eq('product_id', product.id);
@@ -250,7 +253,7 @@ async function resolveAutoStrategyForAccount(account: any) {
     return { ok: false as const, error: `No strategies mapped to product_code=${productCode} yet.` };
   }
 
-  const { data: strategies, error: sErr } = await supabaseAdmin
+  const { data: strategies, error: sErr } = await admin
     .from(STRATEGIES_TABLE)
     .select('id,name,description,is_active,sort_order,created_at')
     .in('id', mappedStrategyIds)
@@ -281,8 +284,13 @@ async function resolveAutoStrategyForAccount(account: any) {
   };
 }
 
-async function assignResolvedStrategy(accountId: string, strategyId: string, notes: string) {
-  const { error: offErr } = await supabaseAdmin
+async function assignResolvedStrategy(
+  admin: NonNullable<typeof supabaseAdmin>,
+  accountId: string,
+  strategyId: string,
+  notes: string
+) {
+  const { error: offErr } = await admin
     .from(ASSIGN_TABLE)
     .update({ is_active: false })
     .eq('account_id', accountId)
@@ -292,7 +300,7 @@ async function assignResolvedStrategy(accountId: string, strategyId: string, not
     return { ok: false as const, error: offErr.message };
   }
 
-  const { error: insErr } = await supabaseAdmin
+  const { error: insErr } = await admin
     .from(ASSIGN_TABLE)
     .insert({
       account_id: accountId,
@@ -319,11 +327,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
     }
 
+    const admin = supabaseAdmin;
+
     const body = await readJsonSafe(req);
     const limitRaw = Number(body.limit ?? 200);
     const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
 
-    const { data: activeAssignments, error: activeErr } = await supabaseAdmin
+    const { data: activeAssignments, error: activeErr } = await admin
       .from(ASSIGN_TABLE)
       .select('account_id')
       .eq('is_active', true);
@@ -340,7 +350,7 @@ export async function POST(req: NextRequest) {
 
     const fetchLimit = Math.max(limit * 3, limit);
 
-    const { data: accounts, error: accErr } = await supabaseAdmin
+    const { data: accounts, error: accErr } = await admin
       .from(ACCOUNTS_TABLE)
       .select('id,product_code,dpd,created_at,outsource_date')
       .not('product_code', 'is', null)
@@ -363,7 +373,7 @@ export async function POST(req: NextRequest) {
 
     for (const account of rows) {
       try {
-        const resolved = await resolveAutoStrategyForAccount(account);
+        const resolved = await resolveAutoStrategyForAccount(admin, account);
         if (!resolved.ok) {
           failedCount += 1;
           results.push({
@@ -382,7 +392,13 @@ export async function POST(req: NextRequest) {
           `match=${resolved.meta.matchedBy}`,
         ].join(' ');
 
-        const assigned = await assignResolvedStrategy(String(account.id), resolved.strategyId, notes);
+        const assigned = await assignResolvedStrategy(
+          admin,
+          String(account.id),
+          resolved.strategyId,
+          notes
+        );
+
         if (!assigned.ok) {
           failedCount += 1;
           results.push({

@@ -134,7 +134,7 @@ function matchesBucket(strategy: any, bucketAliases: string[]) {
   return bucketAliases.some((alias) => haystack.includes(normalize(alias)));
 }
 
-async function getMaxExistingCfid() {
+async function getMaxExistingCfid(admin: NonNullable<typeof supabaseAdmin>) {
   let from = 0;
   const pageSize = 1000;
   let maxCfid = 0;
@@ -142,7 +142,7 @@ async function getMaxExistingCfid() {
   while (true) {
     const to = from + pageSize - 1;
 
-    const { data, error } = await supabaseAdmin
+    const { data, error } = await admin
       .from(ACCOUNTS_TABLE)
       .select('cfid')
       .not('cfid', 'is', null)
@@ -171,8 +171,8 @@ async function getMaxExistingCfid() {
   return maxCfid;
 }
 
-async function buildProductCodeResolver() {
-  const { data, error } = await supabaseAdmin
+async function buildProductCodeResolver(admin: NonNullable<typeof supabaseAdmin>) {
+  const { data, error } = await admin
     .from(PRODUCTS_TABLE)
     .select('name,code,is_active')
     .eq('is_active', true);
@@ -217,11 +217,14 @@ async function buildProductCodeResolver() {
   };
 }
 
-async function resolveStrategyForAccount(input: {
-  accountId: string;
-  productCode: string | null;
-  dpd: number | null;
-}) {
+async function resolveStrategyForAccount(
+  admin: NonNullable<typeof supabaseAdmin>,
+  input: {
+    accountId: string;
+    productCode: string | null;
+    dpd: number | null;
+  }
+) {
   const productCode = normalizeProductCode(input.productCode);
 
   if (!productCode) {
@@ -231,7 +234,7 @@ async function resolveStrategyForAccount(input: {
     };
   }
 
-  const { data: product, error: pErr } = await supabaseAdmin
+  const { data: product, error: pErr } = await admin
     .from(PRODUCTS_TABLE)
     .select('id,code,is_active')
     .eq('code', productCode)
@@ -248,7 +251,7 @@ async function resolveStrategyForAccount(input: {
     };
   }
 
-  const { data: mapped, error: mErr } = await supabaseAdmin
+  const { data: mapped, error: mErr } = await admin
     .from(MAP_TABLE)
     .select('strategy_id,is_active')
     .eq('product_id', product.id);
@@ -268,7 +271,7 @@ async function resolveStrategyForAccount(input: {
     };
   }
 
-  const { data: strategies, error: sErr } = await supabaseAdmin
+  const { data: strategies, error: sErr } = await admin
     .from(STRATEGIES_TABLE)
     .select('id,name,description,is_active,sort_order,created_at')
     .in('id', mappedStrategyIds)
@@ -308,18 +311,21 @@ async function resolveStrategyForAccount(input: {
   };
 }
 
-async function assignStrategyToAccount(input: {
-  accountId: string;
-  productCode: string | null;
-  dpd: number | null;
-}) {
-  const resolved = await resolveStrategyForAccount(input);
+async function assignStrategyToAccount(
+  admin: NonNullable<typeof supabaseAdmin>,
+  input: {
+    accountId: string;
+    productCode: string | null;
+    dpd: number | null;
+  }
+) {
+  const resolved = await resolveStrategyForAccount(admin, input);
 
   if (!resolved.ok) {
     return resolved;
   }
 
-  const { data: currentActive, error: currentErr } = await supabaseAdmin
+  const { data: currentActive, error: currentErr } = await admin
     .from(ASSIGN_TABLE)
     .select('id,strategy_id,is_active')
     .eq('account_id', input.accountId)
@@ -342,7 +348,7 @@ async function assignStrategyToAccount(input: {
     };
   }
 
-  const { error: offErr } = await supabaseAdmin
+  const { error: offErr } = await admin
     .from(ASSIGN_TABLE)
     .update({ is_active: false })
     .eq('account_id', input.accountId)
@@ -360,7 +366,7 @@ async function assignStrategyToAccount(input: {
     `match=${resolved.meta.matchedBy}`,
   ].join(' ');
 
-  const { error: insErr } = await supabaseAdmin
+  const { error: insErr } = await admin
     .from(ASSIGN_TABLE)
     .insert({
       account_id: input.accountId,
@@ -388,6 +394,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
   }
 
+  const admin = supabaseAdmin;
+
   let body: { rows?: ParsedRow[] } = {};
   try {
     body = await req.json();
@@ -412,7 +420,7 @@ export async function POST(req: NextRequest) {
   let resolveProductCode: (value: unknown) => string | null;
 
   try {
-    resolveProductCode = await buildProductCodeResolver();
+    resolveProductCode = await buildProductCodeResolver(admin);
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message || 'Failed to read products.' },
@@ -423,7 +431,7 @@ export async function POST(req: NextRequest) {
   let maxExistingCfid = 0;
 
   try {
-    maxExistingCfid = await getMaxExistingCfid();
+    maxExistingCfid = await getMaxExistingCfid(admin);
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message || 'Failed to read existing CFIDs.' },
@@ -497,7 +505,7 @@ export async function POST(req: NextRequest) {
     };
   });
 
-  const { data: insertedAccounts, error: insertError } = await supabaseAdmin
+  const { data: insertedAccounts, error: insertError } = await admin
     .from(ACCOUNTS_TABLE)
     .insert(payload)
     .select('id,cfid,product_code,dpd');
@@ -512,7 +520,7 @@ export async function POST(req: NextRequest) {
   let failedCount = 0;
 
   for (const account of insertedAccounts || []) {
-    const result = await assignStrategyToAccount({
+    const result = await assignStrategyToAccount(admin, {
       accountId: String(account.id),
       productCode: account.product_code,
       dpd: typeof account.dpd === 'number' ? account.dpd : toInteger(account.dpd),
