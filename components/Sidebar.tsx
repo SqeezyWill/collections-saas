@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
@@ -13,8 +13,8 @@ import {
   LogOut,
   ShieldCheck,
   Wallet,
-  Upload,
 } from 'lucide-react';
+import { supabase } from '@/lib/supabase';
 
 const links = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -24,9 +24,7 @@ const links = [
   { href: '/ptps', label: 'PTPs', icon: CreditCard },
   { href: '/reports', label: 'Reports', icon: BarChart3 },
   { href: '/strategies', label: 'Strategies', icon: GitBranch },
-  { href: '/upload-jobs', label: 'Upload Jobs', icon: Upload },
   { href: '/admin', label: 'Admin', icon: ShieldCheck },
-  { href: '/login', label: 'Logout', icon: LogOut },
 ];
 
 const STORAGE_KEY = 'sidebar_collapsed_v1';
@@ -35,9 +33,13 @@ const TOGGLE_EVENT = 'app:toggle-sidebar';
 
 export function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
+
   const [collapsed, setCollapsed] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+
   const hoverCloseTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -47,19 +49,25 @@ export function Sidebar() {
 
       if (rawCollapsed === '1') setCollapsed(true);
       if (rawPinned === '1') setPinnedOpen(true);
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, []);
 
   useEffect(() => {
     try {
       window.localStorage.setItem(STORAGE_KEY, collapsed ? '1' : '0');
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, [collapsed]);
 
   useEffect(() => {
     try {
       window.localStorage.setItem(PIN_KEY, pinnedOpen ? '1' : '0');
-    } catch {}
+    } catch {
+      // ignore
+    }
   }, [pinnedOpen]);
 
   useEffect(() => {
@@ -83,7 +91,6 @@ export function Sidebar() {
 
   const activeHref = useMemo(() => {
     const candidates = links
-      .filter((l) => l.href !== '/login')
       .sort((a, b) => b.href.length - a.href.length);
 
     return (
@@ -119,6 +126,22 @@ export function Sidebar() {
 
     setCollapsed(false);
     setPinnedOpen(true);
+  }
+
+  async function handleLogout() {
+    if (loggingOut) return;
+
+    setLoggingOut(true);
+
+    try {
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    } finally {
+      router.replace('/login');
+      router.refresh();
+      setLoggingOut(false);
+    }
   }
 
   return (
@@ -184,7 +207,7 @@ export function Sidebar() {
 
           <nav className="flex-1 space-y-1 px-3 py-5">
             {links.map(({ href, label, icon: Icon }) => {
-              const isActive = href === '/login' ? false : href === activeHref;
+              const isActive = href === activeHref;
 
               return (
                 <Link
@@ -211,6 +234,29 @@ export function Sidebar() {
                 </Link>
               );
             })}
+
+            <button
+              type="button"
+              onClick={handleLogout}
+              className={[
+                'group relative flex w-full items-center gap-3 rounded-xl px-3 py-3 transition',
+                'text-slate-300 hover:bg-slate-900 hover:text-white',
+                effectiveCollapsed ? 'justify-center' : '',
+              ].join(' ')}
+              title={effectiveCollapsed ? 'Logout' : undefined}
+              disabled={loggingOut}
+            >
+              <LogOut size={18} />
+              {!effectiveCollapsed ? (
+                <span className="truncate">{loggingOut ? 'Signing out...' : 'Logout'}</span>
+              ) : null}
+
+              {effectiveCollapsed ? (
+                <span className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-xs text-white shadow-lg opacity-0 translate-x-[-4px] transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0">
+                  {loggingOut ? 'Signing out...' : 'Logout'}
+                </span>
+              ) : null}
+            </button>
           </nav>
         </div>
       </aside>
