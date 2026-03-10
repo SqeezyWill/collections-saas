@@ -61,8 +61,8 @@ function roleBadgeClass(role: string) {
   return 'bg-slate-100 text-slate-700';
 }
 
-function randomTempPassword() {
-  return `Temp#${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+function defaultUserPassword() {
+  return 'credcoll@2026';
 }
 
 const BRAND_PRESET_COLORS = [
@@ -525,7 +525,7 @@ export default function AdminPage() {
       ...prev,
       name: '',
       email: '',
-      password: randomTempPassword(),
+      password: defaultUserPassword(),
       role: prev.role || 'agent',
       companyId: prev.companyId || firstCompanyId,
     }));
@@ -1266,13 +1266,15 @@ export default function AdminPage() {
                     />
                     <button
                       type="button"
-                      onClick={() => setAddUserForm((p) => ({ ...p, password: randomTempPassword() }))}
+                      onClick={() => setAddUserForm((p) => ({ ...p, password: defaultUserPassword() }))}
                       className="shrink-0 rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
                     >
-                      Generate
+                      Use Default
                     </button>
                   </div>
-                  <p className="mt-2 text-xs text-slate-500">Share this with the user and ask them to change it after first login.</p>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Default password is <span className="font-medium">credcoll@2026</span>. Share this with the user and ask them to change it after first login.
+                  </p>
                 </div>
               </div>
 

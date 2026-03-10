@@ -5,13 +5,17 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
         <div className="mb-8 text-center">
-          <div className="mb-5 flex justify-center">
+          <div className="mb-4 flex justify-center">
             <img
               src="/credence-logo.png"
               alt="Credence logo"
               className="h-24 w-auto max-w-[220px] object-contain"
             />
           </div>
+
+          <p className="text-sm font-medium uppercase tracking-[0.35em] text-slate-500">
+            CREDCOLL@2026
+          </p>
 
           <h1 className="mt-3 text-3xl font-bold text-slate-900">Sign in</h1>
           <p className="mt-2 text-sm text-slate-500">
