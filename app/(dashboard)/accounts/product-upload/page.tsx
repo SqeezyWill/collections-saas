@@ -6,7 +6,8 @@ import { useMemo, useState } from 'react';
 
 type ParsedRow = Record<string, string>;
 
-type PreviewRow = ParsedRow & {
+type PreviewRow = {
+  raw: ParsedRow;
   __row: number;
   __matchType: 'id' | 'cfid' | 'none';
   __identifier: string | null;
@@ -37,6 +38,10 @@ function normalize(value: unknown) {
   return String(value ?? '').trim().toLowerCase();
 }
 
+function toCsv(rows: Array<Record<string, unknown>>) {
+  return Papa.unparse(rows);
+}
+
 export default function ProductUploadPage() {
   const [fileName, setFileName] = useState('');
   const [missingHeaders, setMissingHeaders] = useState<string[]>([]);
@@ -50,6 +55,26 @@ export default function ProductUploadPage() {
     () => new Set(ALLOWED_PRODUCT_CATEGORIES.map((item) => item.toLowerCase())),
     []
   );
+
+  function downloadTemplate() {
+    const templateRows = ALLOWED_PRODUCT_CATEGORIES.map((category) => ({
+      ID: '',
+      CFID: '',
+      'PRODUCT NAME': '',
+      'PRODUCT CATEGORY': category,
+    }));
+
+    const csv = toCsv(templateRows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'accounts-product-upload-template.csv';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
 
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -95,12 +120,12 @@ export default function ProductUploadPage() {
             return;
           }
 
-          const preview = filteredRows.map((row, index) => {
+          const preview: PreviewRow[] = filteredRows.map((row, index) => {
             const id = cleanText(row['ID']);
             const cfid = cleanText(row['CFID']);
             const productName = cleanText(row['PRODUCT NAME']);
             const productCategory = normalize(row['PRODUCT CATEGORY']);
-            const matchType = id ? 'id' : cfid ? 'cfid' : 'none';
+            const matchType: PreviewRow['__matchType'] = id ? 'id' : cfid ? 'cfid' : 'none';
             const identifier = id || cfid || null;
 
             let rowError: string | null = null;
@@ -114,7 +139,7 @@ export default function ProductUploadPage() {
             }
 
             return {
-              ...row,
+              raw: row,
               __row: index + 1,
               __matchType: matchType,
               __identifier: identifier,
@@ -189,30 +214,18 @@ export default function ProductUploadPage() {
         return;
       }
 
-      const updatedCount = Number(result?.updatedCount || 0);
-      const reassignedCount = Number(result?.strategySummary?.reassignedCount || 0);
-      const skippedReassignCount = Number(result?.strategySummary?.skippedReassignCount || 0);
-      const rowErrors = Array.isArray(result?.rowErrors) ? result.rowErrors : [];
+      const jobId = result?.job?.id || result?.jobId || null;
 
-      if (rowErrors.length > 0) {
-        setErrorMessage(
-          rowErrors
-            .slice(0, 10)
-            .map((item: any) => `Row ${item.row}: ${item.error}`)
-            .join(' | ')
-        );
-      }
-
-      if (updatedCount > 0) {
+      if (jobId) {
         setMessage(
-          `Upload complete. ${updatedCount} account(s) updated successfully. ` +
-            `Strategy checks: ${reassignedCount} reassigned, ${skippedReassignCount} skipped.`
+          `Upload queued successfully. Job ID: ${jobId}. You can continue working and monitor progress on Upload Jobs.`
         );
-        setPreviewRows([]);
-        setFileName('');
-      } else if (!rowErrors.length) {
-        setErrorMessage('No accounts were updated.');
+      } else {
+        setMessage('Upload queued successfully. You can monitor progress on Upload Jobs.');
       }
+
+      setPreviewRows([]);
+      setFileName('');
     } catch (error: any) {
       setUploading(false);
       setErrorMessage(error?.message || 'Upload failed.');
@@ -230,13 +243,13 @@ export default function ProductUploadPage() {
         </div>
 
         <div className="flex flex-wrap gap-3">
-          <a
-            href="/accounts-product-upload-template.csv"
-            download
+          <button
+            type="button"
+            onClick={downloadTemplate}
             className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
             Download Product Template
-          </a>
+          </button>
 
           <Link
             href="/accounts"
