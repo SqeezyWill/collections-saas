@@ -16,7 +16,12 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 
-const links = [
+type UserProfile = {
+  id: string;
+  role: string | null;
+};
+
+const allLinks = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/accounts', label: 'Accounts', icon: Briefcase },
   { href: '/collectors', label: 'Collectors', icon: BarChart3 },
@@ -31,6 +36,28 @@ const STORAGE_KEY = 'sidebar_collapsed_v1';
 const PIN_KEY = 'sidebar_pinned_open_v1';
 const TOGGLE_EVENT = 'app:toggle-sidebar';
 
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
+
+function linksForRole(role: string) {
+  const normalizedRole = normalizeRole(role);
+
+  if (normalizedRole === 'super_admin') return allLinks;
+
+  if (normalizedRole === 'admin') {
+    return allLinks.filter((link) => link.href !== '/admin');
+  }
+
+  if (normalizedRole === 'agent') {
+    return allLinks.filter((link) =>
+      ['/dashboard', '/accounts', '/payments', '/ptps'].includes(link.href)
+    );
+  }
+
+  return [{ href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }];
+}
+
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
@@ -39,8 +66,35 @@ export function Sidebar() {
   const [pinnedOpen, setPinnedOpen] = useState(false);
   const [isHovering, setIsHovering] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
+  const [role, setRole] = useState('agent');
 
   const hoverCloseTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    async function loadRole() {
+      if (!supabase) return;
+
+      const { data: sessionData } = await supabase.auth.getSession();
+      const userId = sessionData.session?.user?.id;
+
+      if (!userId) return;
+
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('id,role')
+        .eq('id', userId)
+        .maybeSingle();
+
+      const profile = data as UserProfile | null;
+      if (profile?.role) {
+        setRole(profile.role);
+      }
+    }
+
+    loadRole();
+  }, []);
+
+  const links = useMemo(() => linksForRole(role), [role]);
 
   useEffect(() => {
     try {
@@ -90,14 +144,12 @@ export function Sidebar() {
   const effectiveCollapsed = getEffectiveCollapsed(collapsed, pinnedOpen, isHovering);
 
   const activeHref = useMemo(() => {
-    const candidates = links
-      .sort((a, b) => b.href.length - a.href.length);
+    const candidates = links.sort((a, b) => b.href.length - a.href.length);
 
     return (
-      candidates.find((l) => pathname === l.href || pathname.startsWith(`${l.href}/`))?.href ||
-      ''
+      candidates.find((l) => pathname === l.href || pathname.startsWith(`${l.href}/`))?.href || ''
     );
-  }, [pathname]);
+  }, [pathname, links]);
 
   function handleMouseEnter() {
     if (pinnedOpen) return;
