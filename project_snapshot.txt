@@ -1,0 +1,360 @@
+=== PWD ===
+/Users/oscarouma/Desktop/collections-saas
+
+=== ROOT FILES ===
+total 280
+drwxr-xr-x@  25 oscarouma  staff    800 Mar  7 17:07 .
+drwx------@ 381 oscarouma  staff  12192 Mar  7 17:07 ..
+-rw-r--r--@   1 oscarouma  staff   6148 Mar  5 09:59 .DS_Store
+-rw-r--r--@   1 oscarouma  staff     96 Mar  1 10:54 .env.example
+-rw-r--r--@   1 oscarouma  staff   1232 Mar  8 18:19 .env.local
+drwxr-xr-x@  13 oscarouma  staff    416 Mar  8 09:19 .next
+-rw-r--r--@   1 oscarouma  staff   1900 Mar  1 11:02 README.md
+drwxr-xr-x@   9 oscarouma  staff    288 Mar  3 23:02 app
+drwxr-xr-x@   6 oscarouma  staff    192 Mar  1 12:09 components
+drwxr-xr-x@   9 oscarouma  staff    288 Mar  1 12:09 lib
+-rw-r--r--@   1 oscarouma  staff   1906 Mar  1 18:20 login-page.tsx
+-rw-r--r--@   1 oscarouma  staff    106 Mar  1 10:54 netlify.toml
+-rw-r--r--@   1 oscarouma  staff    262 Mar  8 07:50 next-env.d.ts
+-rw-r--r--@   1 oscarouma  staff    130 Mar  1 10:54 next.config.ts
+drwxr-xr-x@ 111 oscarouma  staff   3552 Mar  8 10:01 node_modules
+-rw-r--r--    1 oscarouma  staff  79310 Mar  7 17:04 package-lock.json
+-rw-r--r--@   1 oscarouma  staff    719 Mar  7 16:59 package.json
+-rw-r--r--@   1 oscarouma  staff     83 Mar  1 10:54 postcss.config.js
+-rw-r--r--    1 oscarouma  staff     74 Mar  8 22:07 project_snapshot.txt
+drwxr-xr-x@   2 oscarouma  staff     64 Mar  1 12:09 public
+drwxr-xr-x@   2 oscarouma  staff     64 Mar  1 12:09 styles
+drwxr-xr-x@   3 oscarouma  staff     96 Mar  1 12:09 supabase
+-rw-r--r--@   1 oscarouma  staff    469 Mar  1 10:54 tailwind.config.ts
+-rw-r--r--@   1 oscarouma  staff    593 Mar  1 10:54 tsconfig.json
+-rw-r--r--    1 oscarouma  staff    131 Mar  8 16:03 url
+
+=== PROJECT STRUCTURE ===
+.
+./.DS_Store
+./.env.example
+./.env.local
+./README.md
+./app
+./app/(auth)
+./app/(auth)/.DS_Store
+./app/(auth)/login
+./app/(auth)/login/.DS_Store
+./app/(auth)/login/page.tsx
+./app/(dashboard)
+./app/(dashboard)/.DS_Store
+./app/(dashboard)/accounts
+./app/(dashboard)/accounts/.DS_Store
+./app/(dashboard)/accounts/[id]
+./app/(dashboard)/accounts/[id]/.DS_Store
+./app/(dashboard)/accounts/[id]/assign
+./app/(dashboard)/accounts/[id]/assign/page.tsx
+./app/(dashboard)/accounts/[id]/contact
+./app/(dashboard)/accounts/[id]/contact/.DS_Store
+./app/(dashboard)/accounts/[id]/contact/update
+./app/(dashboard)/accounts/[id]/contact/update/page.tsx
+./app/(dashboard)/accounts/[id]/notes
+./app/(dashboard)/accounts/[id]/notes/.DS_Store
+./app/(dashboard)/accounts/[id]/notes/new
+./app/(dashboard)/accounts/[id]/notes/new/page.tsx
+./app/(dashboard)/accounts/[id]/page.tsx
+./app/(dashboard)/accounts/[id]/payments
+./app/(dashboard)/accounts/[id]/payments/.DS_Store
+./app/(dashboard)/accounts/[id]/payments/new
+./app/(dashboard)/accounts/[id]/payments/new/page.tsx
+./app/(dashboard)/accounts/[id]/ptps
+./app/(dashboard)/accounts/[id]/ptps/.DS_Store
+./app/(dashboard)/accounts/[id]/ptps/new
+./app/(dashboard)/accounts/[id]/ptps/new/page.tsx
+./app/(dashboard)/accounts/[id]/sms
+./app/(dashboard)/accounts/[id]/sms/.DS_Store
+./app/(dashboard)/accounts/[id]/sms/new
+./app/(dashboard)/accounts/[id]/sms/new/.DS_Store
+./app/(dashboard)/accounts/[id]/sms/new/page.tsx
+./app/(dashboard)/accounts/[id]/status
+./app/(dashboard)/accounts/[id]/status/.DS_Store
+./app/(dashboard)/accounts/[id]/status/update
+./app/(dashboard)/accounts/[id]/status/update/page.tsx
+./app/(dashboard)/accounts/[id]/strategy
+./app/(dashboard)/accounts/[id]/strategy/page.tsx
+./app/(dashboard)/accounts/page.tsx
+./app/(dashboard)/accounts/upload
+./app/(dashboard)/accounts/upload/page.tsx
+./app/(dashboard)/admin
+./app/(dashboard)/admin/.DS_Store
+./app/(dashboard)/admin/page.tsx
+./app/(dashboard)/admin/page.tsx.bak
+./app/(dashboard)/admin/reconcile
+./app/(dashboard)/admin/reconcile/page.tsx
+./app/(dashboard)/collectors
+./app/(dashboard)/collectors/page.tsx
+./app/(dashboard)/dashboard
+./app/(dashboard)/dashboard/page.tsx
+./app/(dashboard)/layout.tsx
+./app/(dashboard)/payments
+./app/(dashboard)/payments/.DS_Store
+./app/(dashboard)/payments/page.tsx
+./app/(dashboard)/payments/upload
+./app/(dashboard)/payments/upload/page.tsx
+./app/(dashboard)/ptps
+./app/(dashboard)/ptps/page.tsx
+./app/(dashboard)/ptps/upload
+./app/(dashboard)/ptps/upload/page.tsx
+./app/(dashboard)/reports
+./app/(dashboard)/reports/page.tsx
+./app/(dashboard)/strategies
+./app/(dashboard)/strategies/.DS_Store
+./app/(dashboard)/strategies/[id]
+./app/(dashboard)/strategies/[id]/.DS_Store
+./app/(dashboard)/strategies/[id]/editor
+./app/(dashboard)/strategies/new
+./app/(dashboard)/strategies/page.tsx
+./app/.DS_Store
+./app/api
+./app/api/.DS_Store
+./app/api/accounts
+./app/api/accounts/.DS_Store
+./app/api/accounts/export
+./app/api/accounts/export/route.ts
+./app/api/admin
+./app/api/admin/.DS_Store
+./app/api/admin/account-strategy
+./app/api/admin/account-strategy/route.ts
+./app/api/admin/companies
+./app/api/admin/companies/.DS_Store
+./app/api/admin/companies/[id]
+./app/api/admin/companies/[id]/route.ts
+./app/api/admin/companies/route.ts
+./app/api/admin/products
+./app/api/admin/products/route.ts
+./app/api/admin/strategies
+./app/api/admin/strategies/.DS_Store
+./app/api/admin/strategies/[id]
+./app/api/admin/strategies/[id]/.DS_Store
+./app/api/admin/strategies/[id]/assign-strategy
+./app/api/admin/strategies/[id]/publish
+./app/api/admin/strategies/[id]/tasks
+./app/api/admin/strategies/[id]/workflow
+./app/api/admin/strategies/route.ts
+./app/api/admin/users
+./app/api/admin/users/.DS_Store
+./app/api/admin/users/[id]
+./app/api/admin/users/[id]/.DS_Store
+./app/api/admin/users/[id]/reset-password
+./app/api/admin/users/[id]/reset-password/route.ts
+./app/api/admin/users/[id]/route.ts
+./app/api/admin/users/route.ts
+./app/globals.css
+./app/layout.tsx
+./app/page.tsx
+./components
+./components/DataTable.tsx
+./components/KpiCard.tsx
+./components/Sidebar.tsx
+./components/Topbar.tsx
+./lib
+./lib/.DS_Store
+./lib/mock-data.ts
+./lib/selectors.ts
+./lib/supabase-admin.ts
+./lib/supabase.ts
+./lib/types.ts
+./lib/utils.ts
+./login-page.tsx
+./netlify.toml
+./next-env.d.ts
+./next.config.ts
+./package-lock.json
+./package.json
+./postcss.config.js
+./project_snapshot.txt
+./public
+./styles
+./supabase
+./supabase/schema.sql
+./tailwind.config.ts
+./tsconfig.json
+./url
+
+=== APP / COMPONENTS / LIB ===
+app
+app/(auth)
+app/(auth)/.DS_Store
+app/(auth)/login
+app/(auth)/login/.DS_Store
+app/(auth)/login/page.tsx
+app/(dashboard)
+app/(dashboard)/.DS_Store
+app/(dashboard)/accounts
+app/(dashboard)/accounts/.DS_Store
+app/(dashboard)/accounts/[id]
+app/(dashboard)/accounts/[id]/.DS_Store
+app/(dashboard)/accounts/[id]/assign
+app/(dashboard)/accounts/[id]/assign/page.tsx
+app/(dashboard)/accounts/[id]/contact
+app/(dashboard)/accounts/[id]/contact/.DS_Store
+app/(dashboard)/accounts/[id]/contact/update
+app/(dashboard)/accounts/[id]/notes
+app/(dashboard)/accounts/[id]/notes/.DS_Store
+app/(dashboard)/accounts/[id]/notes/new
+app/(dashboard)/accounts/[id]/page.tsx
+app/(dashboard)/accounts/[id]/payments
+app/(dashboard)/accounts/[id]/payments/.DS_Store
+app/(dashboard)/accounts/[id]/payments/new
+app/(dashboard)/accounts/[id]/ptps
+app/(dashboard)/accounts/[id]/ptps/.DS_Store
+app/(dashboard)/accounts/[id]/ptps/new
+app/(dashboard)/accounts/[id]/sms
+app/(dashboard)/accounts/[id]/sms/.DS_Store
+app/(dashboard)/accounts/[id]/sms/new
+app/(dashboard)/accounts/[id]/status
+app/(dashboard)/accounts/[id]/status/.DS_Store
+app/(dashboard)/accounts/[id]/status/update
+app/(dashboard)/accounts/[id]/strategy
+app/(dashboard)/accounts/[id]/strategy/page.tsx
+app/(dashboard)/accounts/page.tsx
+app/(dashboard)/accounts/upload
+app/(dashboard)/accounts/upload/page.tsx
+app/(dashboard)/admin
+app/(dashboard)/admin/.DS_Store
+app/(dashboard)/admin/page.tsx
+app/(dashboard)/admin/page.tsx.bak
+app/(dashboard)/admin/reconcile
+app/(dashboard)/admin/reconcile/page.tsx
+app/(dashboard)/collectors
+app/(dashboard)/collectors/page.tsx
+app/(dashboard)/dashboard
+app/(dashboard)/dashboard/page.tsx
+app/(dashboard)/layout.tsx
+app/(dashboard)/payments
+app/(dashboard)/payments/.DS_Store
+app/(dashboard)/payments/page.tsx
+app/(dashboard)/payments/upload
+app/(dashboard)/payments/upload/page.tsx
+app/(dashboard)/ptps
+app/(dashboard)/ptps/page.tsx
+app/(dashboard)/ptps/upload
+app/(dashboard)/ptps/upload/page.tsx
+app/(dashboard)/reports
+app/(dashboard)/reports/page.tsx
+app/(dashboard)/strategies
+app/(dashboard)/strategies/.DS_Store
+app/(dashboard)/strategies/[id]
+app/(dashboard)/strategies/[id]/.DS_Store
+app/(dashboard)/strategies/[id]/editor
+app/(dashboard)/strategies/new
+app/(dashboard)/strategies/page.tsx
+app/.DS_Store
+app/api
+app/api/.DS_Store
+app/api/accounts
+app/api/accounts/.DS_Store
+app/api/accounts/export
+app/api/accounts/export/route.ts
+app/api/admin
+app/api/admin/.DS_Store
+app/api/admin/account-strategy
+app/api/admin/account-strategy/route.ts
+app/api/admin/companies
+app/api/admin/companies/.DS_Store
+app/api/admin/companies/[id]
+app/api/admin/companies/[id]/route.ts
+app/api/admin/companies/route.ts
+app/api/admin/products
+app/api/admin/products/route.ts
+app/api/admin/strategies
+app/api/admin/strategies/.DS_Store
+app/api/admin/strategies/[id]
+app/api/admin/strategies/[id]/.DS_Store
+app/api/admin/strategies/[id]/assign-strategy
+app/api/admin/strategies/[id]/publish
+app/api/admin/strategies/[id]/tasks
+app/api/admin/strategies/[id]/workflow
+app/api/admin/strategies/route.ts
+app/api/admin/users
+app/api/admin/users/.DS_Store
+app/api/admin/users/[id]
+app/api/admin/users/[id]/.DS_Store
+app/api/admin/users/[id]/reset-password
+app/api/admin/users/[id]/route.ts
+app/api/admin/users/route.ts
+app/globals.css
+app/layout.tsx
+app/page.tsx
+components
+components/DataTable.tsx
+components/KpiCard.tsx
+components/Sidebar.tsx
+components/Topbar.tsx
+lib
+lib/.DS_Store
+lib/mock-data.ts
+lib/selectors.ts
+lib/supabase-admin.ts
+lib/supabase.ts
+lib/types.ts
+lib/utils.ts
+public
+
+=== package.json ===
+{
+  "name": "collections-saas-starter",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.511.0",
+    "next": "^15.5.12",
+    "papaparse": "^5.5.3",
+    "react": "19.0.0",
+    "react-dom": "19.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "typescript": "^5.7.2"
+  }
+}
+
+=== tsconfig.json ===
+{
+  "compilerOptions": {
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"]
+    },
+    "plugins": [{ "name": "next" }]
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}
+
+=== next.config.js ===
+
+=== next.config.mjs ===
