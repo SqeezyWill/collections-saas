@@ -1,3 +1,4 @@
+import Image from 'next/image';
 import Link from 'next/link';
 
 export default function LoginPage() {
@@ -5,8 +6,19 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
       <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-8 shadow-lg">
         <div className="mb-8 text-center">
+          <div className="mb-5 flex justify-center">
+            <Image
+              src="/credence-logo.png"
+              alt="Credence logo"
+              width={180}
+              height={60}
+              className="h-auto w-auto max-h-16 object-contain"
+              priority
+            />
+          </div>
+
           <p className="text-sm font-medium uppercase tracking-[0.25em] text-slate-500">
-            SmartCollect
+            Credence
           </p>
           <h1 className="mt-3 text-3xl font-bold text-slate-900">Sign in</h1>
           <p className="mt-2 text-sm text-slate-500">
