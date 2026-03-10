@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 
@@ -10,7 +10,34 @@ export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function checkExistingSession() {
+      if (!supabase) {
+        if (isMounted) setCheckingSession(false);
+        return;
+      }
+
+      const { data } = await supabase.auth.getSession();
+
+      if (data.session) {
+        router.replace('/dashboard');
+        return;
+      }
+
+      if (isMounted) setCheckingSession(false);
+    }
+
+    checkExistingSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [router]);
 
   async function handleLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -43,7 +70,7 @@ export default function LoginPage() {
         return;
       }
 
-      router.push('/dashboard');
+      router.replace('/dashboard');
       router.refresh();
     } catch (error: any) {
       setErrorMsg(error?.message || 'Failed to sign in.');
@@ -52,6 +79,16 @@ export default function LoginPage() {
     }
 
     setLoading(false);
+  }
+
+  if (checkingSession) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
+        <div className="rounded-2xl border border-slate-200 bg-white px-6 py-4 text-sm text-slate-600 shadow-sm">
+          Checking session...
+        </div>
+      </main>
+    );
   }
 
   return (
@@ -84,9 +121,7 @@ export default function LoginPage() {
           ) : null}
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Email
-            </label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Email</label>
             <input
               type="email"
               value={email}
@@ -98,9 +133,7 @@ export default function LoginPage() {
           </div>
 
           <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">
-              Password
-            </label>
+            <label className="mb-2 block text-sm font-medium text-slate-700">Password</label>
             <input
               type="password"
               value={password}
