@@ -9,7 +9,7 @@ export default function LoginPage() {
             <img
               src="/credence-logo.png"
               alt="Credence logo"
-              className="h-24 w-auto max-w-[220px] rounded-lg object-contain"
+              className="h-24 w-auto max-w-[220px] object-contain"
             />
           </div>
 
