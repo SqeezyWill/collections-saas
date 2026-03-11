@@ -4,7 +4,7 @@ import { Bell, Building2, Menu, Search } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { getCompany, getCurrentUser } from '@/lib/selectors';
+import { getCompany } from '@/lib/selectors';
 import { supabase } from '@/lib/supabase';
 
 type SearchResult = {
@@ -16,12 +16,21 @@ type SearchResult = {
   contacts: string | null;
 };
 
+type AuthProfile = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  company_id: string | null;
+  role: string | null;
+};
+
 const TOGGLE_EVENT = 'app:toggle-sidebar';
 
 export function Topbar() {
   const router = useRouter();
-  const user = getCurrentUser();
-  const company = getCompany(user.companyId);
+
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
+  const company = getCompany(profile?.company_id || '');
 
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -49,10 +58,75 @@ export function Topbar() {
   }
 
   useEffect(() => {
+    if (!supabase) return;
+
+    const client = supabase;
+
+    async function loadProfile() {
+      const { data: sessionData } = await client.auth.getSession();
+      const userId = sessionData.session?.user?.id;
+
+      if (!userId) {
+        setProfile(null);
+        return;
+      }
+
+      const { data } = await client
+        .from('user_profiles')
+        .select('id,name,email,company_id,role')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (data) {
+        setProfile(data as AuthProfile);
+      } else {
+        setProfile(null);
+      }
+    }
+
+    loadProfile();
+
+    const {
+      data: { subscription },
+    } = client.auth.onAuthStateChange(async (_event, session) => {
+      const userId = session?.user?.id;
+
+      if (!userId) {
+        setProfile(null);
+        return;
+      }
+
+      const { data } = await client
+        .from('user_profiles')
+        .select('id,name,email,company_id,role')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (data) {
+        setProfile(data as AuthProfile);
+      } else {
+        setProfile(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) {
+      setResults([]);
+      setLoading(false);
+      return;
+    }
+
+    const client = supabase;
+
     async function runSearch() {
       const trimmed = query.trim();
 
-      if (!supabase || trimmed.length < 2) {
+      if (trimmed.length < 2) {
         setResults([]);
         setLoading(false);
         return;
@@ -61,11 +135,12 @@ export function Topbar() {
       setLoading(true);
 
       const safeSearch = trimmed.replace(/,/g, '');
+      const companyId = profile?.company_id || 'b4f07164-1706-4904-a304-b38efb88ebf3';
 
-      const { data, error } = await supabase
+      const { data, error } = await client
         .from('accounts')
         .select('id, cfid, debtor_name, account_no, primary_phone, contacts')
-        .eq('company_id', 'b4f07164-1706-4904-a304-b38efb88ebf3')
+        .eq('company_id', companyId)
         .or(
           [
             `cfid.ilike.%${safeSearch}%`,
@@ -95,7 +170,7 @@ export function Topbar() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [query]);
+  }, [query, profile?.company_id]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -126,7 +201,7 @@ export function Topbar() {
           <p className="text-sm text-slate-500">Current tenant</p>
           <div className="mt-1 flex items-center gap-2 text-slate-900">
             <Building2 size={18} />
-            <span className="font-semibold">{company.name}</span>
+            <span className="font-semibold">{company?.name || 'Unknown company'}</span>
           </div>
         </div>
       </div>
@@ -211,7 +286,7 @@ export function Topbar() {
         </button>
 
         <div className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700">
-          {user.name}
+          {profile?.name || profile?.email || 'User'}
         </div>
       </div>
     </header>
