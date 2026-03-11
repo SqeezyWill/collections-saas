@@ -45,23 +45,53 @@ function getAccountDpd(account: any): number | null {
 
 function getBucketMeta(dpd: number | null) {
   if (dpd == null) {
-    return { key: 'unknown', label: 'Unknown', aliases: [] as string[] };
+    return {
+      key: 'unknown',
+      label: 'Unknown',
+      aliases: [] as string[],
+    };
   }
+
   if (dpd <= 0) {
-    return { key: 'current', label: 'Current', aliases: ['current', '0', '0+', 'dpd 0', '0-0'] };
+    return {
+      key: 'current',
+      label: 'Current',
+      aliases: ['current', '0', '0+', 'dpd 0', '0-0'],
+    };
   }
+
   if (dpd >= 1 && dpd <= 30) {
-    return { key: '1_30', label: '1-30', aliases: ['1-30', '01-30', '1 to 30', 'dpd 1-30', '1_30', '1–30'] };
+    return {
+      key: '1_30',
+      label: '1-30',
+      aliases: ['1-30', '01-30', '1 to 30', 'dpd 1-30', '1_30', '1–30'],
+    };
   }
+
   if (dpd >= 31 && dpd <= 60) {
-    return { key: '31_60', label: '31-60', aliases: ['31-60', '31 to 60', 'dpd 31-60', '31_60', '31–60'] };
+    return {
+      key: '31_60',
+      label: '31-60',
+      aliases: ['31-60', '31 to 60', 'dpd 31-60', '31_60', '31–60'],
+    };
   }
+
   if (dpd >= 61 && dpd <= 90) {
-    return { key: '61_90', label: '61-90', aliases: ['61-90', '61 to 90', 'dpd 61-90', '61_90', '61–90'] };
+    return {
+      key: '61_90',
+      label: '61-90',
+      aliases: ['61-90', '61 to 90', 'dpd 61-90', '61_90', '61–90'],
+    };
   }
+
   if (dpd >= 91 && dpd <= 120) {
-    return { key: '91_120', label: '91-120', aliases: ['91-120', '91 to 120', 'dpd 91-120', '91_120', '91–120'] };
+    return {
+      key: '91_120',
+      label: '91-120',
+      aliases: ['91-120', '91 to 120', 'dpd 91-120', '91_120', '91–120'],
+    };
   }
+
   return {
     key: '121_plus',
     label: '121+',
@@ -85,8 +115,13 @@ async function resolveAutoStrategy(accountId: string) {
     .eq('id', accountId)
     .maybeSingle();
 
-  if (acctErr) return { error: acctErr.message, status: 500 as const };
-  if (!acct) return { error: 'Account not found.', status: 404 as const };
+  if (acctErr) {
+    return { error: acctErr.message, status: 500 as const };
+  }
+
+  if (!acct) {
+    return { error: 'Account not found.', status: 404 as const };
+  }
 
   const productCode = normalize(acct.product_code);
   if (!productCode) {
@@ -105,9 +140,15 @@ async function resolveAutoStrategy(accountId: string) {
     .eq('code', productCode)
     .maybeSingle();
 
-  if (pErr) return { error: pErr.message, status: 500 as const };
+  if (pErr) {
+    return { error: pErr.message, status: 500 as const };
+  }
+
   if (!product || product.is_active === false) {
-    return { error: `Unknown or inactive product_code: ${productCode}`, status: 400 as const };
+    return {
+      error: `Unknown or inactive product_code: ${productCode}`,
+      status: 400 as const,
+    };
   }
 
   const { data: mapped, error: mErr } = await supabaseAdmin
@@ -115,7 +156,9 @@ async function resolveAutoStrategy(accountId: string) {
     .select('strategy_id,is_active')
     .eq('product_id', product.id);
 
-  if (mErr) return { error: mErr.message, status: 500 as const };
+  if (mErr) {
+    return { error: mErr.message, status: 500 as const };
+  }
 
   const mappedStrategyIds = (mapped ?? [])
     .filter((r: any) => r && r.is_active !== false)
@@ -136,11 +179,16 @@ async function resolveAutoStrategy(accountId: string) {
     .order('sort_order', { ascending: true, nullsFirst: false })
     .order('created_at', { ascending: false });
 
-  if (strategiesErr) return { error: strategiesErr.message, status: 500 as const };
+  if (strategiesErr) {
+    return { error: strategiesErr.message, status: 500 as const };
+  }
 
   const activeStrategies = strategies ?? [];
   if (activeStrategies.length === 0) {
-    return { error: 'No active strategy found for this product.', status: 400 as const };
+    return {
+      error: 'No active strategy found for this product.',
+      status: 400 as const,
+    };
   }
 
   const bucketSpecific = activeStrategies.find((strategy: any) =>
@@ -187,8 +235,13 @@ export async function GET(req: NextRequest) {
     .limit(1)
     .maybeSingle();
 
-  if (aErr) return NextResponse.json({ error: aErr.message }, { status: 500 });
-  if (!assignment) return NextResponse.json({ assignment: null, strategy: null });
+  if (aErr) {
+    return NextResponse.json({ error: aErr.message }, { status: 500 });
+  }
+
+  if (!assignment) {
+    return NextResponse.json({ assignment: null, strategy: null });
+  }
 
   const { data: strategy, error: sErr } = await supabaseAdmin
     .from(STRATEGIES_TABLE)
@@ -196,7 +249,9 @@ export async function GET(req: NextRequest) {
     .eq('id', assignment.strategy_id)
     .maybeSingle();
 
-  if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 });
+  if (sErr) {
+    return NextResponse.json({ error: sErr.message }, { status: 500 });
+  }
 
   return NextResponse.json({ assignment, strategy: strategy ?? null });
 }
@@ -255,7 +310,9 @@ export async function POST(req: NextRequest) {
     .limit(1)
     .maybeSingle();
 
-  if (currentErr) return NextResponse.json({ error: currentErr.message }, { status: 500 });
+  if (currentErr) {
+    return NextResponse.json({ error: currentErr.message }, { status: 500 });
+  }
 
   if (currentActive && String(currentActive.strategy_id) === strategyId) {
     const { data: strategy, error: sErr } = await supabaseAdmin
@@ -264,7 +321,9 @@ export async function POST(req: NextRequest) {
       .eq('id', strategyId)
       .maybeSingle();
 
-    if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 });
+    if (sErr) {
+      return NextResponse.json({ error: sErr.message }, { status: 500 });
+    }
 
     return NextResponse.json({
       assignment: currentActive,
@@ -281,7 +340,9 @@ export async function POST(req: NextRequest) {
     .eq('account_id', accountId)
     .eq('is_active', true);
 
-  if (offErr) return NextResponse.json({ error: offErr.message }, { status: 500 });
+  if (offErr) {
+    return NextResponse.json({ error: offErr.message }, { status: 500 });
+  }
 
   const { data: inserted, error: insErr } = await supabaseAdmin
     .from(ASSIGN_TABLE)
@@ -295,7 +356,9 @@ export async function POST(req: NextRequest) {
     .select('id,account_id,strategy_id,assigned_at,assigned_by,source,notes,is_active')
     .single();
 
-  if (insErr) return NextResponse.json({ error: insErr.message }, { status: 500 });
+  if (insErr) {
+    return NextResponse.json({ error: insErr.message }, { status: 500 });
+  }
 
   const { data: strategy, error: sErr } = await supabaseAdmin
     .from(STRATEGIES_TABLE)
@@ -303,7 +366,9 @@ export async function POST(req: NextRequest) {
     .eq('id', strategyId)
     .maybeSingle();
 
-  if (sErr) return NextResponse.json({ error: sErr.message }, { status: 500 });
+  if (sErr) {
+    return NextResponse.json({ error: sErr.message }, { status: 500 });
+  }
 
   return NextResponse.json({
     assignment: inserted,
