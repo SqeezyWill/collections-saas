@@ -9,6 +9,10 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
+  if (!supabaseAdmin) {
+    return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
+  }
+
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get('q') || '').trim();
 
