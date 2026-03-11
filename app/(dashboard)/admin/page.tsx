@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
+import { supabase } from '@/lib/supabase';
 
 type DbCompany = {
   id: string;
@@ -66,37 +67,32 @@ function defaultUserPassword() {
 }
 
 const BRAND_PRESET_COLORS = [
-  '#0f766e', // teal
-  '#2563eb', // blue
-  '#4338ca', // indigo
-  '#7c3aed', // violet
-  '#db2777', // pink
-  '#dc2626', // red
-  '#f59e0b', // amber
-  '#16a34a', // green
-  '#111827', // slate/black
+  '#0f766e',
+  '#2563eb',
+  '#4338ca',
+  '#7c3aed',
+  '#db2777',
+  '#dc2626',
+  '#f59e0b',
+  '#16a34a',
+  '#111827',
 ];
 
 export default function AdminPage() {
-  const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY || '';
-
   const usersTableRef = useRef<HTMLDivElement | null>(null);
 
   const [companyFilter, setCompanyFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [search, setSearch] = useState('');
 
-  // DB companies
   const [dbCompanies, setDbCompanies] = useState<DbCompany[]>([]);
   const [loadingCompanies, setLoadingCompanies] = useState(true);
   const [companiesError, setCompaniesError] = useState<string | null>(null);
 
-  // DB users
   const [dbUsers, setDbUsers] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [usersError, setUsersError] = useState<string | null>(null);
 
-  // ADD COMPANY
   const [isAddCompanyOpen, setIsAddCompanyOpen] = useState(false);
   const [addCompanySaving, setAddCompanySaving] = useState(false);
   const [addCompanyError, setAddCompanyError] = useState<string | null>(null);
@@ -108,7 +104,6 @@ export default function AdminPage() {
     logoUrl: '',
   });
 
-  // EDIT / BRANDING COMPANY
   const [isEditCompanyOpen, setIsEditCompanyOpen] = useState(false);
   const [editCompanySaving, setEditCompanySaving] = useState(false);
   const [editCompanyError, setEditCompanyError] = useState<string | null>(null);
@@ -122,7 +117,6 @@ export default function AdminPage() {
     mode: 'edit',
   });
 
-  // ADD USER
   const [isAddUserOpen, setIsAddUserOpen] = useState(false);
   const [addUserSaving, setAddUserSaving] = useState(false);
   const [addUserError, setAddUserError] = useState<string | null>(null);
@@ -136,7 +130,6 @@ export default function AdminPage() {
     password: '',
   });
 
-  // RESET PASSWORD
   const [isResetOpen, setIsResetOpen] = useState(false);
   const [resetSaving, setResetSaving] = useState(false);
   const [resetError, setResetError] = useState<string | null>(null);
@@ -148,7 +141,6 @@ export default function AdminPage() {
   });
   const [resetResult, setResetResult] = useState<ResetPasswordResult | null>(null);
 
-  // EDIT USER
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
@@ -161,9 +153,25 @@ export default function AdminPage() {
     companyId: '',
   });
 
-  /**
-   * ✅ Company matching: UUID / code / slug-ish
-   */
+  async function authHeaders(includeJson = false): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {};
+
+  if (includeJson) {
+    headers['Content-Type'] = 'application/json';
+  }
+
+  if (supabase) {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+  }
+
+  return headers;
+}
+
   function matchesCompany(userCompanyId: any, company: DbCompany) {
     const v = String(userCompanyId || '').trim().toLowerCase();
     const id = String(company.id || '').trim().toLowerCase();
@@ -193,7 +201,6 @@ export default function AdminPage() {
     return company?.name || companyId || '-';
   }
 
-  // ✅ Safe JSON reader (handles empty body + invalid JSON)
   async function readJsonSafe(res: Response) {
     const text = await res.text();
     if (!text) return { json: null as any, text: '' };
@@ -211,7 +218,7 @@ export default function AdminPage() {
 
     try {
       const res = await fetch('/api/admin/companies', {
-        headers: { 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(),
         cache: 'no-store',
       });
 
@@ -234,7 +241,6 @@ export default function AdminPage() {
 
       setDbCompanies(list);
 
-      // ensure add user form has a default company
       setAddUserForm((prev) => ({
         ...prev,
         companyId: prev.companyId || list[0]?.id || '',
@@ -256,7 +262,7 @@ export default function AdminPage() {
 
     try {
       const res = await fetch('/api/admin/users', {
-        headers: { 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(),
         cache: 'no-store',
       });
 
@@ -280,7 +286,6 @@ export default function AdminPage() {
   useEffect(() => {
     refreshCompanies();
     refreshUsers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const companyRows = useMemo(() => {
@@ -346,7 +351,6 @@ export default function AdminPage() {
   const uniqueRoles = Array.from(new Set(dbUsers.map((u) => String(u.role || '')).filter(Boolean)))
     .sort((a, b) => a.localeCompare(b));
 
-  // ------- Add Company -------
   function openAddCompany() {
     setAddCompanySuccess(null);
     setAddCompanyError(null);
@@ -385,10 +389,7 @@ export default function AdminPage() {
     try {
       const res = await fetch('/api/admin/companies', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': ADMIN_KEY,
-        },
+        headers: await authHeaders(true),
         body: JSON.stringify(payload),
       });
 
@@ -408,7 +409,6 @@ export default function AdminPage() {
     }
   }
 
-  // ------- Edit / Branding Company -------
   function openEditCompany(company: any, mode: 'edit' | 'branding') {
     setEditCompanySuccess(null);
     setEditCompanyError(null);
@@ -464,7 +464,7 @@ export default function AdminPage() {
     try {
       const res = await fetch(`/api/admin/companies/${encodeURIComponent(editCompanyState.id)}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(true),
         body: JSON.stringify(payload),
       });
 
@@ -489,12 +489,6 @@ export default function AdminPage() {
     }
   }
 
-  /**
-   * ✅ FIXED: Manage Users
-   * - clears search/role (so results appear)
-   * - sets company filter to code (preferred) or id
-   * - scrolls to table
-   */
   function manageUsersForCompany(company: any) {
     const code = String(company.code || '').trim().toLowerCase();
     const id = String(company.id || '').trim();
@@ -507,14 +501,12 @@ export default function AdminPage() {
 
     requestAnimationFrame(() => {
       usersTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      // extra fallback tick
       setTimeout(() => {
         usersTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }, 0);
     });
   }
 
-  // ------- Add User -------
   function openAddUser() {
     setAddUserSuccess(null);
     setAddUserError(null);
@@ -560,7 +552,7 @@ export default function AdminPage() {
     try {
       const res = await fetch('/api/admin/users', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(true),
         body: JSON.stringify(payload),
       });
 
@@ -580,7 +572,6 @@ export default function AdminPage() {
     }
   }
 
-  // ------- Reset Password -------
   function openResetPassword(user: any) {
     setResetSuccess(null);
     setResetError(null);
@@ -614,7 +605,7 @@ export default function AdminPage() {
     try {
       const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}/reset-password`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(true),
         body: JSON.stringify({}),
       });
 
@@ -648,7 +639,6 @@ export default function AdminPage() {
     }
   }
 
-  // ------- Edit User -------
   function openEditUser(user: any) {
     setEditSuccess(null);
     setEditError(null);
@@ -689,7 +679,7 @@ export default function AdminPage() {
     try {
       const res = await fetch(`/api/admin/users/${encodeURIComponent(editState.userId)}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(true),
         body: JSON.stringify(payload),
       });
 
@@ -711,7 +701,6 @@ export default function AdminPage() {
 
   return (
     <div className="space-y-6">
-      {/* ADD COMPANY MODAL */}
       {isAddCompanyOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -777,7 +766,6 @@ export default function AdminPage() {
                   />
                 </div>
 
-                {/* ✅ Preset color buttons (Add Company) */}
                 <div className="md:col-span-2 flex flex-wrap gap-2 pt-1">
                   {BRAND_PRESET_COLORS.map((c) => {
                     const active = String(addCompanyForm.themeColor || '').toLowerCase() === c.toLowerCase();
@@ -828,7 +816,6 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-      {/* EDIT / BRANDING COMPANY MODAL */}
       {isEditCompanyOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -902,7 +889,6 @@ export default function AdminPage() {
                   />
                 </div>
 
-                {/* ✅ Preset color buttons (Edit/Branding) */}
                 <div className="md:col-span-2 flex flex-wrap gap-2 pt-1">
                   {BRAND_PRESET_COLORS.map((c) => {
                     const active = String(editCompanyState.themeColor || '').toLowerCase() === c.toLowerCase();
@@ -953,7 +939,6 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-      {/* EDIT USER MODAL */}
       {isEditOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -1062,7 +1047,6 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-      {/* RESET PASSWORD MODAL */}
       {isResetOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -1167,7 +1151,6 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-      {/* ADD USER MODAL */}
       {isAddUserOpen ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
@@ -1300,7 +1283,6 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-      {/* HEADER */}
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
           <h1 className="text-3xl font-semibold">Admin & Tenant Setup</h1>
@@ -1325,7 +1307,6 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* SUCCESS / ERRORS */}
       {addCompanySuccess ? (
         <p className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{addCompanySuccess}</p>
       ) : null}
@@ -1346,7 +1327,6 @@ export default function AdminPage() {
         <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{companiesError}</p>
       ) : null}
 
-      {/* STATS */}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <p className="text-sm text-slate-500">Total Companies</p>
@@ -1366,7 +1346,6 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* COMPANIES */}
       <div>
         <div className="mb-3 flex items-center justify-between gap-3">
           <h2 className="section-title">Companies</h2>
@@ -1414,7 +1393,6 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              {/* ✅ z-index + pointer-events so click can’t be swallowed by overlays */}
               <div className="relative z-20 mt-5 flex flex-wrap gap-3">
                 <button
                   type="button"
@@ -1453,7 +1431,6 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* USERS TABLE */}
       <div ref={usersTableRef} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>

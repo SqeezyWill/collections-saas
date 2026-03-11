@@ -1,24 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireSuperAdminRole } from '@/lib/server-auth';
 
 const TABLE = 'companies';
 
-function requireAdminKey(req: NextRequest) {
-  const key = req.headers.get('x-admin-key');
-  return Boolean(process.env.ADMIN_API_KEY && key === process.env.ADMIN_API_KEY);
-}
-
 export async function GET(req: NextRequest) {
-  if (!requireAdminKey(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (!supabaseAdmin)
+  const auth = await requireSuperAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
+  if (!supabaseAdmin) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
+  }
 
   const { data, error } = await supabaseAdmin
     .from(TABLE)
     .select('*')
     .order('created_at', { ascending: false });
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   const companies = (data ?? []).map((c: any) => ({
     id: c.id,
@@ -33,9 +36,14 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!requireAdminKey(req)) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  if (!supabaseAdmin)
+  const auth = await requireSuperAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
+  if (!supabaseAdmin) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
+  }
 
   const body = await req.json().catch(() => ({}));
 
@@ -60,7 +68,9 @@ export async function POST(req: NextRequest) {
     .select('*')
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   return NextResponse.json({
     company: {

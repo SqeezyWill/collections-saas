@@ -1,17 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireAdminRole, requireSuperAdminRole } from '@/lib/server-auth';
 
 const PROFILE_TABLE = 'user_profiles';
 const DEFAULT_PASSWORD = 'credcoll@2026';
 
-function requireAdminKey(req: NextRequest) {
-  const key = req.headers.get('x-admin-key');
-  return Boolean(process.env.ADMIN_API_KEY && key === process.env.ADMIN_API_KEY);
-}
-
 export async function GET(req: NextRequest) {
-  if (!requireAdminKey(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   if (!supabaseAdmin) {
@@ -54,8 +51,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!requireAdminKey(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireSuperAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   if (!supabaseAdmin) {

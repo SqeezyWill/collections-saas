@@ -24,7 +24,7 @@ function isAllowedRoute(role: string, pathname: string) {
   if (normalizedRole === 'super_admin') return true;
 
   if (normalizedRole === 'admin') {
-    if (
+    return (
       pathname === '/dashboard' ||
       pathname.startsWith('/accounts') ||
       pathname.startsWith('/collectors') ||
@@ -32,22 +32,16 @@ function isAllowedRoute(role: string, pathname: string) {
       pathname.startsWith('/ptps') ||
       pathname.startsWith('/reports') ||
       pathname.startsWith('/strategies')
-    ) {
-      return true;
-    }
-    return false;
+    );
   }
 
   if (normalizedRole === 'agent') {
-    if (
+    return (
       pathname === '/dashboard' ||
       pathname.startsWith('/accounts') ||
       pathname.startsWith('/payments') ||
       pathname.startsWith('/ptps')
-    ) {
-      return true;
-    }
-    return false;
+    );
   }
 
   return false;
@@ -62,13 +56,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   useEffect(() => {
     let isMounted = true;
 
-    async function checkSessionAndRole() {
-      if (!supabase) {
-        if (isMounted) router.replace('/login');
-        return;
-      }
+    if (!supabase) {
+      router.replace('/login');
+      return;
+    }
 
-      const { data: sessionData } = await supabase.auth.getSession();
+    const client = supabase;
+
+    async function checkSessionAndRole() {
+      const { data: sessionData } = await client.auth.getSession();
       const session = sessionData.session;
 
       if (!session) {
@@ -78,19 +74,19 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
       const userId = session.user?.id;
       if (!userId) {
-        await supabase.auth.signOut();
+        await client.auth.signOut();
         if (isMounted) router.replace('/login');
         return;
       }
 
-      const { data: profile, error } = await supabase
+      const { data: profile, error } = await client
         .from('user_profiles')
         .select('id,name,email,role,company_id')
         .eq('id', userId)
         .maybeSingle();
 
       if (error || !profile) {
-        await supabase.auth.signOut();
+        await client.auth.signOut();
         if (isMounted) router.replace('/login');
         return;
       }
@@ -99,9 +95,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       const role = normalizeRole(userProfile.role);
 
       if (!isAllowedRoute(role, pathname)) {
-        if (isMounted) {
-          router.replace('/dashboard');
-        }
+        if (isMounted) router.replace('/dashboard');
         return;
       }
 
@@ -114,7 +108,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    } = client.auth.onAuthStateChange(async (_event, session) => {
       if (!session) {
         router.replace('/login');
         return;
@@ -126,7 +120,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         return;
       }
 
-      const { data: profile } = await supabase
+      const { data: profile } = await client
         .from('user_profiles')
         .select('role')
         .eq('id', userId)

@@ -1,22 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireAdminRole } from '@/lib/server-auth';
 
 const STRATEGIES_TABLE = 'strategies';
 const MAP_TABLE = 'strategy_products';
 const PRODUCTS_TABLE = 'products';
-
-function requireAdminKey(req: NextRequest) {
-  const key = req.headers.get('x-admin-key');
-  return Boolean(process.env.ADMIN_API_KEY && key === process.env.ADMIN_API_KEY);
-}
 
 function uniq<T>(arr: T[]) {
   return Array.from(new Set(arr));
 }
 
 export async function GET(req: NextRequest) {
-  if (!requireAdminKey(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   if (!supabaseAdmin) {
@@ -46,14 +43,7 @@ export async function GET(req: NextRequest) {
     steps: s.steps ?? [],
     created_at: s.created_at ?? null,
     updated_at: s.updated_at ?? null,
-    products: [] as Array<{
-      id: string;
-      code: string;
-      name: string;
-      category: string | null;
-      is_active?: boolean;
-      sort_order?: number;
-    }>,
+    products: [] as Array<{ id: string; code: string; name: string; category: string | null }>,
     product_ids: [] as string[],
     product_codes: [] as string[],
   }));
@@ -155,8 +145,9 @@ export async function GET(req: NextRequest) {
 }
 
 export async function POST(req: NextRequest) {
-  if (!requireAdminKey(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
   if (!supabaseAdmin) {
@@ -167,23 +158,17 @@ export async function POST(req: NextRequest) {
 
   const name = body.name != null ? String(body.name).trim() : '';
   const description =
-    body.description != null && String(body.description).trim()
-      ? String(body.description).trim()
-      : null;
+    body.description != null && String(body.description).trim() ? String(body.description).trim() : null;
 
   const sort_order =
     body.sortOrder != null && String(body.sortOrder).trim() !== ''
       ? Number(body.sortOrder)
       : body.sort_order != null && String(body.sort_order).trim() !== ''
-      ? Number(body.sort_order)
-      : 0;
+        ? Number(body.sort_order)
+        : 0;
 
   const is_active =
-    body.isActive != null
-      ? Boolean(body.isActive)
-      : body.is_active != null
-      ? Boolean(body.is_active)
-      : true;
+    body.isActive != null ? Boolean(body.isActive) : body.is_active != null ? Boolean(body.is_active) : true;
 
   const steps = Array.isArray(body.steps) ? body.steps : [];
   const productIds: string[] = Array.isArray(body.productIds)
@@ -235,104 +220,5 @@ export async function POST(req: NextRequest) {
       updated_at: created.updated_at ?? null,
       product_ids: productIds,
     },
-  });
-}
-
-export async function PUT(req: NextRequest) {
-  if (!requireAdminKey(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  if (!supabaseAdmin) {
-    return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
-  }
-
-  const body = await req.json().catch(() => ({}));
-  const productId = body.productId != null ? String(body.productId).trim() : '';
-  const strategyIds: string[] = Array.isArray(body.strategyIds)
-    ? uniq(body.strategyIds.map((x: any) => String(x)).filter(Boolean))
-    : [];
-
-  if (!productId) {
-    return NextResponse.json({ error: 'productId is required.' }, { status: 400 });
-  }
-
-  const { data: product, error: productError } = await supabaseAdmin
-    .from(PRODUCTS_TABLE)
-    .select('id,code,name,is_active')
-    .eq('id', productId)
-    .maybeSingle();
-
-  if (productError) {
-    return NextResponse.json({ error: productError.message }, { status: 500 });
-  }
-
-  if (!product) {
-    return NextResponse.json({ error: 'Product not found.' }, { status: 404 });
-  }
-
-  const { data: existingMaps, error: existingError } = await supabaseAdmin
-    .from(MAP_TABLE)
-    .select('strategy_id,product_id,is_active')
-    .eq('product_id', productId);
-
-  if (existingError) {
-    return NextResponse.json({ error: existingError.message }, { status: 500 });
-  }
-
-  const existingStrategyIds = uniq(
-    (existingMaps ?? [])
-      .filter((r: any) => r && r.is_active !== false)
-      .map((r: any) => String(r.strategy_id))
-  );
-
-  const toDeactivate = existingStrategyIds.filter((id) => !strategyIds.includes(id));
-  const toInsert = strategyIds.filter((id) => !existingStrategyIds.includes(id));
-
-  if (toDeactivate.length > 0) {
-    const { error: deactivateError } = await supabaseAdmin
-      .from(MAP_TABLE)
-      .update({ is_active: false })
-      .eq('product_id', productId)
-      .in('strategy_id', toDeactivate);
-
-    if (deactivateError) {
-      return NextResponse.json({ error: deactivateError.message }, { status: 500 });
-    }
-  }
-
-  if (toInsert.length > 0) {
-    const rows = toInsert.map((strategyId) => ({
-      product_id: productId,
-      strategy_id: strategyId,
-      is_active: true,
-    }));
-
-    const { error: insertError } = await supabaseAdmin.from(MAP_TABLE).insert(rows);
-    if (insertError) {
-      return NextResponse.json({ error: insertError.message }, { status: 500 });
-    }
-  }
-
-  if (strategyIds.length > 0) {
-    const { error: reactivateError } = await supabaseAdmin
-      .from(MAP_TABLE)
-      .update({ is_active: true })
-      .eq('product_id', productId)
-      .in('strategy_id', strategyIds);
-
-    if (reactivateError) {
-      return NextResponse.json({ error: reactivateError.message }, { status: 500 });
-    }
-  }
-
-  return NextResponse.json({
-    success: true,
-    product: {
-      id: product.id,
-      code: product.code,
-      name: product.name,
-    },
-    mappedStrategyIds: strategyIds,
   });
 }
