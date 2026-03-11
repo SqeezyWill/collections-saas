@@ -1,12 +1,17 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { headers } from 'next/headers';
-import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type PageProps = {
   params: Promise<{ id: string }>;
 };
+
+const ASSIGN_TABLE = 'account_strategies';
+const ACCOUNTS_TABLE = 'accounts';
+const STRATEGIES_TABLE = 'strategies';
+const MAP_TABLE = 'strategy_products';
+const PRODUCTS_TABLE = 'products';
 
 function compactPhones(values: Array<string | null | undefined>) {
   return values.map((v) => String(v || '').trim()).filter(Boolean);
@@ -16,6 +21,10 @@ function detailValue(value: unknown) {
   if (value === null || value === undefined) return '-';
   const text = String(value).trim();
   return text.length > 0 ? text : '-';
+}
+
+function normalize(value: unknown) {
+  return String(value ?? '').trim().toLowerCase();
 }
 
 function parseNumber(value: unknown): number | null {
@@ -84,6 +93,67 @@ function getBucketLabel(dpd: number | null) {
   return '121+';
 }
 
+function getBucketMeta(dpd: number | null) {
+  if (dpd == null) {
+    return {
+      key: 'unknown',
+      label: 'Unknown',
+      aliases: [] as string[],
+    };
+  }
+
+  if (dpd <= 0) {
+    return {
+      key: 'current',
+      label: 'Current',
+      aliases: ['current', '0', '0+', 'dpd 0', '0-0'],
+    };
+  }
+
+  if (dpd >= 1 && dpd <= 30) {
+    return {
+      key: '1_30',
+      label: '1-30',
+      aliases: ['1-30', '01-30', '1 to 30', 'dpd 1-30', '1_30', '1–30'],
+    };
+  }
+
+  if (dpd >= 31 && dpd <= 60) {
+    return {
+      key: '31_60',
+      label: '31-60',
+      aliases: ['31-60', '31 to 60', 'dpd 31-60', '31_60', '31–60'],
+    };
+  }
+
+  if (dpd >= 61 && dpd <= 90) {
+    return {
+      key: '61_90',
+      label: '61-90',
+      aliases: ['61-90', '61 to 90', 'dpd 61-90', '61_90', '61–90'],
+    };
+  }
+
+  if (dpd >= 91 && dpd <= 120) {
+    return {
+      key: '91_120',
+      label: '91-120',
+      aliases: ['91-120', '91 to 120', 'dpd 91-120', '91_120', '91–120'],
+    };
+  }
+
+  return {
+    key: '121_plus',
+    label: '121+',
+    aliases: ['121+', '121 plus', '120+', '120 plus', '121_and_above', '121 and above', 'over 120'],
+  };
+}
+
+function matchesBucket(strategy: any, bucketAliases: string[]) {
+  const haystack = `${normalize(strategy?.name)} ${normalize(strategy?.description)}`;
+  return bucketAliases.some((alias) => haystack.includes(normalize(alias)));
+}
+
 function DetailTable({
   rows,
 }: {
@@ -134,44 +204,122 @@ type AccountStrategyResponse = {
 };
 
 async function fetchAccountStrategy(accountId: string): Promise<AccountStrategyResponse | null> {
-  const adminKey = process.env.ADMIN_API_KEY || '';
-  if (!adminKey) return null;
+  if (!supabaseAdmin) return null;
 
-  try {
-    const h = await headers();
-    const host = h.get('x-forwarded-host') || h.get('host') || 'localhost:3000';
-    const proto = h.get('x-forwarded-proto') || 'http';
-    const baseUrl = `${proto}://${host}`;
+  const { data: assignment, error: aErr } = await supabaseAdmin
+    .from(ASSIGN_TABLE)
+    .select('id,account_id,strategy_id,assigned_at,assigned_by,source,notes,is_active')
+    .eq('account_id', accountId)
+    .eq('is_active', true)
+    .order('assigned_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-    const res = await fetch(
-      `${baseUrl}/api/admin/account-strategy?accountId=${encodeURIComponent(accountId)}`,
-      {
-        headers: { 'x-admin-key': adminKey },
-        cache: 'no-store',
-      }
-    );
-
-    const text = await res.text();
-    if (!res.ok) return null;
-
-    try {
-      return JSON.parse(text) as AccountStrategyResponse;
-    } catch {
-      return null;
-    }
-  } catch {
-    return null;
+  if (aErr || !assignment) {
+    return { assignment: null, strategy: null };
   }
+
+  const { data: strategy } = await supabaseAdmin
+    .from(STRATEGIES_TABLE)
+    .select('id,name,description,is_active,sort_order,steps,created_at,updated_at')
+    .eq('id', assignment.strategy_id)
+    .maybeSingle();
+
+  return {
+    assignment,
+    strategy: strategy ?? null,
+  };
+}
+
+async function resolveAutoStrategy(accountId: string) {
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin not configured.');
+  }
+
+  const { data: acct, error: acctErr } = await supabaseAdmin
+    .from(ACCOUNTS_TABLE)
+    .select('id,product_code,dpd')
+    .eq('id', accountId)
+    .maybeSingle();
+
+  if (acctErr) throw new Error(acctErr.message);
+  if (!acct) throw new Error('Account not found.');
+
+  const productCode = normalize(acct.product_code);
+  if (!productCode) {
+    throw new Error('Account has no product_code. Set accounts.product_code first, then auto-assign.');
+  }
+
+  const dpd = getEffectiveDpd(acct);
+  const bucket = getBucketMeta(dpd);
+
+  const { data: product, error: pErr } = await supabaseAdmin
+    .from(PRODUCTS_TABLE)
+    .select('id,code,is_active')
+    .eq('code', productCode)
+    .maybeSingle();
+
+  if (pErr) throw new Error(pErr.message);
+  if (!product || product.is_active === false) {
+    throw new Error(`Unknown or inactive product_code: ${productCode}`);
+  }
+
+  const { data: mapped, error: mErr } = await supabaseAdmin
+    .from(MAP_TABLE)
+    .select('strategy_id,is_active')
+    .eq('product_id', product.id);
+
+  if (mErr) throw new Error(mErr.message);
+
+  const mappedStrategyIds = (mapped ?? [])
+    .filter((r: any) => r && r.is_active !== false)
+    .map((r: any) => String(r.strategy_id));
+
+  if (mappedStrategyIds.length === 0) {
+    throw new Error(`No strategies mapped to product_code=${productCode} yet.`);
+  }
+
+  const { data: strategies, error: sErr } = await supabaseAdmin
+    .from(STRATEGIES_TABLE)
+    .select('id,name,description,is_active,sort_order,created_at')
+    .in('id', mappedStrategyIds)
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: false });
+
+  if (sErr) throw new Error(sErr.message);
+
+  const activeStrategies = strategies ?? [];
+  if (activeStrategies.length === 0) {
+    throw new Error('No active strategy found for this product.');
+  }
+
+  const bucketSpecific = activeStrategies.find((strategy: any) =>
+    matchesBucket(strategy, bucket.aliases)
+  );
+
+  const chosen = bucketSpecific ?? activeStrategies[0];
+
+  return {
+    strategyId: String(chosen.id),
+    notes: [
+      'Manual re-evaluation from account page.',
+      `product=${productCode}`,
+      `dpd=${dpd ?? 'unknown'}`,
+      `bucket=${bucket.label}`,
+      `match=${bucketSpecific ? 'product_and_bucket' : 'product_fallback'}`,
+    ].join(' '),
+  };
 }
 
 export default async function AccountDetailPage({ params }: PageProps) {
   const { id } = await params;
 
-  if (!supabase) {
+  if (!supabaseAdmin) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Account Workspace</h1>
-        <p className="text-red-600">Supabase is not configured.</p>
+        <p className="text-red-600">Supabase admin is not configured.</p>
       </div>
     );
   }
@@ -179,40 +327,59 @@ export default async function AccountDetailPage({ params }: PageProps) {
   async function reEvaluateStrategy() {
     'use server';
 
-    const adminKey = process.env.ADMIN_API_KEY || '';
-    if (!adminKey) {
-      throw new Error('Admin API key is not configured.');
+    if (!supabaseAdmin) {
+      throw new Error('Supabase admin is not configured.');
     }
 
-    const h = await headers();
-    const host = h.get('x-forwarded-host') || h.get('host') || 'localhost:3000';
-    const proto = h.get('x-forwarded-proto') || 'http';
-    const baseUrl = `${proto}://${host}`;
+    const resolved = await resolveAutoStrategy(id);
 
-    const res = await fetch(`${baseUrl}/api/admin/account-strategy`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-key': adminKey,
-      },
-      body: JSON.stringify({
-        accountId: id,
-        source: 'auto',
-        notes: 'Manual re-evaluation from account page.',
-      }),
-      cache: 'no-store',
+    const { data: currentActive, error: currentErr } = await supabaseAdmin
+      .from(ASSIGN_TABLE)
+      .select('id,strategy_id,is_active')
+      .eq('account_id', id)
+      .eq('is_active', true)
+      .order('assigned_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (currentErr) {
+      throw new Error(currentErr.message);
+    }
+
+    if (currentActive && String(currentActive.strategy_id) === resolved.strategyId) {
+      redirect(`/accounts/${id}`);
+    }
+
+    const { error: offErr } = await supabaseAdmin
+      .from(ASSIGN_TABLE)
+      .update({ is_active: false })
+      .eq('account_id', id)
+      .eq('is_active', true);
+
+    if (offErr) {
+      throw new Error(offErr.message);
+    }
+
+    const { error: insErr } = await supabaseAdmin.from(ASSIGN_TABLE).insert({
+      account_id: id,
+      strategy_id: resolved.strategyId,
+      source: 'auto',
+      notes: resolved.notes,
+      is_active: true,
     });
 
-    const result = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      throw new Error(result?.error || 'Failed to re-evaluate strategy.');
+    if (insErr) {
+      throw new Error(insErr.message);
     }
 
     redirect(`/accounts/${id}`);
   }
 
-  const { data: account, error } = await supabase.from('accounts').select('*').eq('id', id).single();
+  const { data: account, error } = await supabaseAdmin
+    .from('accounts')
+    .select('*')
+    .eq('id', id)
+    .single();
 
   if (error || !account) {
     notFound();
@@ -224,14 +391,14 @@ export default async function AccountDetailPage({ params }: PageProps) {
     account.tertiary_phone,
   ]);
 
-  const { data: ptps } = await supabase
+  const { data: ptps } = await supabaseAdmin
     .from('ptps')
     .select('*')
     .eq('account_id', id)
     .order('created_at', { ascending: false })
     .limit(3);
 
-  const { data: payments } = await supabase
+  const { data: payments } = await supabaseAdmin
     .from('payments')
     .select('*')
     .eq('account_id', id)
@@ -245,7 +412,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
   const effectiveDpd = getEffectiveDpd(account);
   const bucketLabel = getBucketLabel(effectiveDpd);
   const storedDpd = parseNumber(account.dpd);
-  const stepsCount = Array.isArray(assignedStrategy?.steps) ? assignedStrategy!.steps!.length : 0;
+  const stepsCount = Array.isArray(assignedStrategy?.steps) ? assignedStrategy.steps.length : 0;
 
   const statusClasses =
     account.status === 'PTP'
@@ -253,8 +420,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
       : account.status === 'Paid'
       ? 'bg-emerald-100 text-emerald-700'
       : account.status === 'Escalated'
-      ? 'bg-rose-100 text-rose-700'
-      : 'bg-slate-100 text-slate-700';
+        ? 'bg-rose-100 text-rose-700'
+        : 'bg-slate-100 text-slate-700';
 
   const basicDetails = [
     { label: 'Debtor Name', value: detailValue(account.debtor_name) },
@@ -526,8 +693,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
                         ptp.status === 'Kept'
                           ? 'bg-emerald-100 text-emerald-700'
                           : ptp.status === 'Broken'
-                          ? 'bg-rose-100 text-rose-700'
-                          : 'bg-amber-100 text-amber-700'
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-amber-100 text-amber-700'
                       }`}
                     >
                       {ptp.status}
@@ -560,7 +727,9 @@ export default async function AccountDetailPage({ params }: PageProps) {
               payments.map((payment) => (
                 <div key={payment.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <p className="text-sm font-semibold text-slate-900">{currency(Number(payment.amount || 0))}</p>
+                    <p className="text-sm font-semibold text-slate-900">
+                      {currency(Number(payment.amount || 0))}
+                    </p>
                     <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
                       {payment.product || '-'}
                     </span>
