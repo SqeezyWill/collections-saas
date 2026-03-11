@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireSuperAdminRole } from '@/lib/server-auth';
+import { requireAdminRole, requireSuperAdminRole } from '@/lib/server-auth';
 
 const TABLE = 'companies';
 
 export async function GET(req: NextRequest) {
-  const auth = await requireSuperAdminRole(req);
+  const auth = await requireAdminRole(req);
   if ('error' in auth) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }

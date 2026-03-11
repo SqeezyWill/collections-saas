@@ -164,7 +164,9 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
   const currentPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
   const allowedLimits = ['15', '30', '50', 'all'];
   const normalizedLimit = allowedLimits.includes(limitParam) ? limitParam : '15';
-  const pageSize = normalizedLimit === 'all' ? null : Number(normalizedLimit);
+  const showingAll = normalizedLimit === 'all';
+  const pageSize = showingAll ? 500 : Number(normalizedLimit);
+  const effectivePage = showingAll ? 1 : currentPage;
 
   const selectedColumns = columnsParam
     .split(',')
@@ -240,6 +242,7 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
     const safeSearch = search.replace(/,/g, '');
     query = query.or(
       [
+        `cfid.ilike.%${safeSearch}%`,
         `debtor_name.ilike.%${safeSearch}%`,
         `product.ilike.%${safeSearch}%`,
         `product_code.ilike.%${safeSearch}%`,
@@ -261,8 +264,8 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
   if (query && lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
   if (query && lastActionTo) query = query.lte('last_action_date', lastActionTo);
 
-  if (query && pageSize) {
-    const from = (currentPage - 1) * pageSize;
+  if (query) {
+    const from = (effectivePage - 1) * pageSize;
     const to = from + pageSize - 1;
     query = query.range(from, to);
   }
@@ -284,7 +287,7 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
   const totalBalance = (rows ?? []).reduce((sum, row) => sum + Number(row.balance || 0), 0);
   const totalPaid = (rows ?? []).reduce((sum, row) => sum + Number(row.amount_paid || 0), 0);
   const openCases = (rows ?? []).filter((row) => row.status !== 'Paid').length;
-  const totalPages = pageSize && totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
+  const totalPages = totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
 
   const headers = finalColumns.map(
     (key) => AVAILABLE_COLUMNS.find((col) => col.key === key)?.label || key
@@ -565,10 +568,10 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
                 limit: normalizedLimit,
                 columns: finalColumns.join(','),
                 filter,
-                page: Math.max(1, currentPage - 1),
+                page: Math.max(1, effectivePage - 1),
               })}
               className={`rounded-xl border px-4 py-2 text-sm font-medium ${
-                currentPage === 1
+                effectivePage === 1
                   ? 'pointer-events-none border-slate-200 text-slate-300'
                   : 'border-slate-300 text-slate-700 hover:bg-slate-50'
               }`}
@@ -588,10 +591,10 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
                 limit: normalizedLimit,
                 columns: finalColumns.join(','),
                 filter,
-                page: Math.min(totalPages, currentPage + 1),
+                page: Math.min(totalPages, effectivePage + 1),
               })}
               className={`rounded-xl border px-4 py-2 text-sm font-medium ${
-                currentPage === totalPages
+                effectivePage === totalPages
                   ? 'pointer-events-none border-slate-200 text-slate-300'
                   : 'border-slate-300 text-slate-700 hover:bg-slate-50'
               }`}
@@ -601,7 +604,7 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
           </div>
         ) : (
           <p className="text-sm text-slate-500">
-            {normalizedLimit === 'all' ? 'Showing all accounts' : `Page ${currentPage} of ${totalPages}`}
+            {showingAll ? `Showing first ${rows?.length ?? 0} accounts` : `Page ${effectivePage} of ${totalPages}`}
           </p>
         )}
       </div>

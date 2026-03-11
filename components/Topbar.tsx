@@ -71,17 +71,19 @@ export function Topbar() {
         return;
       }
 
-      const { data } = await client
+      const { data, error } = await client
         .from('user_profiles')
         .select('id,name,email,company_id,role')
         .eq('id', userId)
         .maybeSingle();
 
-      if (data) {
-        setProfile(data as AuthProfile);
-      } else {
+      if (error) {
+        console.error('Failed to load profile in Topbar:', error);
         setProfile(null);
+        return;
       }
+
+      setProfile((data as AuthProfile) || null);
     }
 
     loadProfile();
@@ -96,17 +98,19 @@ export function Topbar() {
         return;
       }
 
-      const { data } = await client
+      const { data, error } = await client
         .from('user_profiles')
         .select('id,name,email,company_id,role')
         .eq('id', userId)
         .maybeSingle();
 
-      if (data) {
-        setProfile(data as AuthProfile);
-      } else {
+      if (error) {
+        console.error('Failed to refresh profile in Topbar:', error);
         setProfile(null);
+        return;
       }
+
+      setProfile((data as AuthProfile) || null);
     });
 
     return () => {
@@ -121,8 +125,6 @@ export function Topbar() {
       return;
     }
 
-    const client = supabase;
-
     async function runSearch() {
       const trimmed = query.trim();
 
@@ -132,37 +134,50 @@ export function Topbar() {
         return;
       }
 
-      setLoading(true);
-
-      const safeSearch = trimmed.replace(/,/g, '');
-      const companyId = profile?.company_id || 'b4f07164-1706-4904-a304-b38efb88ebf3';
-
-      const { data, error } = await client
-        .from('accounts')
-        .select('id, cfid, debtor_name, account_no, primary_phone, contacts')
-        .eq('company_id', companyId)
-        .or(
-          [
-            `cfid.ilike.%${safeSearch}%`,
-            `debtor_name.ilike.%${safeSearch}%`,
-            `account_no.ilike.%${safeSearch}%`,
-            `primary_phone.ilike.%${safeSearch}%`,
-            `contacts.ilike.%${safeSearch}%`,
-            `identification.ilike.%${safeSearch}%`,
-            `customer_id.ilike.%${safeSearch}%`,
-          ].join(',')
-        )
-        .limit(8);
-
-      setLoading(false);
-
-      if (error) {
+      if (!profile?.company_id) {
         setResults([]);
+        setLoading(false);
         return;
       }
 
-      setResults((data as SearchResult[]) || []);
-      setShowDropdown(true);
+      try {
+        setLoading(true);
+
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        const token = session?.access_token;
+        if (!token) {
+          setResults([]);
+          return;
+        }
+
+        const res = await fetch(`/api/accounts/search?q=${encodeURIComponent(trimmed)}`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+          cache: 'no-store',
+        });
+
+        const payload = await res.json().catch(() => null);
+
+        if (!res.ok) {
+          console.error('Topbar search failed:', res.status, payload);
+          setResults([]);
+          return;
+        }
+
+        const items = payload?.results || payload || [];
+        setResults(Array.isArray(items) ? items : []);
+        setShowDropdown(true);
+      } catch (error) {
+        console.error('Topbar search error:', error);
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
     }
 
     const timeout = setTimeout(() => {
