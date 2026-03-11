@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { supabase } from '@/lib/supabase';
 
 type StrategyRow = {
   id: string;
@@ -49,8 +50,6 @@ async function readJsonSafe(res: Response) {
 }
 
 export default function StrategiesPage() {
-  const ADMIN_KEY = process.env.NEXT_PUBLIC_ADMIN_API_KEY || '';
-
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
@@ -77,6 +76,24 @@ export default function StrategiesPage() {
   });
 
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+
+  async function authHeaders(includeJson = false): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
+
+    if (includeJson) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    if (supabase) {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+    }
+
+    return headers;
+  }
 
   const activeProducts = useMemo(() => {
     return products
@@ -126,7 +143,7 @@ export default function StrategiesPage() {
     setProductsLoading(true);
     try {
       const res = await fetch('/api/admin/products', {
-        headers: { 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(),
         cache: 'no-store',
       });
 
@@ -159,7 +176,7 @@ export default function StrategiesPage() {
 
     try {
       const res = await fetch(`/api/admin/strategies${qs}`, {
-        headers: { 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(),
         cache: 'no-store',
       });
 
@@ -190,7 +207,7 @@ export default function StrategiesPage() {
 
     try {
       const res = await fetch(`/api/admin/strategies?productId=${encodeURIComponent(productId)}`, {
-        headers: { 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(),
         cache: 'no-store',
       });
 
@@ -211,14 +228,12 @@ export default function StrategiesPage() {
   useEffect(() => {
     refreshProducts();
     refreshStrategies('');
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     if (mappingProductId) {
       loadMappingSelection(mappingProductId);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mappingProductId]);
 
   function openAdd() {
@@ -264,7 +279,7 @@ export default function StrategiesPage() {
     try {
       const res = await fetch('/api/admin/strategies', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-key': ADMIN_KEY },
+        headers: await authHeaders(true),
         body: JSON.stringify(payload),
       });
 
@@ -300,10 +315,7 @@ export default function StrategiesPage() {
     try {
       const res = await fetch('/api/admin/strategies', {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-key': ADMIN_KEY,
-        },
+        headers: await authHeaders(true),
         body: JSON.stringify({
           productId: mappingProductId,
           strategyIds: mappingSelection,
