@@ -136,12 +136,6 @@ export function Topbar() {
         return;
       }
 
-      if (!profile?.company_id) {
-        setResults([]);
-        setLoading(false);
-        return;
-      }
-
       try {
         setLoading(true);
 
@@ -187,7 +181,7 @@ export function Topbar() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [query, profile?.company_id]);
+  }, [query]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {

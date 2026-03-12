@@ -1,16 +1,35 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAdminRole } from '@/lib/server-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export async function GET(req: NextRequest) {
-  const auth = await requireAdminRole(req);
-
-  if ('error' in auth) {
-    return NextResponse.json({ error: auth.error }, { status: auth.status });
-  }
-
   if (!supabaseAdmin) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
+  }
+
+  const authHeader = req.headers.get('authorization') || req.headers.get('Authorization') || '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+
+  if (!token) {
+    return NextResponse.json({ error: 'Missing bearer token.' }, { status: 401 });
+  }
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabaseAdmin.auth.getUser(token);
+
+  if (userError || !user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('user_profiles')
+    .select('id, role, company_id')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (profileError || !profile?.company_id) {
+    return NextResponse.json({ error: 'User profile not found.' }, { status: 403 });
   }
 
   const { searchParams } = new URL(req.url);
@@ -25,7 +44,7 @@ export async function GET(req: NextRequest) {
   const { data, error } = await supabaseAdmin
     .from('accounts')
     .select('id, cfid, debtor_name, account_no, primary_phone, contacts')
-    .eq('company_id', auth.user.companyId)
+    .eq('company_id', profile.company_id)
     .or(
       [
         `cfid.ilike.%${safeSearch}%`,
