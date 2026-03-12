@@ -147,7 +147,7 @@ export function Topbar() {
       return;
     }
 
-    const client = supabase;
+    const client = supabase!;
 
     async function runSearch() {
       const trimmed = query.trim();
