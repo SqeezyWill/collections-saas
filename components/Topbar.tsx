@@ -145,7 +145,7 @@ export function Topbar() {
 
         const {
           data: { session },
-        } = await supabase.auth.getSession();
+        } = await client.auth.getSession();
 
         const token = session?.access_token;
         if (!token) {
