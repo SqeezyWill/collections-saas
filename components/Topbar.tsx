@@ -82,7 +82,7 @@ export function Topbar() {
   useEffect(() => {
     if (!supabase) return;
 
-    const client = supabase!;
+    const client = supabase as NonNullable<typeof supabase>;
 
     async function loadProfile() {
       const { data: sessionData } = await client.auth.getSession();
@@ -147,7 +147,7 @@ export function Topbar() {
       return;
     }
 
-    const client = supabase!;
+    const client = supabase as NonNullable<typeof supabase>;
 
     async function runSearch() {
       const trimmed = query.trim();
@@ -167,7 +167,7 @@ export function Topbar() {
       try {
         setLoading(true);
 
-        const client = supabase!;
+        const client = supabase as NonNullable<typeof supabase>;
         const {
           data: { session },
         } = await client.auth.getSession();
