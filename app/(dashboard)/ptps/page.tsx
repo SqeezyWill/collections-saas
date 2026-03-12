@@ -43,10 +43,27 @@ export default async function PtpsPage() {
     );
   }
 
-  const openPtps = (rows ?? []).filter(
-    (row) => row.status === 'Promise To Pay'
-  ).length;
+  const accountIds = Array.from(
+    new Set((rows ?? []).map((row) => row.account_id).filter(Boolean))
+  );
 
+  const accountsById = new Map<string, { cfid: string | null; debtor_name: string | null }>();
+
+  if (accountIds.length > 0) {
+    const { data: accounts } = await supabase
+      .from('accounts')
+      .select('id, cfid, debtor_name')
+      .in('id', accountIds);
+
+    for (const account of accounts ?? []) {
+      accountsById.set(String(account.id), {
+        cfid: account.cfid ?? null,
+        debtor_name: account.debtor_name ?? null,
+      });
+    }
+  }
+
+  const openPtps = (rows ?? []).filter((row) => row.status === 'Promise To Pay').length;
   const keptPtps = (rows ?? []).filter((row) => row.status === 'Kept').length;
   const brokenPtps = (rows ?? []).filter((row) => row.status === 'Broken').length;
 
@@ -87,43 +104,45 @@ export default async function PtpsPage() {
 
       <DataTable
         headers={[
-          'Collector',
+          'CFID',
+          'Client Name',
           'Product',
           'Promised Amount',
+          'PTP Booked',
           'Promise Date',
           'Status',
-          'Account',
-          'PTP Amount Booked',
           'Booked On',
+          'Collector',
         ]}
       >
-        {(rows ?? []).map((row) => (
-          <tr key={row.id}>
-            <td className="px-4 py-3 font-medium">{row.collector_name || '-'}</td>
-            <td className="px-4 py-3">{row.product || '-'}</td>
-            <td className="px-4 py-3">
-              {currency(Number(row.promised_amount || 0))}
-            </td>
-            <td className="px-4 py-3">{formatDate(row.promised_date)}</td>
-            <td className="px-4 py-3">{row.status}</td>
-            <td className="px-4 py-3">
-              {row.account_id ? (
-                <Link
-                  href={`/accounts/${row.account_id}`}
-                  className="font-medium text-slate-700 hover:text-slate-900 hover:underline"
-                >
-                  Open Account
-                </Link>
-              ) : (
-                '-'
-              )}
-            </td>
-            <td className="px-4 py-3">
-              {currency(Number(row.amount_paid || 0))}
-            </td>
-            <td className="px-4 py-3">{formatDate(row.created_at)}</td>
-          </tr>
-        ))}
+        {(rows ?? []).map((row) => {
+          const account = row.account_id ? accountsById.get(String(row.account_id)) : null;
+
+          return (
+            <tr key={row.id}>
+              <td className="px-4 py-3 font-medium">{account?.cfid || '-'}</td>
+              <td className="px-4 py-3">
+                {row.account_id ? (
+                  <Link
+                    href={`/accounts/${row.account_id}`}
+                    className="font-medium text-slate-700 hover:text-slate-900 hover:underline"
+                  >
+                    {account?.debtor_name || 'Open Account'}
+                  </Link>
+                ) : (
+                  account?.debtor_name || '-'
+                )}
+              </td>
+              <td className="px-4 py-3">{row.product || '-'}</td>
+              <td className="px-4 py-3">{currency(Number(row.promised_amount || 0))}</td>
+              <td className="px-4 py-3">{formatDate(row.created_at)}</td>
+              <td className="px-4 py-3">{formatDate(row.promised_date)}</td>
+              <td className="px-4 py-3">{row.status || '-'}</td>
+              <td className="px-4 py-3">{formatDate(row.created_at)}</td>
+              <td className="px-4 py-3">{row.collector_name || '-'}</td>
+            </tr>
+          );
+        })}
       </DataTable>
     </div>
   );
