@@ -24,6 +24,23 @@ type AuthProfile = {
   role: string | null;
 };
 
+type SearchField =
+  | 'cfid'
+  | 'phone'
+  | 'account_no'
+  | 'debtor_name'
+  | 'identification'
+  | 'customer_id';
+
+const SEARCH_OPTIONS: Array<{ value: SearchField; label: string }> = [
+  { value: 'cfid', label: 'CFID' },
+  { value: 'phone', label: 'PHONE' },
+  { value: 'account_no', label: 'ACCOUNT NUMBER' },
+  { value: 'debtor_name', label: 'DEBTOR NAME' },
+  { value: 'identification', label: 'IDENTIFICATION' },
+  { value: 'customer_id', label: 'CUSTOMER ID' },
+];
+
 const TOGGLE_EVENT = 'app:toggle-sidebar';
 
 export function Topbar() {
@@ -33,6 +50,7 @@ export function Topbar() {
   const company = getCompany(profile?.company_id || '');
 
   const [query, setQuery] = useState('');
+  const [searchField, setSearchField] = useState<SearchField>('cfid');
   const [results, setResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
@@ -49,8 +67,12 @@ export function Topbar() {
       return;
     }
 
+    const params = new URLSearchParams();
+    params.set('search', trimmed);
+    params.set('searchField', searchField);
+
     setShowDropdown(false);
-    router.push(`/accounts?search=${encodeURIComponent(trimmed)}`);
+    router.push(`/accounts?${params.toString()}`);
   }
 
   function handleToggleSidebar() {
@@ -125,8 +147,6 @@ export function Topbar() {
       return;
     }
 
-    const client = supabase;
-
     async function runSearch() {
       const trimmed = query.trim();
 
@@ -145,6 +165,7 @@ export function Topbar() {
       try {
         setLoading(true);
 
+        const client = supabase;
         const {
           data: { session },
         } = await client.auth.getSession();
@@ -155,7 +176,11 @@ export function Topbar() {
           return;
         }
 
-        const res = await fetch(`/api/accounts/search?q=${encodeURIComponent(trimmed)}`, {
+        const params = new URLSearchParams();
+        params.set('q', trimmed);
+        params.set('field', searchField);
+
+        const res = await fetch(`/api/accounts/search?${params.toString()}`, {
           method: 'GET',
           headers: {
             Authorization: `Bearer ${token}`,
@@ -171,7 +196,7 @@ export function Topbar() {
           return;
         }
 
-        const items = payload?.results || payload || [];
+        const items = payload?.results || [];
         setResults(Array.isArray(items) ? items : []);
         setShowDropdown(true);
       } catch (error) {
@@ -187,7 +212,7 @@ export function Topbar() {
     }, 250);
 
     return () => clearTimeout(timeout);
-  }, [query, profile?.company_id]);
+  }, [query, searchField, profile?.company_id]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -229,6 +254,18 @@ export function Topbar() {
             onSubmit={handleSearch}
             className="flex items-center gap-2 rounded-xl border border-slate-200 px-3 py-2"
           >
+            <select
+              value={searchField}
+              onChange={(event) => setSearchField(event.target.value as SearchField)}
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 outline-none"
+            >
+              {SEARCH_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+
             <Search size={16} className="text-slate-400" />
             <input
               value={query}
@@ -239,7 +276,7 @@ export function Topbar() {
               onFocus={() => {
                 if (results.length > 0) setShowDropdown(true);
               }}
-              placeholder="Search CFID, phone, account, ID, customer..."
+              placeholder="Search selected field..."
               className="w-72 bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400"
             />
           </form>
@@ -281,12 +318,15 @@ export function Topbar() {
                     type="button"
                     onClick={() => {
                       const trimmed = query.trim();
+                      const params = new URLSearchParams();
+                      params.set('search', trimmed);
+                      params.set('searchField', searchField);
                       setShowDropdown(false);
-                      router.push(`/accounts?search=${encodeURIComponent(trimmed)}`);
+                      router.push(`/accounts?${params.toString()}`);
                     }}
                     className="w-full bg-slate-50 px-4 py-3 text-left text-sm font-medium text-slate-700 hover:bg-slate-100"
                   >
-                    View all results for "{query.trim()}"
+                    View all results
                   </button>
                 </div>
               ) : (

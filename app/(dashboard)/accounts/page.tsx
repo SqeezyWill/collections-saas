@@ -50,6 +50,8 @@ type AccountRow = {
   cfid: string | null;
   debtor_name: string | null;
   primary_phone: string | null;
+  secondary_phone?: string | null;
+  tertiary_phone?: string | null;
   contacts: string | null;
   account_no: string | null;
   product: string | null;
@@ -62,6 +64,23 @@ type AccountRow = {
   identification: string | null;
   customer_id: string | null;
 };
+
+type SearchField =
+  | 'cfid'
+  | 'phone'
+  | 'account_no'
+  | 'debtor_name'
+  | 'identification'
+  | 'customer_id';
+
+const ALLOWED_SEARCH_FIELDS: SearchField[] = [
+  'cfid',
+  'phone',
+  'account_no',
+  'debtor_name',
+  'identification',
+  'customer_id',
+];
 
 function isToday(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -89,8 +108,33 @@ function isToday(dateValue: string | null | undefined) {
   );
 }
 
+function buildSearchClause(searchField: SearchField, safeSearch: string) {
+  switch (searchField) {
+    case 'cfid':
+      return `cfid.ilike.%${safeSearch}%`;
+    case 'phone':
+      return [
+        `primary_phone.ilike.%${safeSearch}%`,
+        `secondary_phone.ilike.%${safeSearch}%`,
+        `tertiary_phone.ilike.%${safeSearch}%`,
+        `contacts.ilike.%${safeSearch}%`,
+      ].join(',');
+    case 'account_no':
+      return `account_no.ilike.%${safeSearch}%`;
+    case 'debtor_name':
+      return `debtor_name.ilike.%${safeSearch}%`;
+    case 'identification':
+      return `identification.ilike.%${safeSearch}%`;
+    case 'customer_id':
+      return `customer_id.ilike.%${safeSearch}%`;
+    default:
+      return `cfid.ilike.%${safeSearch}%`;
+  }
+}
+
 function buildPageUrl(params: {
   search?: string;
+  searchField?: string;
   collector?: string;
   status?: string;
   minBalance?: string;
@@ -105,6 +149,7 @@ function buildPageUrl(params: {
   const query = new URLSearchParams();
 
   if (params.search) query.set('search', params.search);
+  if (params.searchField) query.set('searchField', params.searchField);
   if (params.collector) query.set('collector', params.collector);
   if (params.status) query.set('status', params.status);
   if (params.minBalance) query.set('minBalance', params.minBalance);
@@ -121,6 +166,7 @@ function buildPageUrl(params: {
 
 function buildExportUrl(params: {
   search?: string;
+  searchField?: string;
   collector?: string;
   status?: string;
   minBalance?: string;
@@ -133,6 +179,7 @@ function buildExportUrl(params: {
   const query = new URLSearchParams();
 
   if (params.search) query.set('search', params.search);
+  if (params.searchField) query.set('searchField', params.searchField);
   if (params.collector) query.set('collector', params.collector);
   if (params.status) query.set('status', params.status);
   if (params.minBalance) query.set('minBalance', params.minBalance);
@@ -149,6 +196,11 @@ export default function AccountsPage() {
   const searchParams = useSearchParams();
 
   const search = searchParams.get('search')?.trim() || '';
+  const rawSearchField = searchParams.get('searchField')?.trim() || 'cfid';
+  const searchField: SearchField = ALLOWED_SEARCH_FIELDS.includes(rawSearchField as SearchField)
+    ? (rawSearchField as SearchField)
+    : 'cfid';
+
   const collector = searchParams.get('collector')?.trim() || '';
   const status = searchParams.get('status')?.trim() || '';
   const minBalance = searchParams.get('minBalance')?.trim() || '';
@@ -285,22 +337,8 @@ export default function AccountsPage() {
         }
 
         if (search) {
-          const safeSearch = search.replace(/,/g, '');
-          query = query.or(
-            [
-              `cfid.ilike.%${safeSearch}%`,
-              `debtor_name.ilike.%${safeSearch}%`,
-              `product.ilike.%${safeSearch}%`,
-              `product_code.ilike.%${safeSearch}%`,
-              `contacts.ilike.%${safeSearch}%`,
-              `primary_phone.ilike.%${safeSearch}%`,
-              `secondary_phone.ilike.%${safeSearch}%`,
-              `tertiary_phone.ilike.%${safeSearch}%`,
-              `account_no.ilike.%${safeSearch}%`,
-              `identification.ilike.%${safeSearch}%`,
-              `customer_id.ilike.%${safeSearch}%`,
-            ].join(',')
-          );
+          const safeSearch = search.replace(/,/g, '').replace(/[%_]/g, '');
+          query = query.or(buildSearchClause(searchField, safeSearch));
         }
 
         if (collector) query = query.eq('collector_name', collector);
@@ -343,6 +381,7 @@ export default function AccountsPage() {
     };
   }, [
     search,
+    searchField,
     collector,
     status,
     minBalance,
@@ -379,8 +418,8 @@ export default function AccountsPage() {
     filter === 'open-ptps'
       ? 'Open PTP Accounts'
       : filter === 'ptps-due-today'
-      ? 'PTPs Due Today'
-      : '';
+        ? 'PTPs Due Today'
+        : '';
 
   if (loading) {
     return (
@@ -427,6 +466,7 @@ export default function AccountsPage() {
           <a
             href={buildExportUrl({
               search,
+              searchField,
               collector,
               status,
               minBalance,
@@ -466,9 +506,22 @@ export default function AccountsPage() {
               type="text"
               name="search"
               defaultValue={search}
-              placeholder="Search debtor, product, category, phone, account, ID..."
+              placeholder="Search selected field..."
               className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
             />
+
+            <select
+              name="searchField"
+              defaultValue={searchField}
+              className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+            >
+              <option value="cfid">CFID</option>
+              <option value="phone">PHONE</option>
+              <option value="account_no">ACCOUNT NUMBER</option>
+              <option value="debtor_name">DEBTOR NAME</option>
+              <option value="identification">IDENTIFICATION</option>
+              <option value="customer_id">CUSTOMER ID</option>
+            </select>
 
             <select
               name="collector"
@@ -495,7 +548,9 @@ export default function AccountsPage() {
               <option value="Escalated">Escalated</option>
               <option value="Promise To Pay">Promise To Pay</option>
             </select>
+          </div>
 
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="grid grid-cols-2 gap-3">
               <input
                 type="number"
@@ -512,9 +567,7 @@ export default function AccountsPage() {
                 className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
               />
             </div>
-          </div>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <input
               type="date"
               name="lastActionFrom"
@@ -528,10 +581,10 @@ export default function AccountsPage() {
               className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
             />
 
-            <input type="hidden" name="limit" value={normalizedLimit} />
-            <input type="hidden" name="page" value="1" />
+            <div className="flex flex-wrap items-center gap-3">
+              <input type="hidden" name="limit" value={normalizedLimit} />
+              <input type="hidden" name="page" value="1" />
 
-            <div className="xl:col-span-2 flex flex-wrap items-center gap-3">
               <button
                 type="submit"
                 className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
@@ -622,6 +675,7 @@ export default function AccountsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <form>
           <input type="hidden" name="search" value={search} />
+          <input type="hidden" name="searchField" value={searchField} />
           <input type="hidden" name="collector" value={collector} />
           <input type="hidden" name="status" value={status} />
           <input type="hidden" name="minBalance" value={minBalance} />
@@ -659,6 +713,7 @@ export default function AccountsPage() {
             <Link
               href={buildPageUrl({
                 search,
+                searchField,
                 collector,
                 status,
                 minBalance,
@@ -682,6 +737,7 @@ export default function AccountsPage() {
             <Link
               href={buildPageUrl({
                 search,
+                searchField,
                 collector,
                 status,
                 minBalance,
