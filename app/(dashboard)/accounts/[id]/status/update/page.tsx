@@ -1,11 +1,17 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { headers } from 'next/headers';
 import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type PageProps = {
   params: Promise<{ id: string }>;
 };
+
+const ASSIGN_TABLE = 'account_strategies';
+const ACCOUNTS_TABLE = 'accounts';
+const STRATEGIES_TABLE = 'strategies';
+const MAP_TABLE = 'strategy_products';
+const PRODUCTS_TABLE = 'products';
 
 const CONTACT_TYPE_OPTIONS = [
   'Right Party Contact',
@@ -75,6 +81,127 @@ function todayDateString() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function normalize(value: unknown) {
+  return String(value ?? '').trim().toLowerCase();
+}
+
+function parseNumber(value: unknown): number | null {
+  if (value == null || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function parseDateLike(value: unknown): Date | null {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+
+  const isoOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoOnly) {
+    const year = Number(isoOnly[1]);
+    const month = Number(isoOnly[2]);
+    const day = Number(isoOnly[3]);
+    return new Date(year, month - 1, day);
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function diffInDays(from: Date, to: Date) {
+  const start = startOfLocalDay(from).getTime();
+  const end = startOfLocalDay(to).getTime();
+  return Math.max(0, Math.floor((end - start) / 86400000));
+}
+
+function getDpdAnchorDate(account: any): Date | null {
+  return (
+    parseDateLike(account?.created_at) ||
+    parseDateLike(account?.uploaded_at) ||
+    parseDateLike(account?.outsource_date) ||
+    null
+  );
+}
+
+function getEffectiveDpd(account: any): number | null {
+  const baseDpd = parseNumber(account?.dpd);
+  if (baseDpd == null) return null;
+
+  const anchor = getDpdAnchorDate(account);
+  if (!anchor) return baseDpd;
+
+  const today = new Date();
+  const daysElapsed = diffInDays(anchor, today);
+
+  return baseDpd + daysElapsed;
+}
+
+function getBucketMeta(dpd: number | null) {
+  if (dpd == null) {
+    return {
+      key: 'unknown',
+      label: 'Unknown',
+      aliases: [] as string[],
+    };
+  }
+
+  if (dpd <= 0) {
+    return {
+      key: 'current',
+      label: 'Current',
+      aliases: ['current', '0', '0+', 'dpd 0', '0-0'],
+    };
+  }
+
+  if (dpd >= 1 && dpd <= 30) {
+    return {
+      key: '1_30',
+      label: '1-30',
+      aliases: ['1-30', '01-30', '1 to 30', 'dpd 1-30', '1_30', '1–30'],
+    };
+  }
+
+  if (dpd >= 31 && dpd <= 60) {
+    return {
+      key: '31_60',
+      label: '31-60',
+      aliases: ['31-60', '31 to 60', 'dpd 31-60', '31_60', '31–60'],
+    };
+  }
+
+  if (dpd >= 61 && dpd <= 90) {
+    return {
+      key: '61_90',
+      label: '61-90',
+      aliases: ['61-90', '61 to 90', 'dpd 61-90', '61_90', '61–90'],
+    };
+  }
+
+  if (dpd >= 91 && dpd <= 120) {
+    return {
+      key: '91_120',
+      label: '91-120',
+      aliases: ['91-120', '91 to 120', 'dpd 91-120', '91_120', '91–120'],
+    };
+  }
+
+  return {
+    key: '121_plus',
+    label: '121+',
+    aliases: ['121+', '121 plus', '120+', '120 plus', '121_and_above', '121 and above', 'over 120'],
+  };
+}
+
+function matchesBucket(strategy: any, bucketAliases: string[]) {
+  const haystack = `${normalize(strategy?.name)} ${normalize(strategy?.description)}`;
+  return bucketAliases.some((alias) => haystack.includes(normalize(alias)));
+}
+
 function deriveInteractionOutcome(values: {
   contactType: string;
   contactStatus: string;
@@ -126,50 +253,131 @@ function deriveInteractionOutcome(values: {
   return 'Open';
 }
 
+async function resolveAutoStrategy(accountId: string) {
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin not configured.');
+  }
+
+  const { data: acct, error: acctErr } = await supabaseAdmin
+    .from(ACCOUNTS_TABLE)
+    .select('id,product_code,dpd,created_at,uploaded_at,outsource_date')
+    .eq('id', accountId)
+    .maybeSingle();
+
+  if (acctErr) throw new Error(acctErr.message);
+  if (!acct) throw new Error('Account not found.');
+
+  const productCode = normalize(acct.product_code);
+  if (!productCode) {
+    throw new Error('Account has no product_code. Set accounts.product_code first, then auto-assign.');
+  }
+
+  const dpd = getEffectiveDpd(acct);
+  const bucket = getBucketMeta(dpd);
+
+  const { data: product, error: pErr } = await supabaseAdmin
+    .from(PRODUCTS_TABLE)
+    .select('id,code,is_active')
+    .eq('code', productCode)
+    .maybeSingle();
+
+  if (pErr) throw new Error(pErr.message);
+  if (!product || product.is_active === false) {
+    throw new Error(`Unknown or inactive product_code: ${productCode}`);
+  }
+
+  const { data: mapped, error: mErr } = await supabaseAdmin
+    .from(MAP_TABLE)
+    .select('strategy_id,is_active')
+    .eq('product_id', product.id);
+
+  if (mErr) throw new Error(mErr.message);
+
+  const mappedStrategyIds = (mapped ?? [])
+    .filter((r: any) => r && r.is_active !== false)
+    .map((r: any) => String(r.strategy_id));
+
+  if (mappedStrategyIds.length === 0) {
+    throw new Error(`No strategies mapped to product_code=${productCode} yet.`);
+  }
+
+  const { data: strategies, error: sErr } = await supabaseAdmin
+    .from(STRATEGIES_TABLE)
+    .select('id,name,description,is_active,sort_order,created_at')
+    .in('id', mappedStrategyIds)
+    .eq('is_active', true)
+    .order('sort_order', { ascending: true, nullsFirst: false })
+    .order('created_at', { ascending: false });
+
+  if (sErr) throw new Error(sErr.message);
+
+  const activeStrategies = strategies ?? [];
+  if (activeStrategies.length === 0) {
+    throw new Error('No active strategy found for this product.');
+  }
+
+  const bucketSpecific = activeStrategies.find((strategy: any) =>
+    matchesBucket(strategy, bucket.aliases)
+  );
+
+  const chosen = bucketSpecific ?? activeStrategies[0];
+
+  return {
+    strategyId: String(chosen.id),
+    notes: [
+      'Auto re-evaluated after disposition/status update.',
+      `product=${productCode}`,
+      `dpd=${dpd ?? 'unknown'}`,
+      `bucket=${bucket.label}`,
+      `match=${bucketSpecific ? 'product_and_bucket' : 'product_fallback'}`,
+    ].join(' '),
+  };
+}
+
 async function reassignAccountStrategy(accountId: string) {
-  const adminKey = process.env.ADMIN_API_KEY;
-
-  if (!adminKey || !accountId) {
+  if (!supabaseAdmin || !accountId) {
     return;
   }
 
-  const headerStore = await headers();
-  const host =
-    headerStore.get('x-forwarded-host') ||
-    headerStore.get('host') ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    '';
+  const resolved = await resolveAutoStrategy(accountId);
 
-  const proto =
-    headerStore.get('x-forwarded-proto') ||
-    (process.env.NODE_ENV === 'development' ? 'http' : 'https');
+  const { data: currentActive, error: currentErr } = await supabaseAdmin
+    .from(ASSIGN_TABLE)
+    .select('id,strategy_id,is_active')
+    .eq('account_id', accountId)
+    .eq('is_active', true)
+    .order('assigned_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  if (!host) {
+  if (currentErr) {
+    throw new Error(currentErr.message);
+  }
+
+  if (currentActive && String(currentActive.strategy_id) === resolved.strategyId) {
     return;
   }
 
-  const baseUrl = host.startsWith('http://') || host.startsWith('https://')
-    ? host
-    : `${proto}://${host}`;
+  const { error: offErr } = await supabaseAdmin
+    .from(ASSIGN_TABLE)
+    .update({ is_active: false })
+    .eq('account_id', accountId)
+    .eq('is_active', true);
 
-  const response = await fetch(`${baseUrl}/api/admin/account-strategy`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-admin-key': adminKey,
-    },
-    body: JSON.stringify({
-      accountId,
-      source: 'auto',
-      notes: 'Auto re-evaluated after disposition/status update.',
-    }),
-    cache: 'no-store',
+  if (offErr) {
+    throw new Error(offErr.message);
+  }
+
+  const { error: insErr } = await supabaseAdmin.from(ASSIGN_TABLE).insert({
+    account_id: accountId,
+    strategy_id: resolved.strategyId,
+    source: 'auto',
+    notes: resolved.notes,
+    is_active: true,
   });
 
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error || 'Failed to auto re-evaluate strategy.');
+  if (insErr) {
+    throw new Error(insErr.message);
   }
 }
 

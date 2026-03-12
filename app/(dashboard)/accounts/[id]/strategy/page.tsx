@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { headers } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -41,15 +42,52 @@ async function getBaseUrl() {
   return `${proto}://${host}`;
 }
 
-async function fetchAccountStrategy(accountId: string): Promise<AccountStrategyResponse> {
-  const adminKey = process.env.ADMIN_API_KEY || '';
-  if (!adminKey) return { assignment: null, strategy: null };
+async function getBearerToken() {
+  const h = await headers();
+  const authHeader = h.get('authorization') || h.get('Authorization') || '';
+  if (authHeader.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return '';
+}
+
+async function resolveCurrentUserRole() {
+  if (!supabaseAdmin) return null;
+
+  const token = await getBearerToken();
+  if (!token) return null;
+
+  const {
+    data: { user },
+    error: userError,
+  } = await supabaseAdmin.auth.getUser(token);
+
+  if (userError || !user) return null;
+
+  const { data: profile, error: profileError } = await supabaseAdmin
+    .from('user_profiles')
+    .select('id, role')
+    .eq('id', user.id)
+    .maybeSingle();
+
+  if (profileError || !profile) return null;
+
+  return String(profile.role || '').trim().toLowerCase();
+}
+
+async function fetchAccountStrategy(
+  accountId: string,
+  token: string
+): Promise<AccountStrategyResponse> {
+  if (!token) return { assignment: null, strategy: null };
 
   const baseUrl = await getBaseUrl();
   const res = await fetch(
     `${baseUrl}/api/admin/account-strategy?accountId=${encodeURIComponent(accountId)}`,
     {
-      headers: { 'x-admin-key': adminKey },
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
       cache: 'no-store',
     }
   );
@@ -60,13 +98,14 @@ async function fetchAccountStrategy(accountId: string): Promise<AccountStrategyR
   return json || { assignment: null, strategy: null };
 }
 
-async function fetchStrategies(): Promise<StrategyRow[]> {
-  const adminKey = process.env.ADMIN_API_KEY || '';
-  if (!adminKey) return [];
+async function fetchStrategies(token: string): Promise<StrategyRow[]> {
+  if (!token) return [];
 
   const baseUrl = await getBaseUrl();
   const res = await fetch(`${baseUrl}/api/admin/strategies`, {
-    headers: { 'x-admin-key': adminKey },
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
     cache: 'no-store',
   });
 
@@ -87,15 +126,24 @@ async function fetchStrategies(): Promise<StrategyRow[]> {
 export default async function AccountStrategyPage({ params }: PageProps) {
   const { id: accountId } = await params;
 
-  const current = await fetchAccountStrategy(accountId);
-  const strategies = await fetchStrategies();
+  const token = await getBearerToken();
+  const role = await resolveCurrentUserRole();
+
+  if (role !== 'admin' && role !== 'super_admin') {
+    redirect(`/accounts/${accountId}`);
+  }
+
+  const current = await fetchAccountStrategy(accountId, token);
+  const strategies = await fetchStrategies(token);
 
   async function assignStrategy(formData: FormData) {
     'use server';
 
-    const adminKey = process.env.ADMIN_API_KEY || '';
-    if (!adminKey) {
-      redirect(`/accounts/${accountId}?strategyError=missing_admin_key`);
+    const token = await getBearerToken();
+    const role = await resolveCurrentUserRole();
+
+    if (!token || (role !== 'admin' && role !== 'super_admin')) {
+      redirect(`/accounts/${accountId}`);
     }
 
     const strategyId = String(formData.get('strategyId') || '').trim();
@@ -108,7 +156,7 @@ export default async function AccountStrategyPage({ params }: PageProps) {
     const res = await fetch(`${baseUrl}/api/admin/account-strategy`, {
       method: 'POST',
       headers: {
-        'x-admin-key': adminKey,
+        Authorization: `Bearer ${token}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -142,8 +190,7 @@ export default async function AccountStrategyPage({ params }: PageProps) {
           <div>
             <h1 className="text-3xl font-semibold text-slate-900">Change Strategy</h1>
             <p className="mt-1 text-slate-500">
-              Assign a collection strategy to this account. (We’ll add product-based filtering after
-              product uploads are done.)
+              Assign a collection strategy to this account.
             </p>
           </div>
         </div>

@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { currency, formatDate } from '@/lib/utils';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { AccountStrategyActions } from '@/components/AccountStrategyActions';
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -420,8 +421,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
       : account.status === 'Paid'
       ? 'bg-emerald-100 text-emerald-700'
       : account.status === 'Escalated'
-        ? 'bg-rose-100 text-rose-700'
-        : 'bg-slate-100 text-slate-700';
+      ? 'bg-rose-100 text-rose-700'
+      : 'bg-slate-100 text-slate-700';
 
   const basicDetails = [
     { label: 'Debtor Name', value: detailValue(account.debtor_name) },
@@ -586,23 +587,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
             </p>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <form action={reEvaluateStrategy}>
-              <button
-                type="submit"
-                className="inline-flex w-fit items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Re-evaluate Strategy
-              </button>
-            </form>
-
-            <Link
-              href={`/accounts/${id}/strategy`}
-              className="inline-flex w-fit items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Change Strategy
-            </Link>
-          </div>
+          <AccountStrategyActions accountId={id} />
         </div>
 
         <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -643,7 +628,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
             <div className="text-sm text-slate-600">
               <p className="font-medium text-slate-800">No strategy assigned yet.</p>
               <p className="mt-1">
-                Click <span className="font-medium">Change Strategy</span> to assign one.
+                Strategy controls are available to admin and super admin users only.
               </p>
             </div>
           )}
@@ -693,8 +678,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
                         ptp.status === 'Kept'
                           ? 'bg-emerald-100 text-emerald-700'
                           : ptp.status === 'Broken'
-                            ? 'bg-rose-100 text-rose-700'
-                            : 'bg-amber-100 text-amber-700'
+                          ? 'bg-rose-100 text-rose-700'
+                          : 'bg-amber-100 text-amber-700'
                       }`}
                     >
                       {ptp.status}

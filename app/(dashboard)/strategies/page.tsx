@@ -76,6 +76,7 @@ export default function StrategiesPage() {
   });
 
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
+  const [role, setRole] = useState('agent');
 
   async function authHeaders(includeJson = false): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
@@ -122,6 +123,8 @@ export default function StrategiesPage() {
   const mappingStrategies = useMemo(() => {
     return [...sortedStrategies];
   }, [sortedStrategies]);
+
+  const canManageStrategies = role === 'admin' || role === 'super_admin';
 
   function toggleSelectedProduct(id: string) {
     setSelectedProductIds((prev) => {
@@ -226,15 +229,36 @@ export default function StrategiesPage() {
   }
 
   useEffect(() => {
-    refreshProducts();
-    refreshStrategies('');
+    async function init() {
+      if (supabase) {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const userId = sessionData.session?.user?.id;
+
+        if (userId) {
+          const { data } = await supabase
+            .from('user_profiles')
+            .select('role')
+            .eq('id', userId)
+            .maybeSingle();
+
+          if (data?.role) {
+            setRole(String(data.role).trim().toLowerCase());
+          }
+        }
+      }
+
+      await refreshProducts();
+      await refreshStrategies('');
+    }
+
+    init();
   }, []);
 
   useEffect(() => {
-    if (mappingProductId) {
+    if (mappingProductId && canManageStrategies) {
       loadMappingSelection(mappingProductId);
     }
-  }, [mappingProductId]);
+  }, [mappingProductId, canManageStrategies]);
 
   function openAdd() {
     setSaveSuccess(null);
@@ -292,7 +316,7 @@ export default function StrategiesPage() {
       setSaveSuccess(`Strategy created: ${json?.strategy?.name || payload.name}`);
       setIsAddOpen(false);
       await refreshStrategies();
-      if (mappingProductId) {
+      if (mappingProductId && canManageStrategies) {
         await loadMappingSelection(mappingProductId);
       }
     } catch (err: any) {
@@ -534,13 +558,15 @@ export default function StrategiesPage() {
             Refresh
           </button>
 
-          <button
-            type="button"
-            onClick={openAdd}
-            className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-          >
-            Add Strategy
-          </button>
+          {canManageStrategies ? (
+            <button
+              type="button"
+              onClick={openAdd}
+              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Add Strategy
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -556,83 +582,87 @@ export default function StrategiesPage() {
         </p>
       ) : null}
 
-      <div className="grid gap-6 xl:grid-cols-[360px,1fr]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-slate-900">Map Strategies to Product</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Select a product, then tick the strategies you want available for that product line.
-            </p>
+      <div className={`grid gap-6 ${canManageStrategies ? 'xl:grid-cols-[360px,1fr]' : 'xl:grid-cols-1'}`}>
+        {canManageStrategies ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">Map Strategies to Product</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Select a product, then tick the strategies you want available for that product line.
+              </p>
+            </div>
+
+            {mappingError ? (
+              <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                {mappingError}
+              </p>
+            ) : null}
+
+            {mappingMessage ? (
+              <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                {mappingMessage}
+              </p>
+            ) : null}
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Choose Product</label>
+              <select
+                value={mappingProductId}
+                onChange={(e) => setMappingProductId(e.target.value)}
+                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                disabled={productsLoading}
+              >
+                <option value="">Select product</option>
+                {activeProducts.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name} ({p.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setMappingSelection(mappingStrategies.map((s) => s.id))}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                disabled={mappingStrategies.length === 0}
+              >
+                Select All
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setMappingSelection([])}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Clear All
+              </button>
+
+              <button
+                type="button"
+                onClick={saveMappings}
+                disabled={mappingSaving || !mappingProductId}
+                className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60"
+              >
+                {mappingSaving ? 'Saving…' : 'Save Mappings'}
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
+              Selected strategies: <span className="font-medium">{mappingSelection.length}</span>
+            </div>
           </div>
-
-          {mappingError ? (
-            <p className="mb-3 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-              {mappingError}
-            </p>
-          ) : null}
-
-          {mappingMessage ? (
-            <p className="mb-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-              {mappingMessage}
-            </p>
-          ) : null}
-
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">Choose Product</label>
-            <select
-              value={mappingProductId}
-              onChange={(e) => setMappingProductId(e.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              disabled={productsLoading}
-            >
-              <option value="">Select product</option>
-              {activeProducts.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name} ({p.code})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setMappingSelection(mappingStrategies.map((s) => s.id))}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              disabled={mappingStrategies.length === 0}
-            >
-              Select All
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setMappingSelection([])}
-              className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Clear All
-            </button>
-
-            <button
-              type="button"
-              onClick={saveMappings}
-              disabled={mappingSaving || !mappingProductId}
-              className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-60"
-            >
-              {mappingSaving ? 'Saving…' : 'Save Mappings'}
-            </button>
-          </div>
-
-          <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
-            Selected strategies: <span className="font-medium">{mappingSelection.length}</span>
-          </div>
-        </div>
+        ) : null}
 
         <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div>
               <h2 className="section-title">Available Strategies</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Tick the strategies you want to make available for the selected product.
+                {canManageStrategies
+                  ? 'Tick the strategies you want to make available for the selected product.'
+                  : 'View available strategies for your tenant.'}
               </p>
             </div>
           </div>
@@ -655,12 +685,14 @@ export default function StrategiesPage() {
                     key={s.id}
                     className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4 hover:bg-slate-50"
                   >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleMappingStrategy(s.id)}
-                      className="mt-1 h-4 w-4 rounded border-slate-300"
-                    />
+                    {canManageStrategies ? (
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleMappingStrategy(s.id)}
+                        className="mt-1 h-4 w-4 rounded border-slate-300"
+                      />
+                    ) : null}
 
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
