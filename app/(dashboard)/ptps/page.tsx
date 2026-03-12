@@ -1,3 +1,4 @@
+import Link from 'next/link';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
@@ -91,7 +92,8 @@ export default async function PtpsPage() {
           'Promised Amount',
           'Promise Date',
           'Status',
-          'Account ID',
+          'Account',
+          'PTP Amount Booked',
           'Booked On',
         ]}
       >
@@ -104,7 +106,21 @@ export default async function PtpsPage() {
             </td>
             <td className="px-4 py-3">{formatDate(row.promised_date)}</td>
             <td className="px-4 py-3">{row.status}</td>
-            <td className="px-4 py-3">{row.account_id || '-'}</td>
+            <td className="px-4 py-3">
+              {row.account_id ? (
+                <Link
+                  href={`/accounts/${row.account_id}`}
+                  className="font-medium text-slate-700 hover:text-slate-900 hover:underline"
+                >
+                  Open Account
+                </Link>
+              ) : (
+                '-'
+              )}
+            </td>
+            <td className="px-4 py-3">
+              {currency(Number(row.amount_paid || 0))}
+            </td>
             <td className="px-4 py-3">{formatDate(row.created_at)}</td>
           </tr>
         ))}
