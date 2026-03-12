@@ -64,43 +64,84 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const client = supabase;
 
     async function checkSessionAndRole() {
-      const { data: sessionData } = await client.auth.getSession();
-      const session = sessionData.session;
+      try {
+        const { data: sessionData, error: sessionError } = await client.auth.getSession();
 
-      if (!session) {
-        if (isMounted) router.replace('/login');
-        return;
-      }
+        if (sessionError) {
+          console.error('Dashboard layout session error:', sessionError);
+          if (isMounted) {
+            setCheckingAuth(false);
+            router.replace('/login');
+          }
+          return;
+        }
 
-      const userId = session.user?.id;
-      if (!userId) {
-        await client.auth.signOut();
-        if (isMounted) router.replace('/login');
-        return;
-      }
+        const session = sessionData.session;
 
-      const { data: profile, error } = await client
-        .from('user_profiles')
-        .select('id,name,email,role,company_id')
-        .eq('id', userId)
-        .maybeSingle();
+        if (!session) {
+          if (isMounted) {
+            setCheckingAuth(false);
+            router.replace('/login');
+          }
+          return;
+        }
 
-      if (error || !profile) {
-        await client.auth.signOut();
-        if (isMounted) router.replace('/login');
-        return;
-      }
+        const userId = session.user?.id;
+        if (!userId) {
+          await client.auth.signOut();
+          if (isMounted) {
+            setCheckingAuth(false);
+            router.replace('/login');
+          }
+          return;
+        }
 
-      const userProfile = profile as UserProfile;
-      const role = normalizeRole(userProfile.role);
+        const { data: profile, error } = await client
+          .from('user_profiles')
+          .select('id,name,email,role,company_id')
+          .eq('id', userId)
+          .maybeSingle();
 
-      if (!isAllowedRoute(role, pathname)) {
-        if (isMounted) router.replace('/dashboard');
-        return;
-      }
+        if (error) {
+          console.error('Dashboard layout profile error:', error);
+          await client.auth.signOut();
+          if (isMounted) {
+            setCheckingAuth(false);
+            router.replace('/login');
+          }
+          return;
+        }
 
-      if (isMounted) {
-        setCheckingAuth(false);
+        if (!profile) {
+          console.error('Dashboard layout: no profile found for user', userId);
+          await client.auth.signOut();
+          if (isMounted) {
+            setCheckingAuth(false);
+            router.replace('/login');
+          }
+          return;
+        }
+
+        const userProfile = profile as UserProfile;
+        const role = normalizeRole(userProfile.role);
+
+        if (!isAllowedRoute(role, pathname)) {
+          if (isMounted) {
+            setCheckingAuth(false);
+            router.replace('/dashboard');
+          }
+          return;
+        }
+
+        if (isMounted) {
+          setCheckingAuth(false);
+        }
+      } catch (err) {
+        console.error('Dashboard layout unexpected auth error:', err);
+        if (isMounted) {
+          setCheckingAuth(false);
+          router.replace('/login');
+        }
       }
     }
 
@@ -109,31 +150,47 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const {
       data: { subscription },
     } = client.auth.onAuthStateChange(async (_event, session) => {
-      if (!session) {
+      try {
+        if (!session) {
+          setCheckingAuth(false);
+          router.replace('/login');
+          return;
+        }
+
+        const userId = session.user?.id;
+        if (!userId) {
+          setCheckingAuth(false);
+          router.replace('/login');
+          return;
+        }
+
+        const { data: profile, error } = await client
+          .from('user_profiles')
+          .select('role')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (error) {
+          console.error('Dashboard layout auth state profile error:', error);
+          setCheckingAuth(false);
+          router.replace('/login');
+          return;
+        }
+
+        const role = normalizeRole(profile?.role);
+
+        if (!isAllowedRoute(role, pathname)) {
+          setCheckingAuth(false);
+          router.replace('/dashboard');
+          return;
+        }
+
+        setCheckingAuth(false);
+      } catch (err) {
+        console.error('Dashboard layout auth state unexpected error:', err);
+        setCheckingAuth(false);
         router.replace('/login');
-        return;
       }
-
-      const userId = session.user?.id;
-      if (!userId) {
-        router.replace('/login');
-        return;
-      }
-
-      const { data: profile } = await client
-        .from('user_profiles')
-        .select('role')
-        .eq('id', userId)
-        .maybeSingle();
-
-      const role = normalizeRole(profile?.role);
-
-      if (!isAllowedRoute(role, pathname)) {
-        router.replace('/dashboard');
-        return;
-      }
-
-      setCheckingAuth(false);
     });
 
     return () => {
