@@ -24,11 +24,10 @@ type UserProfile = {
 const allLinks = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/accounts', label: 'Accounts', icon: Briefcase },
-  { href: '/collectors', label: 'Collectors', icon: BarChart3 },
   { href: '/payments', label: 'Payments', icon: Wallet },
   { href: '/ptps', label: 'PTPs', icon: CreditCard },
-  { href: '/reports', label: 'Reports', icon: BarChart3 },
   { href: '/strategies', label: 'Strategies', icon: GitBranch },
+  { href: '/reports', label: 'Reports', icon: BarChart3 },
   { href: '/admin', label: 'Admin', icon: ShieldCheck },
 ];
 
@@ -144,7 +143,7 @@ export function Sidebar() {
   const effectiveCollapsed = getEffectiveCollapsed(collapsed, pinnedOpen, isHovering);
 
   const activeHref = useMemo(() => {
-    const candidates = links.sort((a, b) => b.href.length - a.href.length);
+    const candidates = [...links].sort((a, b) => b.href.length - a.href.length);
 
     return (
       candidates.find((l) => pathname === l.href || pathname.startsWith(`${l.href}/`))?.href || ''
