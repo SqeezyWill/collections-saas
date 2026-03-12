@@ -612,7 +612,7 @@ export default function AccountsPage() {
             {finalColumns.includes('balance') ? <td className="px-4 py-3">{currency(Number(row.balance || 0))}</td> : null}
             {finalColumns.includes('amount_paid') ? <td className="px-4 py-3">{currency(Number(row.amount_paid || 0))}</td> : null}
             {finalColumns.includes('status') ? <td className="px-4 py-3">{row.status || '-'}</td> : null}
-            {finalColumns.includes('last_action_date') ? <td className="px-4 py-3">{formatDate(row.last_action_date)}</td> : null}
+            {finalColumns.includes('last_action_date') ? <td className="px-4 py-3">{row.last_action_date ? formatDate(row.last_action_date) : '-'}</td> : null}
             {finalColumns.includes('identification') ? <td className="px-4 py-3">{row.identification || '-'}</td> : null}
             {finalColumns.includes('customer_id') ? <td className="px-4 py-3">{row.customer_id || '-'}</td> : null}
           </tr>
