@@ -1,25 +1,12 @@
+'use client';
+
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
-type AccountsPageProps = {
-  searchParams?: Promise<{
-    search?: string;
-    collector?: string;
-    status?: string;
-    minBalance?: string;
-    maxBalance?: string;
-    lastActionFrom?: string;
-    lastActionTo?: string;
-    limit?: string;
-    page?: string;
-    columns?: string | string[];
-    filter?: string;
-  }>;
-};
-
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
 const EMPTY_UUID = '00000000-0000-0000-0000-000000000000';
 
 const AVAILABLE_COLUMNS = [
@@ -51,6 +38,30 @@ const DEFAULT_COLUMNS = [
   'status',
   'last_action_date',
 ];
+
+type UserProfile = {
+  id: string;
+  role: string | null;
+  company_id: string | null;
+};
+
+type AccountRow = {
+  id: string;
+  cfid: string | null;
+  debtor_name: string | null;
+  primary_phone: string | null;
+  contacts: string | null;
+  account_no: string | null;
+  product: string | null;
+  product_code: string | null;
+  collector_name: string | null;
+  balance: number | null;
+  amount_paid: number | null;
+  status: string | null;
+  last_action_date: string | null;
+  identification: string | null;
+  customer_id: string | null;
+};
 
 function isToday(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -134,32 +145,23 @@ function buildExportUrl(params: {
   return `/api/accounts/export?${query.toString()}`;
 }
 
-export default async function AccountsPage({ searchParams }: AccountsPageProps) {
-  const resolved = searchParams ? await searchParams : {};
+export default function AccountsPage() {
+  const searchParams = useSearchParams();
 
-  const search = typeof resolved?.search === 'string' ? resolved.search.trim() : '';
-  const collector = typeof resolved?.collector === 'string' ? resolved.collector.trim() : '';
-  const status = typeof resolved?.status === 'string' ? resolved.status.trim() : '';
-  const minBalance = typeof resolved?.minBalance === 'string' ? resolved.minBalance.trim() : '';
-  const maxBalance = typeof resolved?.maxBalance === 'string' ? resolved.maxBalance.trim() : '';
-  const lastActionFrom =
-    typeof resolved?.lastActionFrom === 'string' ? resolved.lastActionFrom.trim() : '';
-  const lastActionTo =
-    typeof resolved?.lastActionTo === 'string' ? resolved.lastActionTo.trim() : '';
-  const limitParam = typeof resolved?.limit === 'string' ? resolved.limit.trim() : '15';
-  const filter = typeof resolved?.filter === 'string' ? resolved.filter.trim() : '';
+  const search = searchParams.get('search')?.trim() || '';
+  const collector = searchParams.get('collector')?.trim() || '';
+  const status = searchParams.get('status')?.trim() || '';
+  const minBalance = searchParams.get('minBalance')?.trim() || '';
+  const maxBalance = searchParams.get('maxBalance')?.trim() || '';
+  const lastActionFrom = searchParams.get('lastActionFrom')?.trim() || '';
+  const lastActionTo = searchParams.get('lastActionTo')?.trim() || '';
+  const limitParam = searchParams.get('limit')?.trim() || '15';
+  const filter = searchParams.get('filter')?.trim() || '';
+  const pageParam = Number(searchParams.get('page') || '1');
 
-  const rawColumns = Array.isArray(resolved?.columns)
-    ? resolved.columns
-    : typeof resolved?.columns === 'string' && resolved.columns.trim() !== ''
-    ? [resolved.columns]
-    : [];
-
+  const rawColumns = searchParams.getAll('columns');
   const columnsParam =
     rawColumns.length > 0 ? rawColumns.join(',') : DEFAULT_COLUMNS.join(',');
-
-  const pageParam =
-    typeof resolved?.page === 'string' ? Number(resolved.page) : 1;
 
   const currentPage = Number.isFinite(pageParam) && pageParam > 0 ? pageParam : 1;
   const allowedLimits = ['15', '30', '50', 'all'];
@@ -175,118 +177,198 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
 
   const finalColumns = selectedColumns.length > 0 ? selectedColumns : DEFAULT_COLUMNS;
 
-  const collectorQuery = await supabase
-    ?.from('accounts')
-    .select('collector_name')
-    .eq('company_id', COMPANY_ID)
-    .not('collector_name', 'is', null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const collectorOptions = Array.from(
-    new Set((collectorQuery?.data ?? []).map((row) => row.collector_name).filter(Boolean))
-  ).sort();
+  const [rows, setRows] = useState<AccountRow[]>([]);
+  const [totalAccounts, setTotalAccounts] = useState(0);
+  const [collectorOptions, setCollectorOptions] = useState<string[]>([]);
 
-  let matchedAccountIds: string[] | null = null;
+  useEffect(() => {
+    let mounted = true;
 
-  if (supabase && (filter === 'open-ptps' || filter === 'ptps-due-today')) {
-    const { data: ptpRows, error: ptpError } = await supabase
-      .from('ptps')
-      .select('*')
-      .eq('company_id', COMPANY_ID);
+    async function loadPage() {
+      try {
+        setLoading(true);
+        setErrorMsg(null);
 
-    if (ptpError) {
-      return (
-        <div className="space-y-4">
-          <h1 className="text-3xl font-semibold">Accounts</h1>
-          <p className="text-red-600">Failed to load PTP filter data: {ptpError.message}</p>
-        </div>
-      );
+        if (!supabase) {
+          throw new Error('Supabase is not configured.');
+        }
+
+        const { data: sessionData } = await supabase.auth.getSession();
+        const userId = sessionData.session?.user?.id;
+
+        if (!userId) {
+          throw new Error('No active session found.');
+        }
+
+        const { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('id,role,company_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (profileError) {
+          throw new Error(profileError.message);
+        }
+
+        if (!profileData?.company_id) {
+          throw new Error('Your user profile has no company_id.');
+        }
+
+        if (!mounted) return;
+        setProfile(profileData as UserProfile);
+
+        const companyId = String(profileData.company_id);
+
+        const collectorQuery = await supabase
+          .from('accounts')
+          .select('collector_name')
+          .eq('company_id', companyId)
+          .not('collector_name', 'is', null);
+
+        const collectorList = Array.from(
+          new Set((collectorQuery.data ?? []).map((row: any) => row.collector_name).filter(Boolean))
+        ).sort();
+
+        if (!mounted) return;
+        setCollectorOptions(collectorList);
+
+        let matchedAccountIds: string[] | null = null;
+
+        if (filter === 'open-ptps' || filter === 'ptps-due-today') {
+          const { data: ptpRows, error: ptpError } = await supabase
+            .from('ptps')
+            .select('*')
+            .eq('company_id', companyId);
+
+          if (ptpError) {
+            throw new Error(`Failed to load PTP filter data: ${ptpError.message}`);
+          }
+
+          const filteredPtps = (ptpRows ?? []).filter((ptp: any) => {
+            const isOpenPtp = ptp.status === 'Promise To Pay';
+
+            if (filter === 'open-ptps') {
+              return isOpenPtp;
+            }
+
+            if (filter === 'ptps-due-today') {
+              return isOpenPtp && isToday(ptp.promised_date);
+            }
+
+            return true;
+          });
+
+          matchedAccountIds = Array.from(
+            new Set(
+              filteredPtps
+                .map((ptp: any) => ptp.account_id)
+                .filter((value: unknown): value is string => Boolean(value))
+            )
+          );
+        }
+
+        let query = supabase
+          .from('accounts')
+          .select('*', { count: 'exact' })
+          .eq('company_id', companyId)
+          .order('created_at', { ascending: false });
+
+        if (matchedAccountIds) {
+          query =
+            matchedAccountIds.length > 0
+              ? query.in('id', matchedAccountIds)
+              : query.eq('id', EMPTY_UUID);
+        }
+
+        if (search) {
+          const safeSearch = search.replace(/,/g, '');
+          query = query.or(
+            [
+              `cfid.ilike.%${safeSearch}%`,
+              `debtor_name.ilike.%${safeSearch}%`,
+              `product.ilike.%${safeSearch}%`,
+              `product_code.ilike.%${safeSearch}%`,
+              `contacts.ilike.%${safeSearch}%`,
+              `primary_phone.ilike.%${safeSearch}%`,
+              `secondary_phone.ilike.%${safeSearch}%`,
+              `tertiary_phone.ilike.%${safeSearch}%`,
+              `account_no.ilike.%${safeSearch}%`,
+              `identification.ilike.%${safeSearch}%`,
+              `customer_id.ilike.%${safeSearch}%`,
+            ].join(',')
+          );
+        }
+
+        if (collector) query = query.eq('collector_name', collector);
+        if (status) query = query.eq('status', status);
+        if (minBalance) query = query.gte('balance', Number(minBalance));
+        if (maxBalance) query = query.lte('balance', Number(maxBalance));
+        if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
+        if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
+
+        const from = (effectivePage - 1) * pageSize;
+        const to = from + pageSize - 1;
+        query = query.range(from, to);
+
+        const { data, error, count } = await query;
+
+        if (error) {
+          throw new Error(error.message);
+        }
+
+        if (!mounted) return;
+        setRows((data ?? []) as AccountRow[]);
+        setTotalAccounts(count ?? 0);
+      } catch (e: any) {
+        if (!mounted) return;
+        setRows([]);
+        setTotalAccounts(0);
+        setCollectorOptions([]);
+        setErrorMsg(e?.message || 'Failed to load accounts.');
+      } finally {
+        if (mounted) {
+          setLoading(false);
+        }
+      }
     }
 
-    const filteredPtps = (ptpRows ?? []).filter((ptp) => {
-      const isOpenPtp = ptp.status === 'Promise To Pay';
+    loadPage();
 
-      if (filter === 'open-ptps') {
-        return isOpenPtp;
-      }
+    return () => {
+      mounted = false;
+    };
+  }, [
+    search,
+    collector,
+    status,
+    minBalance,
+    maxBalance,
+    lastActionFrom,
+    lastActionTo,
+    normalizedLimit,
+    effectivePage,
+    filter,
+  ]);
 
-      if (filter === 'ptps-due-today') {
-        return isOpenPtp && isToday(ptp.promised_date);
-      }
+  const totalBalance = useMemo(
+    () => rows.reduce((sum, row) => sum + Number(row.balance || 0), 0),
+    [rows]
+  );
 
-      return true;
-    });
+  const totalPaid = useMemo(
+    () => rows.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
+    [rows]
+  );
 
-    matchedAccountIds = Array.from(
-      new Set(
-        filteredPtps
-          .map((ptp) => ptp.account_id)
-          .filter((value): value is string => Boolean(value))
-      )
-    );
-  }
+  const openCases = useMemo(
+    () => rows.filter((row) => row.status !== 'Paid').length,
+    [rows]
+  );
 
-  let query = supabase
-    ?.from('accounts')
-    .select('*', { count: 'exact' })
-    .eq('company_id', COMPANY_ID)
-    .order('created_at', { ascending: false });
-
-  if (query && matchedAccountIds) {
-    query =
-      matchedAccountIds.length > 0
-        ? query.in('id', matchedAccountIds)
-        : query.eq('id', EMPTY_UUID);
-  }
-
-  if (query && search) {
-    const safeSearch = search.replace(/,/g, '');
-    query = query.or(
-      [
-        `cfid.ilike.%${safeSearch}%`,
-        `debtor_name.ilike.%${safeSearch}%`,
-        `product.ilike.%${safeSearch}%`,
-        `product_code.ilike.%${safeSearch}%`,
-        `contacts.ilike.%${safeSearch}%`,
-        `primary_phone.ilike.%${safeSearch}%`,
-        `secondary_phone.ilike.%${safeSearch}%`,
-        `tertiary_phone.ilike.%${safeSearch}%`,
-        `account_no.ilike.%${safeSearch}%`,
-        `identification.ilike.%${safeSearch}%`,
-        `customer_id.ilike.%${safeSearch}%`,
-      ].join(',')
-    );
-  }
-
-  if (query && collector) query = query.eq('collector_name', collector);
-  if (query && status) query = query.eq('status', status);
-  if (query && minBalance) query = query.gte('balance', Number(minBalance));
-  if (query && maxBalance) query = query.lte('balance', Number(maxBalance));
-  if (query && lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
-  if (query && lastActionTo) query = query.lte('last_action_date', lastActionTo);
-
-  if (query) {
-    const from = (effectivePage - 1) * pageSize;
-    const to = from + pageSize - 1;
-    query = query.range(from, to);
-  }
-
-  const { data: rows, error, count } = query
-    ? await query
-    : { data: [], error: new Error('Supabase is not configured'), count: 0 };
-
-  if (error) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Accounts</h1>
-        <p className="text-red-600">Failed to load accounts: {error.message}</p>
-      </div>
-    );
-  }
-
-  const totalAccounts = count ?? rows?.length ?? 0;
-  const totalBalance = (rows ?? []).reduce((sum, row) => sum + Number(row.balance || 0), 0);
-  const totalPaid = (rows ?? []).reduce((sum, row) => sum + Number(row.amount_paid || 0), 0);
-  const openCases = (rows ?? []).filter((row) => row.status !== 'Paid').length;
   const totalPages = totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
 
   const headers = finalColumns.map(
@@ -299,6 +381,24 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
       : filter === 'ptps-due-today'
       ? 'PTPs Due Today'
       : '';
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Portfolio</h1>
+        <p className="text-slate-500">Loading accounts…</p>
+      </div>
+    );
+  }
+
+  if (errorMsg) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Portfolio</h1>
+        <p className="text-red-600">{errorMsg}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -494,7 +594,7 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
       </div>
 
       <DataTable headers={headers}>
-        {(rows ?? []).map((row) => (
+        {rows.map((row) => (
           <tr key={row.id}>
             {finalColumns.includes('cfid') ? <td className="px-4 py-3 font-medium">{row.cfid || '-'}</td> : null}
             {finalColumns.includes('debtor_name') ? (
@@ -604,7 +704,7 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
           </div>
         ) : (
           <p className="text-sm text-slate-500">
-            {showingAll ? `Showing first ${rows?.length ?? 0} accounts` : `Page ${effectivePage} of ${totalPages}`}
+            {showingAll ? `Showing first ${rows.length} accounts` : `Page ${effectivePage} of ${totalPages}`}
           </p>
         )}
       </div>
