@@ -16,16 +16,22 @@ export async function GET(req: NextRequest) {
   }
 
   const { searchParams } = new URL(req.url);
-  const companyId = searchParams.get('companyId')?.trim() || '';
+  const companyIdParam = searchParams.get('companyId')?.trim() || '';
   const role = searchParams.get('role')?.trim() || '';
   const search = searchParams.get('search')?.trim() || '';
 
-  let q = supabaseAdmin
-    .from(PROFILE_TABLE)
-    .select('*')
-    .order('created_at', { ascending: false });
+  let q = supabaseAdmin.from(PROFILE_TABLE).select('id,name,email,role,company_id');
 
-  if (companyId) q = q.eq('company_id', companyId);
+  // super_admin can see all users; admin is restricted to their own tenant
+  if (auth.user.role !== 'super_admin') {
+    if (!auth.user.companyId) {
+      return NextResponse.json({ error: 'No company assigned to current user.' }, { status: 403 });
+    }
+    q = q.eq('company_id', auth.user.companyId);
+  } else if (companyIdParam) {
+    q = q.eq('company_id', companyIdParam);
+  }
+
   if (role) q = q.eq('role', role);
 
   if (search) {
@@ -39,13 +45,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const users = (data ?? []).map((row: any) => ({
-    id: row.id,
-    name: row.name,
-    email: row.email,
-    role: row.role,
-    companyId: row.company_id,
-  }));
+  const users = (data ?? [])
+    .map((row: any) => ({
+      id: row.id,
+      name: row.name,
+      email: row.email,
+      role: row.role,
+      companyId: row.company_id,
+    }))
+    .sort((a, b) => String(a.name || a.email || '').localeCompare(String(b.name || b.email || '')));
 
   return NextResponse.json({ users });
 }

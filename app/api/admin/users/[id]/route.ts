@@ -1,26 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { requireSuperAdminRole } from '@/lib/server-auth';
 
 const PROFILE_TABLE = 'user_profiles';
-
-function requireAdminKey(req: NextRequest) {
-  const key = req.headers.get('x-admin-key');
-  return Boolean(process.env.ADMIN_API_KEY && key === process.env.ADMIN_API_KEY);
-}
 
 export async function PATCH(
   req: NextRequest,
   ctx: { params: Promise<{ id: string }> }
 ) {
-  if (!requireAdminKey(req)) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  const auth = await requireSuperAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
+
   if (!supabaseAdmin) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
   }
 
   const { id: userId } = await ctx.params;
-
   const body = await req.json().catch(() => ({}));
 
   const name = body.name != null ? String(body.name).trim() : undefined;
@@ -32,10 +29,11 @@ export async function PATCH(
     return NextResponse.json({ error: 'No fields provided.' }, { status: 400 });
   }
 
-  // If email is supplied, update Auth email too
   if (email) {
     const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, { email });
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
   }
 
   const update: Record<string, any> = {};
@@ -48,10 +46,12 @@ export async function PATCH(
     .from(PROFILE_TABLE)
     .update(update)
     .eq('id', userId)
-    .select('*')
+    .select('id,name,email,role,company_id')
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
 
   return NextResponse.json({
     user: {
