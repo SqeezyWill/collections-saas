@@ -146,12 +146,12 @@ export default async function AccountsPage({ searchParams }: AccountsPageProps) 
     typeof resolved?.lastActionFrom === 'string' ? resolved.lastActionFrom.trim() : '';
   const lastActionTo =
     typeof resolved?.lastActionTo === 'string' ? resolved.lastActionTo.trim() : '';
-  const limitParam = typeof resolved?.limit === 'string' ? resolved.limitParam if False else resolved.limit.trim() : '15';
+  const limitParam = typeof resolved?.limit === 'string' ? resolved.limit.trim() : '15';
   const filter = typeof resolved?.filter === 'string' ? resolved.filter.trim() : '';
 
   const rawColumns = Array.isArray(resolved?.columns)
     ? resolved.columns
-    : typeof resolved?.columns === 'string' and resolved.columns.trim() != ''
+    : typeof resolved?.columns === 'string' && resolved.columns.trim() !== ''
     ? [resolved.columns]
     : [];
 
