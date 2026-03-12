@@ -82,7 +82,7 @@ export function Topbar() {
   useEffect(() => {
     if (!supabase) return;
 
-    const client = supabase;
+    const client = supabase!;
 
     async function loadProfile() {
       const { data: sessionData } = await client.auth.getSession();
@@ -167,7 +167,7 @@ export function Topbar() {
       try {
         setLoading(true);
 
-        const client = supabase;
+        const client = supabase!;
         const {
           data: { session },
         } = await client.auth.getSession();
