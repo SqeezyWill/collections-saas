@@ -421,20 +421,25 @@ export default function AccountsPage() {
           }
 
           const filteredPtps = (ptpRows ?? []).filter((ptp: any) => {
-            if (filter === 'open-ptps') {
-              return ptp.status === 'Promise To Pay';
-            }
+  const isOpenPtp = ptp.status === 'Promise To Pay';
+  const isBrokenPtp =
+    ptp.status === 'Broken' ||
+    (ptp.status === 'Promise To Pay' && ptp.promised_date && toDateOnly(ptp.promised_date) < today);
 
-            if (filter === 'ptps-due-today') {
-              return ptp.status === 'Promise To Pay' && isToday(ptp.promised_date);
-            }
+  if (filter === 'open-ptps') {
+    return isOpenPtp;
+  }
 
-            if (filter === 'broken-ptps') {
-              return ptp.status === 'Broken';
-            }
+  if (filter === 'ptps-due-today') {
+    return isOpenPtp && isToday(ptp.promised_date);
+  }
 
-            return true;
-          });
+  if (filter === 'broken-ptps') {
+    return isBrokenPtp;
+  }
+
+  return true;
+});
 
           matchedAccountIds = Array.from(
             new Set(
