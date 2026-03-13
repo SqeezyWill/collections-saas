@@ -104,6 +104,7 @@ const SAVED_VIEWS = [
 
 type UserProfile = {
   id: string;
+  name?: string | null;
   role: string | null;
   company_id: string | null;
 };
@@ -271,6 +272,35 @@ function buildExportUrl(params: {
   return `/api/accounts/export?${query.toString()}`;
 }
 
+function downloadCsv(filename: string, rows: Record<string, any>[]) {
+  if (!rows.length) return;
+
+  const headers = Object.keys(rows[0] ?? {});
+  const escape = (v: any) => {
+    const s = String(v ?? '');
+    const needsWrap = /[",\n]/.test(s);
+    const escaped = s.replace(/"/g, '""');
+    return needsWrap ? `"${escaped}"` : escaped;
+  };
+
+  const csv = [
+    headers.join(','),
+    ...rows.map((r) => headers.map((h) => escape(r[h])).join(',')),
+  ].join('\n');
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+
+  URL.revokeObjectURL(url);
+}
+
 export default function AccountsPage() {
   const searchParams = useSearchParams();
 
@@ -317,6 +347,9 @@ export default function AccountsPage() {
   const [collectorOptions, setCollectorOptions] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
+  const [bulkAssignCollector, setBulkAssignCollector] = useState('');
+  const [actionLoading, setActionLoading] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let mounted = true;
@@ -339,7 +372,7 @@ export default function AccountsPage() {
 
         const { data: profileData, error: profileError } = await supabase
           .from('user_profiles')
-          .select('id,role,company_id')
+          .select('id,name,role,company_id')
           .eq('id', userId)
           .maybeSingle();
 
@@ -496,11 +529,13 @@ export default function AccountsPage() {
     normalizedLimit,
     effectivePage,
     filter,
+    reloadKey,
   ]);
 
   useEffect(() => {
     setSelectedIds([]);
     setBulkMessage(null);
+    setBulkAssignCollector('');
   }, [
     search,
     searchField,
@@ -590,7 +625,12 @@ export default function AccountsPage() {
     setSelectedIds([]);
   }
 
-  function handleBulkAction(action: 'export' | 'mark_review' | 'assign') {
+  async function handleBulkAction(action: 'export' | 'mark_review' | 'assign') {
+    if (!supabase) {
+      setBulkMessage('Supabase is not configured.');
+      return;
+    }
+
     if (selectedIds.length === 0) {
       setBulkMessage('Please select at least one account.');
       return;
@@ -598,20 +638,124 @@ export default function AccountsPage() {
 
     if (action === 'export') {
       const selectedRows = rows.filter((row) => selectedIds.includes(row.id));
-      const selectedCfids = selectedRows.map((row) => row.cfid).filter(Boolean).join(', ');
-      setBulkMessage(
-        `Selected ${selectedIds.length} account(s) for export view. CFIDs: ${selectedCfids || 'N/A'}`
-      );
+
+      const exportRows = selectedRows.map((row) => ({
+        CFID: row.cfid || '',
+        Debtor: row.debtor_name || '',
+        Phone: row.primary_phone || row.contacts || '',
+        Account: row.account_no || '',
+        Product: row.product || '',
+        ProductCategory: row.product_code || '',
+        Collector: row.collector_name || '',
+        Balance: Number(row.balance || 0),
+        AmountPaid: Number(row.amount_paid || 0),
+        Status: row.status || '',
+        LastActionDate: row.last_action_date || '',
+        Identification: row.identification || '',
+        CustomerID: row.customer_id || '',
+      }));
+
+      downloadCsv(`selected-accounts-${todayDateString()}.csv`, exportRows);
+      setBulkMessage(`Exported ${selectedIds.length} selected account(s).`);
       return;
     }
 
     if (action === 'mark_review') {
-      setBulkMessage(`Selected ${selectedIds.length} account(s) for management review.`);
+      setActionLoading(true);
+      setBulkMessage(null);
+
+      try {
+        const reviewDate = todayDateString();
+
+        const { error: updateError } = await supabase
+          .from('accounts')
+          .update({
+            status: 'Escalated',
+            last_action_date: reviewDate,
+          })
+          .in('id', selectedIds);
+
+        if (updateError) {
+          throw new Error(updateError.message);
+        }
+
+        if (profile?.company_id) {
+          const noteRows = selectedIds.map((accountId) => ({
+            company_id: profile.company_id,
+            account_id: accountId,
+            author_id: profile.id,
+            created_by_name: profile.name || 'System User',
+            body: 'Bulk action: Account marked for management review and escalated.',
+          }));
+
+          const { error: notesError } = await supabase.from('notes').insert(noteRows);
+          if (notesError) {
+            throw new Error(notesError.message);
+          }
+        }
+
+        setBulkMessage(`Marked ${selectedIds.length} account(s) for management review.`);
+        setSelectedIds([]);
+        setReloadKey((prev) => prev + 1);
+      } catch (error: any) {
+        setBulkMessage(error?.message || 'Failed to mark selected accounts for review.');
+      } finally {
+        setActionLoading(false);
+      }
+
       return;
     }
 
     if (action === 'assign') {
-      setBulkMessage(`Selected ${selectedIds.length} account(s) ready for reassignment workflow.`);
+      if (!bulkAssignCollector.trim()) {
+        setBulkMessage('Please choose a collector first.');
+        return;
+      }
+
+      setActionLoading(true);
+      setBulkMessage(null);
+
+      try {
+        const assignDate = todayDateString();
+
+        const { error: assignError } = await supabase
+          .from('accounts')
+          .update({
+            collector_name: bulkAssignCollector.trim(),
+            last_action_date: assignDate,
+          })
+          .in('id', selectedIds);
+
+        if (assignError) {
+          throw new Error(assignError.message);
+        }
+
+        if (profile?.company_id) {
+          const noteRows = selectedIds.map((accountId) => ({
+            company_id: profile.company_id,
+            account_id: accountId,
+            author_id: profile.id,
+            created_by_name: profile.name || 'System User',
+            body: `Bulk action: Account reassigned to ${bulkAssignCollector.trim()}.`,
+          }));
+
+          const { error: notesError } = await supabase.from('notes').insert(noteRows);
+          if (notesError) {
+            throw new Error(notesError.message);
+          }
+        }
+
+        setBulkMessage(
+          `Reassigned ${selectedIds.length} account(s) to ${bulkAssignCollector.trim()}.`
+        );
+        setSelectedIds([]);
+        setBulkAssignCollector('');
+        setReloadKey((prev) => prev + 1);
+      } catch (error: any) {
+        setBulkMessage(error?.message || 'Failed to reassign selected accounts.');
+      } finally {
+        setActionLoading(false);
+      }
     }
   }
 
@@ -771,7 +915,8 @@ export default function AccountsPage() {
             <button
               type="button"
               onClick={toggleSelectPage}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              disabled={actionLoading}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
               {allCurrentPageSelected ? 'Unselect Page' : 'Select Page'}
             </button>
@@ -779,7 +924,8 @@ export default function AccountsPage() {
             <button
               type="button"
               onClick={clearSelection}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              disabled={actionLoading}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
               Clear Selection
             </button>
@@ -787,7 +933,8 @@ export default function AccountsPage() {
             <button
               type="button"
               onClick={() => handleBulkAction('export')}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              disabled={actionLoading}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
               Bulk Export
             </button>
@@ -795,17 +942,35 @@ export default function AccountsPage() {
             <button
               type="button"
               onClick={() => handleBulkAction('mark_review')}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              disabled={actionLoading}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
             >
               Mark for Review
             </button>
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            <select
+              value={bulkAssignCollector}
+              onChange={(e) => setBulkAssignCollector(e.target.value)}
+              disabled={actionLoading}
+              className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:opacity-50"
+            >
+              <option value="">Select collector to reassign</option>
+              {collectorOptions.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
 
             <button
               type="button"
               onClick={() => handleBulkAction('assign')}
-              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+              disabled={actionLoading}
+              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
             >
-              Reassign Selected
+              {actionLoading ? 'Processing...' : 'Reassign Selected'}
             </button>
           </div>
 
