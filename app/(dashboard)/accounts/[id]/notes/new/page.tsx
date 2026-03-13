@@ -14,6 +14,8 @@ type HistoryItem = {
   user: string;
   text: string;
   type: 'note' | 'ptp' | 'payment';
+  title: string;
+  badge: string;
 };
 
 function pickUser(row: any) {
@@ -55,6 +57,12 @@ function getVisibleNoteText(body: string | null | undefined) {
 
   const cleaned = cleanedLines.join(' ').trim();
   return cleaned || text;
+}
+
+function badgeClasses(type: HistoryItem['type']) {
+  if (type === 'payment') return 'bg-emerald-100 text-emerald-700';
+  if (type === 'ptp') return 'bg-amber-100 text-amber-700';
+  return 'bg-slate-100 text-slate-700';
 }
 
 export default async function NotesHistoryPage({ params, searchParams }: PageProps) {
@@ -139,6 +147,8 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
       user: pickUser(n),
       text: getVisibleNoteText(n.body),
       type: 'note' as const,
+      title: 'Account Note',
+      badge: 'Note',
     })),
 
     ...(ptps || []).map((p: any) => ({
@@ -149,6 +159,8 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
         p.promised_date
       )}`,
       type: 'ptp' as const,
+      title: 'Promise to Pay',
+      badge: p.status || 'PTP',
     })),
 
     ...(payments || []).map((pay: any) => ({
@@ -159,6 +171,8 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
         pay.paid_on
       )} | Posted on: ${formatDate(pay.created_at || pay.paid_on)}`,
       type: 'payment' as const,
+      title: 'Payment Activity',
+      badge: 'Payment',
     })),
   ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 
@@ -199,52 +213,129 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
       </div>
 
       {isAddMode ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <form action={saveNote} className="space-y-5">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Note Details
-              </label>
-              <textarea
-                name="noteDetails"
-                rows={6}
-                placeholder="e.g. customer asked to be called tomorrow"
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                required
-              />
-              <p className="mt-2 text-xs text-slate-500">
-                Tip: Keep this short. Disposition/status is captured separately for reporting.
-              </p>
-            </div>
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <form action={saveNote} className="space-y-5">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Note Details
+                </label>
+                <textarea
+                  name="noteDetails"
+                  rows={6}
+                  placeholder="e.g. Customer confirmed salary date is Friday and requested callback tomorrow at 10:00 AM."
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                  required
+                />
+                <p className="mt-2 text-xs text-slate-500">
+                  Record clear next-step context such as commitment made, objection raised, preferred callback time, verification outcome, or supporting detail for the next collector action.
+                </p>
+              </div>
 
-            <div className="flex flex-wrap gap-3 pt-2">
-              <Link
-                href={`/accounts/${id}/notes/new`}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Cancel
-              </Link>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-sm font-medium text-slate-800">Helpful note examples</p>
+                <div className="mt-3 space-y-2 text-sm text-slate-600">
+                  <p>• Debtor confirmed employment and requested callback on salary date.</p>
+                  <p>• Customer disputed balance and asked for statement before committing.</p>
+                  <p>• Third party answered and confirmed debtor is reachable after 5 PM.</p>
+                  <p>• Customer acknowledged debt and will pay part amount on a specific date.</p>
+                </div>
+              </div>
 
-              <button
-                type="submit"
-                className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-              >
-                Save Note
-              </button>
+              <div className="flex flex-wrap gap-3 pt-2">
+                <Link
+                  href={`/accounts/${id}/notes/new`}
+                  className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Cancel
+                </Link>
+
+                <button
+                  type="submit"
+                  className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  Save Note
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-900">Recent Timeline Context</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Review recent activity before adding a fresh follow-up note.
+            </p>
+
+            <div className="mt-4 space-y-3">
+              {history.slice(0, 5).length > 0 ? (
+                history.slice(0, 5).map((item) => (
+                  <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${badgeClasses(
+                              item.type
+                            )}`}
+                          >
+                            {item.badge}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-slate-600">{item.text}</p>
+                        <p className="mt-2 text-xs text-slate-500">By: {item.user}</p>
+                      </div>
+                      <p className="text-xs text-slate-500">{formatDate(item.created_at)}</p>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                  No recent history yet.
+                </div>
+              )}
             </div>
-          </form>
+          </div>
         </div>
       ) : (
         <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <h2 className="text-lg font-semibold text-slate-900">Account Timeline History</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Notes, promises to pay, and payments in one chronological history.
+            </p>
+          </div>
+
           {history.length > 0 ? (
-            <div className="divide-y divide-slate-200">
-              {history.map((item) => (
-                <div key={item.id} className="px-5 py-4 text-sm text-slate-700">
-                  <span className="text-slate-500">{formatDate(item.created_at)}</span>
-                  <span className="mx-2 text-slate-300">•</span>
-                  <span className="text-slate-500">{item.user}</span>
-                  <span className="mx-2 text-slate-300">•</span>
-                  <span>{item.text}</span>
+            <div className="space-y-0">
+              {history.map((item, index) => (
+                <div
+                  key={item.id}
+                  className={[
+                    'px-5 py-4',
+                    index === history.length - 1 ? '' : 'border-b border-slate-200',
+                  ].join(' ')}
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${badgeClasses(
+                            item.type
+                          )}`}
+                        >
+                          {item.badge}
+                        </span>
+                      </div>
+
+                      <p className="mt-2 whitespace-pre-line text-sm text-slate-700">{item.text}</p>
+
+                      <p className="mt-2 text-xs text-slate-500">By: {item.user}</p>
+                    </div>
+
+                    <p className="text-xs text-slate-500">{formatDate(item.created_at)}</p>
+                  </div>
                 </div>
               ))}
             </div>
