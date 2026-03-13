@@ -209,7 +209,9 @@ export function Topbar() {
   }, []);
 
   useEffect(() => {
-    if (!supabase || !profile?.company_id) {
+    const companyId = profile?.company_id;
+
+    if (!supabase || !companyId) {
       setAlerts([]);
       return;
     }
@@ -219,11 +221,11 @@ export function Topbar() {
     async function loadAlerts() {
       try {
         const [{ data: ptps }, { data: accounts }] = await Promise.all([
-          client.from('ptps').select('status,promised_date').eq('company_id', profile.company_id),
+          client.from('ptps').select('status,promised_date').eq('company_id', companyId),
           client
             .from('accounts')
             .select('status,next_action_date,last_action_date')
-            .eq('company_id', profile.company_id),
+            .eq('company_id', companyId),
         ]);
 
         const dueTodayPtps = (ptps ?? []).filter(
@@ -522,7 +524,7 @@ export function Topbar() {
                 </p>
               </div>
 
-              <div className="p-3 space-y-2">
+              <div className="space-y-2 p-3">
                 {alerts.map((alert) => (
                   <Link
                     key={alert.label}
