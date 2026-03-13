@@ -6,8 +6,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BarChart3,
   Briefcase,
+  ChevronDown,
   ChevronLeft,
   CreditCard,
+  FolderKanban,
   GitBranch,
   LayoutDashboard,
   LogOut,
@@ -21,14 +23,23 @@ type UserProfile = {
   role: string | null;
 };
 
-const allLinks = [
+type NavLink = {
+  href: string;
+  label: string;
+  icon: any;
+};
+
+const baseLinks: NavLink[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/accounts', label: 'Accounts', icon: Briefcase },
-  { href: '/payments', label: 'Payments', icon: Wallet },
-  { href: '/ptps', label: 'PTPs', icon: CreditCard },
   { href: '/strategies', label: 'Strategies', icon: GitBranch },
   { href: '/reports', label: 'Reports', icon: BarChart3 },
   { href: '/admin', label: 'Admin', icon: ShieldCheck },
+];
+
+const recoveryReportLinks: NavLink[] = [
+  { href: '/payments', label: 'Payments', icon: Wallet },
+  { href: '/ptps', label: 'PTPs', icon: CreditCard },
 ];
 
 const STORAGE_KEY = 'sidebar_collapsed_v1';
@@ -42,19 +53,33 @@ function normalizeRole(role: string | null | undefined) {
 function linksForRole(role: string) {
   const normalizedRole = normalizeRole(role);
 
-  if (normalizedRole === 'super_admin') return allLinks;
+  if (normalizedRole === 'super_admin') {
+    return {
+      links: baseLinks,
+      recoveryLinks: recoveryReportLinks,
+    };
+  }
 
   if (normalizedRole === 'admin') {
-    return allLinks.filter((link) => link.href !== '/admin');
+    return {
+      links: baseLinks.filter((link) => link.href !== '/admin'),
+      recoveryLinks: recoveryReportLinks,
+    };
   }
 
   if (normalizedRole === 'agent') {
-    return allLinks.filter((link) =>
-      ['/dashboard', '/accounts', '/payments', '/ptps'].includes(link.href)
-    );
+    return {
+      links: baseLinks.filter((link) =>
+        ['/dashboard', '/accounts'].includes(link.href)
+      ),
+      recoveryLinks: recoveryReportLinks,
+    };
   }
 
-  return [{ href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }];
+  return {
+    links: [{ href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }],
+    recoveryLinks: [],
+  };
 }
 
 export function Sidebar() {
@@ -66,6 +91,7 @@ export function Sidebar() {
   const [isHovering, setIsHovering] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [role, setRole] = useState('agent');
+  const [reportsOpen, setReportsOpen] = useState(true);
 
   const hoverCloseTimer = useRef<number | null>(null);
 
@@ -93,7 +119,7 @@ export function Sidebar() {
     loadRole();
   }, []);
 
-  const links = useMemo(() => linksForRole(role), [role]);
+  const { links, recoveryLinks } = useMemo(() => linksForRole(role), [role]);
 
   useEffect(() => {
     try {
@@ -143,12 +169,22 @@ export function Sidebar() {
   const effectiveCollapsed = getEffectiveCollapsed(collapsed, pinnedOpen, isHovering);
 
   const activeHref = useMemo(() => {
-    const candidates = [...links].sort((a, b) => b.href.length - a.href.length);
+    const candidates = [...links, ...recoveryLinks].sort((a, b) => b.href.length - a.href.length);
 
     return (
       candidates.find((l) => pathname === l.href || pathname.startsWith(`${l.href}/`))?.href || ''
     );
-  }, [pathname, links]);
+  }, [pathname, links, recoveryLinks]);
+
+  const isRecoverySectionActive = recoveryLinks.some(
+    (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
+  );
+
+  useEffect(() => {
+    if (isRecoverySectionActive) {
+      setReportsOpen(true);
+    }
+  }, [isRecoverySectionActive]);
 
   function handleMouseEnter() {
     if (pinnedOpen) return;
@@ -274,7 +310,6 @@ export function Sidebar() {
                   title={effectiveCollapsed ? label : undefined}
                 >
                   <Icon size={18} />
-
                   {!effectiveCollapsed ? <span className="truncate">{label}</span> : null}
 
                   {effectiveCollapsed ? (
@@ -285,6 +320,58 @@ export function Sidebar() {
                 </Link>
               );
             })}
+
+            {recoveryLinks.length > 0 ? (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setReportsOpen((prev) => !prev)}
+                  className={[
+                    'flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition',
+                    isRecoverySectionActive
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-300 hover:bg-slate-900 hover:text-white',
+                    effectiveCollapsed ? 'justify-center' : '',
+                  ].join(' ')}
+                  title={effectiveCollapsed ? 'Recovery Reports' : undefined}
+                >
+                  <FolderKanban size={18} />
+                  {!effectiveCollapsed ? (
+                    <>
+                      <span className="flex-1 truncate">Recovery Reports</span>
+                      <ChevronDown
+                        size={16}
+                        className={`transition-transform ${reportsOpen ? 'rotate-180' : 'rotate-0'}`}
+                      />
+                    </>
+                  ) : null}
+                </button>
+
+                {!effectiveCollapsed && reportsOpen ? (
+                  <div className="mt-1 space-y-1 pl-4">
+                    {recoveryLinks.map(({ href, label, icon: Icon }) => {
+                      const isActive = href === activeHref;
+
+                      return (
+                        <Link
+                          key={href}
+                          href={href}
+                          className={[
+                            'flex items-center gap-3 rounded-xl px-3 py-3 transition',
+                            isActive
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-300 hover:bg-slate-900 hover:text-white',
+                          ].join(' ')}
+                        >
+                          <Icon size={16} />
+                          <span className="truncate">{label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
 
             <button
               type="button"
