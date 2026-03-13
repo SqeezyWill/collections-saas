@@ -13,10 +13,7 @@ function isCurrentMonth(dateValue: string | null | undefined) {
   const date = new Date(dateValue);
   const now = new Date();
 
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth()
-  );
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
 }
 
 function isToday(dateValue: string | null | undefined) {
@@ -45,8 +42,47 @@ function isToday(dateValue: string | null | undefined) {
   );
 }
 
+function toDateOnly(value: string | null | undefined) {
+  if (!value) return '';
+  return String(value).slice(0, 10);
+}
+
+function isPastDue(dateValue: string | null | undefined) {
+  if (!dateValue) return false;
+  const dateOnly = toDateOnly(dateValue);
+  const today = toDateOnly(new Date().toISOString());
+  return Boolean(dateOnly) && dateOnly < today;
+}
+
 function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
+}
+
+function resolvePtpOutcomeFromPayments(
+  ptp: any,
+  payments: Array<{ amount: number | null; paid_on: string | null }>
+) {
+  const bookedOn = toDateOnly(ptp.created_at);
+  const promisedDate = toDateOnly(ptp.promised_date);
+  const promisedAmount = Number(ptp.promised_amount || 0);
+
+  const paymentsWithinWindow = (payments ?? []).filter((payment) => {
+    const paidOn = toDateOnly(payment.paid_on);
+    if (!paidOn) return false;
+    return paidOn >= bookedOn && paidOn <= promisedDate;
+  });
+
+  const paidWithinWindow = paymentsWithinWindow.reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0
+  );
+
+  const effectiveStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
+
+  return {
+    effectiveStatus,
+    effectiveKeptAmount: effectiveStatus === 'Kept' ? paidWithinWindow : 0,
+  };
 }
 
 async function fetchAllRows(table: 'accounts' | 'payments' | 'ptps') {
@@ -113,6 +149,57 @@ export default async function DashboardPage() {
     );
   }
 
+  const paymentsByAccountId = new Map<
+    string,
+    Array<{ amount: number | null; paid_on: string | null; collector_name?: string | null }>
+  >();
+
+  for (const payment of payments) {
+    const key = String(payment.account_id || '');
+    if (!key) continue;
+
+    const current = paymentsByAccountId.get(key) || [];
+    current.push({
+      amount: payment.amount ?? null,
+      paid_on: payment.paid_on ?? null,
+      collector_name: payment.collector_name ?? null,
+    });
+    paymentsByAccountId.set(key, current);
+  }
+
+  const normalizedPtps = ptps.map((ptp) => {
+    const accountPayments = ptp.account_id
+      ? paymentsByAccountId.get(String(ptp.account_id)) || []
+      : [];
+
+    let effectiveStatus = ptp.status || '-';
+    let effectiveKeptAmount = Number(ptp.kept_amount || 0);
+
+    const needsDerivedOutcome =
+      ptp.status === 'Promise To Pay' && isPastDue(ptp.promised_date);
+
+    const needsDerivedKeptAmount =
+      ptp.status === 'Kept' && Number(ptp.kept_amount || 0) <= 0;
+
+    if (needsDerivedOutcome || needsDerivedKeptAmount) {
+      const derived = resolvePtpOutcomeFromPayments(ptp, accountPayments);
+
+      if (needsDerivedOutcome) {
+        effectiveStatus = derived.effectiveStatus;
+      }
+
+      if (ptp.status === 'Kept' || derived.effectiveStatus === 'Kept') {
+        effectiveKeptAmount = derived.effectiveKeptAmount;
+      }
+    }
+
+    return {
+      ...ptp,
+      effectiveStatus,
+      effectiveKeptAmount,
+    };
+  });
+
   const totalAccounts = accountList.length;
 
   const outstanding = accountList.reduce(
@@ -130,16 +217,16 @@ export default async function DashboardPage() {
     .reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
   const openPtpAccountIds = new Set(
-    ptps
-      .filter((ptp) => ptp.status === 'Promise To Pay' && ptp.account_id)
+    normalizedPtps
+      .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
       .map((ptp) => ptp.account_id)
   );
 
   const dueTodayPtpAccountIds = new Set(
-    ptps
+    normalizedPtps
       .filter(
         (ptp) =>
-          ptp.status === 'Promise To Pay' &&
+          ptp.effectiveStatus === 'Promise To Pay' &&
           ptp.account_id &&
           isToday(ptp.promised_date)
       )
@@ -149,11 +236,11 @@ export default async function DashboardPage() {
   const openPtps = openPtpAccountIds.size;
   const ptpsDueToday = dueTodayPtpAccountIds.size;
 
-  const keptPtps = ptps.filter((ptp) => ptp.resolution_type === 'kept').length;
-  const brokenPtps = ptps.filter((ptp) => ptp.resolution_type === 'broken').length;
+  const keptPtps = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Kept').length;
+  const brokenPtps = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Broken').length;
 
-  const resolvedPtps = ptps.filter(
-    (ptp) => ptp.resolution_type === 'kept' || ptp.resolution_type === 'broken'
+  const resolvedPtps = normalizedPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
   ).length;
 
   const escalatedAccounts = accountList.filter(
@@ -180,7 +267,7 @@ export default async function DashboardPage() {
     resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
 
   const ptpConversionRate =
-    ptps.length > 0 ? (keptPtps / ptps.length) * 100 : 0;
+    normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
 
   const collectors = Array.from(
     new Set(accountList.map((item) => item.collector_name).filter(Boolean))
@@ -193,24 +280,24 @@ export default async function DashboardPage() {
     const collectorPayments = payments.filter(
       (payment) => payment.collector_name === collector
     );
-    const collectorPtps = ptps.filter((ptp) => ptp.collector_name === collector);
+    const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
 
     const collectorOpenPtpAccounts = new Set(
       collectorPtps
-        .filter((ptp) => ptp.status === 'Promise To Pay' && ptp.account_id)
+        .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
         .map((ptp) => ptp.account_id)
     );
 
     const collectorKeptPtps = collectorPtps.filter(
-      (ptp) => ptp.resolution_type === 'kept'
+      (ptp) => ptp.effectiveStatus === 'Kept'
     ).length;
 
     const collectorBrokenPtps = collectorPtps.filter(
-      (ptp) => ptp.resolution_type === 'broken'
+      (ptp) => ptp.effectiveStatus === 'Broken'
     ).length;
 
     const collectorResolvedPtps = collectorPtps.filter(
-      (ptp) => ptp.resolution_type === 'kept' || ptp.resolution_type === 'broken'
+      (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
     ).length;
 
     return {
