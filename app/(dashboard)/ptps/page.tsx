@@ -34,26 +34,6 @@ function buildPageUrl(filter: string) {
   return filter ? `/ptps?filter=${encodeURIComponent(filter)}` : '/ptps';
 }
 
-function resolveEffectivePtpStatus(
-  ptpStatus: string | null | undefined,
-  promisedDate: string | null | undefined,
-  accountStatus: string | null | undefined
-) {
-  const cleanPtpStatus = String(ptpStatus || '').trim();
-  const cleanAccountStatus = String(accountStatus || '').trim();
-
-  if (cleanPtpStatus && cleanPtpStatus !== 'Promise To Pay') {
-    return cleanPtpStatus;
-  }
-
-  if (isPastDue(promisedDate)) {
-    if (cleanAccountStatus === 'Broken') return 'Broken';
-    if (cleanAccountStatus === 'Kept') return 'Kept';
-  }
-
-  return cleanPtpStatus || '-';
-}
-
 export default async function PtpsPage({
   searchParams,
 }: {
@@ -69,6 +49,72 @@ export default async function PtpsPage({
         <p className="text-red-600">Supabase is not configured.</p>
       </div>
     );
+  }
+
+  const { data: initialRows, error: initialError } = await supabase
+    .from('ptps')
+    .select('*')
+    .eq('company_id', COMPANY_ID)
+    .order('created_at', { ascending: false });
+
+  if (initialError) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">PTPs</h1>
+        <p className="text-red-600">Failed to load PTPs: {initialError.message}</p>
+      </div>
+    );
+  }
+
+  const overdueOpenPtps = (initialRows ?? []).filter(
+    (row) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
+  );
+
+  for (const ptp of overdueOpenPtps) {
+    const bookedOn = toDateOnly(ptp.created_at);
+    const promisedDate = toDateOnly(ptp.promised_date);
+
+    const { data: paymentRows, error: paymentError } = await supabase
+      .from('payments')
+      .select('amount, paid_on')
+      .eq('account_id', ptp.account_id);
+
+    if (paymentError) continue;
+
+    const paymentsWithinWindow = (paymentRows ?? []).filter((payment) => {
+      const paidOn = toDateOnly(payment.paid_on);
+      if (!paidOn) return false;
+      return paidOn >= bookedOn && paidOn <= promisedDate;
+    });
+
+    const paidWithinWindow = paymentsWithinWindow.reduce(
+      (sum, payment) => sum + Number(payment.amount || 0),
+      0
+    );
+
+    const promisedAmount = Number(ptp.promised_amount || 0);
+    const nextStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
+    const keptAmount = nextStatus === 'Kept' ? paidWithinWindow : 0;
+    const nowIso = new Date().toISOString();
+
+    await supabase
+      .from('ptps')
+      .update({
+        status: nextStatus,
+        resolved_at: nowIso,
+        kept_amount: keptAmount,
+        resolution_source: 'auto',
+      })
+      .eq('id', ptp.id)
+      .eq('status', 'Promise To Pay');
+
+    await supabase
+      .from('accounts')
+      .update({
+        status: nextStatus,
+        last_action_date: promisedDate || toDateOnly(nowIso),
+      })
+      .eq('id', ptp.account_id);
   }
 
   const { data: rows, error } = await supabase
@@ -110,36 +156,28 @@ export default async function PtpsPage({
     }
   }
 
-  const enrichedRows = (rows ?? []).map((row) => {
+  const allRows = (rows ?? []).map((row) => {
     const account = row.account_id ? accountsById.get(String(row.account_id)) : null;
-    const effectiveStatus = resolveEffectivePtpStatus(
-      row.status,
-      row.promised_date,
-      account?.status
-    );
-
     return {
       ...row,
-      effectiveStatus,
       accountMeta: account ?? null,
     };
   });
 
-  const openPtps = enrichedRows.filter((row) => row.effectiveStatus === 'Promise To Pay').length;
-  const keptPtps = enrichedRows.filter((row) => row.effectiveStatus === 'Kept').length;
-  const brokenPtps = enrichedRows.filter((row) => row.effectiveStatus === 'Broken').length;
+  const openPtps = allRows.filter((row) => row.status === 'Promise To Pay').length;
+  const keptPtps = allRows.filter((row) => row.status === 'Kept').length;
+  const brokenPtps = allRows.filter((row) => row.status === 'Broken').length;
 
-  const dueToday = enrichedRows.filter(
-    (row) => row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date)
+  const dueToday = allRows.filter(
+    (row) => row.status === 'Promise To Pay' && isToday(row.promised_date)
   ).length;
 
-  const filteredRows = enrichedRows.filter((row) => {
+  const filteredRows = allRows.filter((row) => {
     if (!filter) return true;
-    if (filter === 'open') return row.effectiveStatus === 'Promise To Pay';
-    if (filter === 'due-today')
-      return row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date);
-    if (filter === 'kept') return row.effectiveStatus === 'Kept';
-    if (filter === 'broken') return row.effectiveStatus === 'Broken';
+    if (filter === 'open') return row.status === 'Promise To Pay';
+    if (filter === 'due-today') return row.status === 'Promise To Pay' && isToday(row.promised_date);
+    if (filter === 'kept') return row.status === 'Kept';
+    if (filter === 'broken') return row.status === 'Broken';
     return true;
   });
 
@@ -282,7 +320,7 @@ export default async function PtpsPage({
               <td className="px-4 py-3">{currency(Number(row.promised_amount || 0))}</td>
               <td className="px-4 py-3">{formatDate(row.created_at)}</td>
               <td className="px-4 py-3">{formatDate(row.promised_date)}</td>
-              <td className="px-4 py-3">{row.effectiveStatus || '-'}</td>
+              <td className="px-4 py-3">{row.status || '-'}</td>
               <td className="px-4 py-3">{formatDate(row.created_at)}</td>
               <td className="px-4 py-3">{row.collector_name || '-'}</td>
             </tr>
