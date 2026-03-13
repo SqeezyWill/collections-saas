@@ -59,7 +59,7 @@ function parseDateLike(value: unknown): Date | null {
 function diffInDays(from: Date, to: Date) {
   const start = startOfLocalDay(from).getTime();
   const end = startOfLocalDay(to).getTime();
-  return Math.max(0, Math.floor((end - start) / 86400000));
+  return Math.floor((end - start) / 86400000);
 }
 
 function getDpdAnchorDate(account: any): Date | null {
@@ -79,7 +79,7 @@ function getEffectiveDpd(account: any): number | null {
   if (!anchor) return baseDpd;
 
   const today = new Date();
-  const daysElapsed = diffInDays(anchor, today);
+  const daysElapsed = Math.max(0, diffInDays(anchor, today));
 
   return baseDpd + daysElapsed;
 }
@@ -153,6 +153,86 @@ function getBucketMeta(dpd: number | null) {
 function matchesBucket(strategy: any, bucketAliases: string[]) {
   const haystack = `${normalize(strategy?.name)} ${normalize(strategy?.description)}`;
   return bucketAliases.some((alias) => haystack.includes(normalize(alias)));
+}
+
+function getDueState(dateValue: unknown) {
+  const parsed = parseDateLike(dateValue);
+  if (!parsed) {
+    return {
+      label: 'No due date set',
+      tone: 'bg-slate-100 text-slate-700',
+      delta: null as number | null,
+    };
+  }
+
+  const today = new Date();
+  const delta = diffInDays(today, parsed);
+
+  if (delta < 0) {
+    return {
+      label: `${Math.abs(delta)} day(s) overdue`,
+      tone: 'bg-rose-100 text-rose-700',
+      delta,
+    };
+  }
+
+  if (delta === 0) {
+    return {
+      label: 'Due today',
+      tone: 'bg-amber-100 text-amber-700',
+      delta,
+    };
+  }
+
+  return {
+    label: `Due in ${delta} day(s)`,
+    tone: 'bg-emerald-100 text-emerald-700',
+    delta,
+  };
+}
+
+function getPriorityMeta(account: any, effectiveDpd: number | null) {
+  const nextAction = getDueState(account?.next_action_date);
+  const balance = Number(account?.balance || 0);
+  const status = String(account?.status || '').trim();
+
+  if (nextAction.delta !== null && nextAction.delta < 0) {
+    return {
+      label: 'Urgent follow-up',
+      tone: 'bg-rose-100 text-rose-700',
+      reason: 'Next action date has passed.',
+    };
+  }
+
+  if (status === 'Broken' || status === 'Escalated') {
+    return {
+      label: 'High priority',
+      tone: 'bg-rose-100 text-rose-700',
+      reason: 'Account is broken or escalated.',
+    };
+  }
+
+  if (status === 'PTP' || status === 'Promise To Pay') {
+    return {
+      label: 'Priority monitoring',
+      tone: 'bg-amber-100 text-amber-700',
+      reason: 'Promise to pay needs monitoring.',
+    };
+  }
+
+  if ((effectiveDpd ?? 0) >= 90 || balance >= 50000) {
+    return {
+      label: 'Management attention',
+      tone: 'bg-orange-100 text-orange-700',
+      reason: 'High delinquency or high balance.',
+    };
+  }
+
+  return {
+    label: 'Normal follow-up',
+    tone: 'bg-slate-100 text-slate-700',
+    reason: 'Routine account handling.',
+  };
 }
 
 function DetailTable({
@@ -397,14 +477,21 @@ export default async function AccountDetailPage({ params }: PageProps) {
     .select('*')
     .eq('account_id', id)
     .order('created_at', { ascending: false })
-    .limit(3);
+    .limit(10);
 
   const { data: payments } = await supabaseAdmin
     .from('payments')
     .select('*')
     .eq('account_id', id)
     .order('paid_on', { ascending: false })
-    .limit(3);
+    .limit(10);
+
+  const { data: notes } = await supabaseAdmin
+    .from('notes')
+    .select('*')
+    .eq('account_id', id)
+    .order('created_at', { ascending: false })
+    .limit(10);
 
   const strategyResp = await fetchAccountStrategy(id);
   const assignedStrategy = strategyResp?.strategy ?? null;
@@ -414,6 +501,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
   const bucketLabel = getBucketLabel(effectiveDpd);
   const storedDpd = parseNumber(account.dpd);
   const stepsCount = Array.isArray(assignedStrategy?.steps) ? assignedStrategy.steps.length : 0;
+  const dueMeta = getDueState(account.next_action_date);
+  const priorityMeta = getPriorityMeta(account, effectiveDpd);
 
   const statusClasses =
     account.status === 'PTP'
@@ -421,6 +510,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
       : account.status === 'Paid'
       ? 'bg-emerald-100 text-emerald-700'
       : account.status === 'Escalated'
+      ? 'bg-rose-100 text-rose-700'
+      : account.status === 'Broken'
       ? 'bg-rose-100 text-rose-700'
       : 'bg-slate-100 text-slate-700';
 
@@ -473,6 +564,47 @@ export default async function AccountDetailPage({ params }: PageProps) {
     { label: 'Next Action Date', value: formatDate(account.next_action_date) },
   ];
 
+  const timeline = [
+    ...(ptps ?? []).map((ptp) => ({
+      id: `ptp-${ptp.id}`,
+      type: 'PTP',
+      date: ptp.created_at || ptp.promised_date || '',
+      title: `Promise to Pay booked`,
+      subtitle: `${currency(Number(ptp.promised_amount || 0))} due ${formatDate(ptp.promised_date)}`,
+      badge: ptp.status || 'Promise To Pay',
+      tone:
+        ptp.status === 'Kept'
+          ? 'bg-emerald-100 text-emerald-700'
+          : ptp.status === 'Broken'
+          ? 'bg-rose-100 text-rose-700'
+          : 'bg-amber-100 text-amber-700',
+    })),
+    ...(payments ?? []).map((payment) => ({
+      id: `payment-${payment.id}`,
+      type: 'Payment',
+      date: payment.paid_on || payment.created_at || '',
+      title: `Payment logged`,
+      subtitle: `${currency(Number(payment.amount || 0))}${payment.product ? ` · ${payment.product}` : ''}`,
+      badge: 'Payment',
+      tone: 'bg-emerald-100 text-emerald-700',
+    })),
+    ...(notes ?? []).map((note) => ({
+      id: `note-${note.id}`,
+      type: 'Note',
+      date: note.created_at || '',
+      title: note.created_by_name ? `Note by ${note.created_by_name}` : 'Account note',
+      subtitle: String(note.body || '').trim() || '-',
+      badge: 'Note',
+      tone: 'bg-slate-100 text-slate-700',
+    })),
+  ]
+    .sort((a, b) => {
+      const at = parseDateLike(a.date)?.getTime() ?? 0;
+      const bt = parseDateLike(b.date)?.getTime() ?? 0;
+      return bt - at;
+    })
+    .slice(0, 12);
+
   return (
     <div className="space-y-6">
       <div>
@@ -522,6 +654,110 @@ export default async function AccountDetailPage({ params }: PageProps) {
           <p className="text-sm text-slate-500">Current Bucket</p>
           <p className="mt-2 text-xl font-semibold text-slate-900">{bucketLabel}</p>
           <p className="mt-1 text-xs text-slate-500">{detailValue(account.product_code)}</p>
+        </div>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-2">
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Follow-up Tracker</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Current next step, due date and action status for this account.
+              </p>
+            </div>
+            <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${dueMeta.tone}`}>
+              {dueMeta.label}
+            </span>
+          </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Current Status</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">{detailValue(account.status)}</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Next Action Date</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">
+                {formatDate(account.next_action_date)}
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Last Action Date</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">
+                {formatDate(account.last_action_date)}
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Assigned Collector</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">
+                {detailValue(account.collector_name)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            <Link
+              href={`/accounts/${id}/status/update`}
+              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Update Follow-up
+            </Link>
+            <Link
+              href={`/accounts/${id}/notes/new`}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Add Note
+            </Link>
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Action Priority</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Quick operational view of urgency and discipline signals.
+              </p>
+            </div>
+            <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${priorityMeta.tone}`}>
+              {priorityMeta.label}
+            </span>
+          </div>
+
+          <div className="mt-4 space-y-3">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-sm font-medium text-slate-900">Why this priority?</p>
+              <p className="mt-1 text-sm text-slate-600">{priorityMeta.reason}</p>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-2">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Bucket</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">{bucketLabel}</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Next Due State</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">{dueMeta.label}</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Balance Exposure</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">
+                  {currency(Number(account.balance || 0))}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Current DPD</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">{detailValue(effectiveDpd)}</p>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -656,6 +892,48 @@ export default async function AccountDetailPage({ params }: PageProps) {
         </div>
       </div>
 
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Account Timeline</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Unified chronological view of recent actions, payments, PTPs and notes.
+            </p>
+          </div>
+          <Link
+            href={`/accounts/${id}/notes/new`}
+            className="text-sm font-medium text-slate-600 hover:text-slate-900"
+          >
+            Add timeline note
+          </Link>
+        </div>
+
+        <div className="mt-4 space-y-3">
+          {timeline.length > 0 ? (
+            timeline.map((item) => (
+              <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${item.tone}`}>
+                        {item.badge}
+                      </span>
+                    </div>
+                    <p className="mt-1 whitespace-pre-line text-sm text-slate-600">{item.subtitle}</p>
+                  </div>
+                  <p className="text-xs text-slate-500">{formatDate(item.date)}</p>
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+              No recent account activity to show yet.
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="grid gap-6 xl:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between gap-3">
@@ -667,7 +945,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
           <div className="mt-4 space-y-3">
             {ptps && ptps.length > 0 ? (
-              ptps.map((ptp) => (
+              ptps.slice(0, 3).map((ptp) => (
                 <div key={ptp.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-sm font-semibold text-slate-900">
@@ -709,7 +987,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
           <div className="mt-4 space-y-3">
             {payments && payments.length > 0 ? (
-              payments.map((payment) => (
+              payments.slice(0, 3).map((payment) => (
                 <div key={payment.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-sm font-semibold text-slate-900">
