@@ -3,7 +3,7 @@
 import { Bell, Building2, Menu, Search } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { getCompany } from '@/lib/selectors';
 import { supabase } from '@/lib/supabase';
 
@@ -32,6 +32,13 @@ type SearchField =
   | 'identification'
   | 'customer_id';
 
+type AlertItem = {
+  label: string;
+  count: number;
+  href: string;
+  tone: 'red' | 'amber' | 'blue' | 'slate';
+};
+
 const SEARCH_OPTIONS: Array<{ value: SearchField; label: string }> = [
   { value: 'cfid', label: 'CFID' },
   { value: 'phone', label: 'PHONE' },
@@ -50,6 +57,51 @@ const QUICK_VIEWS = [
 
 const TOGGLE_EVENT = 'app:toggle-sidebar';
 
+function toDateOnly(value: string | null | undefined) {
+  if (!value) return '';
+  return String(value).slice(0, 10);
+}
+
+function isToday(dateValue: string | null | undefined) {
+  if (!dateValue) return false;
+
+  const iso = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  let date: Date;
+
+  if (iso) {
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
+    date = new Date(year, month - 1, day);
+  } else {
+    date = new Date(dateValue);
+  }
+
+  if (Number.isNaN(date.getTime())) return false;
+
+  const now = new Date();
+
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+function isPastDue(dateValue: string | null | undefined) {
+  if (!dateValue) return false;
+  const dateOnly = toDateOnly(dateValue);
+  const today = toDateOnly(new Date().toISOString());
+  return Boolean(dateOnly) && dateOnly < today;
+}
+
+function toneClasses(tone: AlertItem['tone']) {
+  if (tone === 'red') return 'border-red-200 bg-red-50 text-red-700';
+  if (tone === 'amber') return 'border-amber-200 bg-amber-50 text-amber-700';
+  if (tone === 'blue') return 'border-blue-200 bg-blue-50 text-blue-700';
+  return 'border-slate-200 bg-slate-50 text-slate-700';
+}
+
 export function Topbar() {
   const router = useRouter();
 
@@ -62,7 +114,16 @@ export function Topbar() {
   const [loading, setLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
 
+  const [alerts, setAlerts] = useState<AlertItem[]>([]);
+  const [showAlerts, setShowAlerts] = useState(false);
+
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const bellRef = useRef<HTMLDivElement | null>(null);
+
+  const totalAlerts = useMemo(
+    () => alerts.reduce((sum, item) => sum + Number(item.count || 0), 0),
+    [alerts]
+  );
 
   function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -148,6 +209,74 @@ export function Topbar() {
   }, []);
 
   useEffect(() => {
+    if (!supabase || !profile?.company_id) {
+      setAlerts([]);
+      return;
+    }
+
+    const client = supabase as NonNullable<typeof supabase>;
+
+    async function loadAlerts() {
+      try {
+        const [{ data: ptps }, { data: accounts }] = await Promise.all([
+          client.from('ptps').select('status,promised_date').eq('company_id', profile.company_id),
+          client
+            .from('accounts')
+            .select('status,next_action_date,last_action_date')
+            .eq('company_id', profile.company_id),
+        ]);
+
+        const dueTodayPtps = (ptps ?? []).filter(
+          (ptp: any) => ptp.status === 'Promise To Pay' && isToday(ptp.promised_date)
+        ).length;
+
+        const brokenPtps = (ptps ?? []).filter((ptp: any) => ptp.status === 'Broken').length;
+
+        const overdueCallbacks = (accounts ?? []).filter(
+          (account: any) =>
+            account.status === 'Callback Requested' && isPastDue(account.next_action_date)
+        ).length;
+
+        const staleAccounts = (accounts ?? []).filter((account: any) => {
+          if (!account.last_action_date) return true;
+          return isPastDue(account.last_action_date);
+        }).length;
+
+        setAlerts([
+          {
+            label: 'Broken PTPs',
+            count: brokenPtps,
+            href: '/ptps?filter=broken',
+            tone: 'red',
+          },
+          {
+            label: 'Overdue Callbacks',
+            count: overdueCallbacks,
+            href: '/accounts?status=Callback%20Requested',
+            tone: 'amber',
+          },
+          {
+            label: 'PTPs Due Today',
+            count: dueTodayPtps,
+            href: '/accounts?filter=ptps-due-today',
+            tone: 'blue',
+          },
+          {
+            label: 'Stale Accounts',
+            count: staleAccounts,
+            href: '/accounts',
+            tone: 'slate',
+          },
+        ]);
+      } catch (error) {
+        console.error('Topbar alerts error:', error);
+      }
+    }
+
+    loadAlerts();
+  }, [profile?.company_id]);
+
+  useEffect(() => {
     if (!supabase) {
       setResults([]);
       setLoading(false);
@@ -224,10 +353,10 @@ export function Topbar() {
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (!wrapperRef.current) return;
-      if (!wrapperRef.current.contains(event.target as Node)) {
-        setShowDropdown(false);
-      }
+      if (wrapperRef.current && wrapperRef.current.contains(event.target as Node)) return;
+      if (bellRef.current && bellRef.current.contains(event.target as Node)) return;
+      setShowDropdown(false);
+      setShowAlerts(false);
     }
 
     document.addEventListener('mousedown', handleClickOutside);
@@ -368,9 +497,57 @@ export function Topbar() {
           ) : null}
         </div>
 
-        <button className="rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-50">
-          <Bell size={18} />
-        </button>
+        <div ref={bellRef} className="relative">
+          <button
+            type="button"
+            onClick={() => {
+              setShowAlerts((prev) => !prev);
+              setShowDropdown(false);
+            }}
+            className="relative rounded-xl border border-slate-200 p-2 text-slate-600 hover:bg-slate-50"
+          >
+            <Bell size={18} />
+            {totalAlerts > 0 ? (
+              <span className="absolute -right-1 -top-1 inline-flex min-h-[18px] min-w-[18px] items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-semibold text-white">
+                {totalAlerts}
+              </span>
+            ) : null}
+          </button>
+
+          {showAlerts ? (
+            <div className="absolute right-0 z-50 mt-2 w-[320px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Attention Alerts
+                </p>
+              </div>
+
+              <div className="p-3 space-y-2">
+                {alerts.map((alert) => (
+                  <Link
+                    key={alert.label}
+                    href={alert.href}
+                    onClick={() => setShowAlerts(false)}
+                    className={`flex items-center justify-between rounded-xl border px-3 py-3 text-sm font-medium ${toneClasses(
+                      alert.tone
+                    )}`}
+                  >
+                    <span>{alert.label}</span>
+                    <span>{alert.count}</span>
+                  </Link>
+                ))}
+
+                <Link
+                  href="/dashboard"
+                  onClick={() => setShowAlerts(false)}
+                  className="block rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-medium text-slate-700 hover:bg-white"
+                >
+                  Open Dashboard
+                </Link>
+              </div>
+            </div>
+          ) : null}
+        </div>
 
         <div className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700">
           {profile?.name || profile?.email || 'User'}

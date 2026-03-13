@@ -445,29 +445,25 @@ export default async function DashboardPage() {
     {
       title: 'Broken PTPs need attention',
       count: brokenPtpAccounts.length,
-      tone:
-        brokenPtpAccounts.length > 0 ? 'red' : 'slate',
+      tone: brokenPtpAccounts.length > 0 ? 'red' : 'slate',
       href: '/ptps?filter=broken',
     },
     {
       title: 'Callbacks overdue',
       count: overdueCallbacks.length,
-      tone:
-        overdueCallbacks.length > 0 ? 'amber' : 'slate',
+      tone: overdueCallbacks.length > 0 ? 'amber' : 'slate',
       href: '/accounts?status=Callback%20Requested',
     },
     {
       title: 'PTPs due today',
       count: ptpsDueToday,
-      tone:
-        ptpsDueToday > 0 ? 'blue' : 'slate',
+      tone: ptpsDueToday > 0 ? 'blue' : 'slate',
       href: '/accounts?filter=ptps-due-today',
     },
     {
       title: 'Stale accounts',
       count: staleAccounts.length,
-      tone:
-        staleAccounts.length > 0 ? 'amber' : 'slate',
+      tone: staleAccounts.length > 0 ? 'amber' : 'slate',
       href: '/accounts',
     },
   ];
