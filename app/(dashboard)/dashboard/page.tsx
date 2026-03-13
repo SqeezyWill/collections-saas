@@ -54,6 +54,30 @@ function isPastDue(dateValue: string | null | undefined) {
   return Boolean(dateOnly) && dateOnly < today;
 }
 
+function diffDaysFromToday(dateValue: string | null | undefined) {
+  if (!dateValue) return null;
+
+  const iso = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  let target: Date;
+
+  if (iso) {
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
+    target = new Date(year, month - 1, day);
+  } else {
+    target = new Date(dateValue);
+  }
+
+  if (Number.isNaN(target.getTime())) return null;
+
+  const today = new Date();
+  const current = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const compare = new Date(target.getFullYear(), target.getMonth(), target.getDate());
+
+  return Math.floor((compare.getTime() - current.getTime()) / 86400000);
+}
+
 function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
 }
@@ -351,6 +375,136 @@ export default async function DashboardPage() {
     };
   });
 
+  const callbacksToday = accountList.filter(
+    (item) =>
+      item.status === 'Callback Requested' &&
+      item.next_action_date &&
+      isToday(item.next_action_date)
+  );
+
+  const overdueCallbacks = accountList.filter((item) => {
+    if (item.status !== 'Callback Requested' || !item.next_action_date) return false;
+    const diff = diffDaysFromToday(item.next_action_date);
+    return diff !== null && diff < 0;
+  });
+
+  const nextActionDueToday = accountList.filter(
+    (item) => item.next_action_date && isToday(item.next_action_date)
+  );
+
+  const staleAccounts = accountList.filter((item) => {
+    if (!item.last_action_date) return true;
+    const diff = diffDaysFromToday(item.last_action_date);
+    return diff !== null && diff <= -3;
+  });
+
+  const brokenPtpAccounts = normalizedPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Broken'
+  );
+
+  const todayWorkQueue = [
+    {
+      title: 'PTPs Due Today',
+      count: ptpsDueToday,
+      href: '/accounts?filter=ptps-due-today',
+      helper: 'Promises requiring follow-up today',
+    },
+    {
+      title: 'Callbacks Due Today',
+      count: callbacksToday.length,
+      href: '/accounts?status=Callback%20Requested',
+      helper: 'Accounts awaiting scheduled callbacks',
+    },
+    {
+      title: 'Next Actions Due Today',
+      count: nextActionDueToday.length,
+      href: '/accounts',
+      helper: 'Accounts with follow-up dates due today',
+    },
+    {
+      title: 'Broken PTP Follow-ups',
+      count: brokenPtpAccounts.length,
+      href: '/ptps?filter=broken',
+      helper: 'Promises that have broken and need action',
+    },
+    {
+      title: 'Overdue Callbacks',
+      count: overdueCallbacks.length,
+      href: '/accounts?status=Callback%20Requested',
+      helper: 'Callback actions missed and still pending',
+    },
+    {
+      title: 'Stale Accounts',
+      count: staleAccounts.length,
+      href: '/accounts',
+      helper: 'Accounts with no recent action in 3+ days',
+    },
+  ];
+
+  const alerts = [
+    {
+      title: 'Broken PTPs need attention',
+      count: brokenPtpAccounts.length,
+      tone:
+        brokenPtpAccounts.length > 0 ? 'red' : 'slate',
+      href: '/ptps?filter=broken',
+    },
+    {
+      title: 'Callbacks overdue',
+      count: overdueCallbacks.length,
+      tone:
+        overdueCallbacks.length > 0 ? 'amber' : 'slate',
+      href: '/accounts?status=Callback%20Requested',
+    },
+    {
+      title: 'PTPs due today',
+      count: ptpsDueToday,
+      tone:
+        ptpsDueToday > 0 ? 'blue' : 'slate',
+      href: '/accounts?filter=ptps-due-today',
+    },
+    {
+      title: 'Stale accounts',
+      count: staleAccounts.length,
+      tone:
+        staleAccounts.length > 0 ? 'amber' : 'slate',
+      href: '/accounts',
+    },
+  ];
+
+  const quickViews = [
+    {
+      label: 'My Open PTP Accounts',
+      href: '/accounts?filter=open-ptps',
+      helper: 'Work all active promise accounts',
+    },
+    {
+      label: 'PTPs Due Today',
+      href: '/accounts?filter=ptps-due-today',
+      helper: 'Focus on today’s due promises',
+    },
+    {
+      label: 'Broken PTP Report',
+      href: '/ptps?filter=broken',
+      helper: 'Review all broken promises',
+    },
+    {
+      label: 'Kept PTP Report',
+      href: '/ptps?filter=kept',
+      helper: 'Review successful promises kept',
+    },
+    {
+      label: 'Payments Report',
+      href: '/payments',
+      helper: 'Track payment activity',
+    },
+    {
+      label: 'Portfolio View',
+      href: '/accounts',
+      helper: 'Open the full collections portfolio',
+    },
+  ];
+
   const portfolioAnalysisGroups = [
     {
       category: 'Accounts',
@@ -386,6 +540,19 @@ export default async function DashboardPage() {
       ],
     },
   ];
+
+  function alertClasses(tone: string) {
+    if (tone === 'red') {
+      return 'border-red-200 bg-red-50 text-red-700';
+    }
+    if (tone === 'amber') {
+      return 'border-amber-200 bg-amber-50 text-amber-700';
+    }
+    if (tone === 'blue') {
+      return 'border-blue-200 bg-blue-50 text-blue-700';
+    }
+    return 'border-slate-200 bg-slate-50 text-slate-700';
+  }
 
   return (
     <div className="space-y-6">
@@ -437,6 +604,81 @@ export default async function DashboardPage() {
           value={activeCollectors}
           helper="Collectors with assigned cases"
         />
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Today’s Work Queue</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Priority actions that agents and managers should focus on today.
+              </p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            {todayWorkQueue.map((item) => (
+              <Link
+                key={item.title}
+                href={item.href}
+                className="rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:bg-white hover:shadow-sm"
+              >
+                <p className="text-sm font-medium text-slate-700">{item.title}</p>
+                <p className="mt-2 text-3xl font-semibold text-slate-900">{item.count}</p>
+                <p className="mt-2 text-xs text-slate-500">{item.helper}</p>
+              </Link>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">Smart Alerts</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Operational alerts that need immediate attention.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {alerts.map((alert) => (
+                <Link
+                  key={alert.title}
+                  href={alert.href}
+                  className={`flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 ${alertClasses(
+                    alert.tone
+                  )}`}
+                >
+                  <span className="text-sm font-medium">{alert.title}</span>
+                  <span className="text-lg font-semibold">{alert.count}</span>
+                </Link>
+              ))}
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">Quick Work Views</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Fast access to the most-used operational views.
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              {quickViews.map((view) => (
+                <Link
+                  key={view.label}
+                  href={view.href}
+                  className="block rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:bg-white hover:shadow-sm"
+                >
+                  <p className="text-sm font-medium text-slate-800">{view.label}</p>
+                  <p className="mt-1 text-xs text-slate-500">{view.helper}</p>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </div>
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
