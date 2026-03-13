@@ -56,6 +56,33 @@ function monthLabelFromKey(key: string) {
   return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
 }
 
+function resolvePtpOutcomeFromPayments(
+  ptp: any,
+  payments: Array<{ amount: number | null; paid_on: string | null }>
+) {
+  const bookedOn = toDateOnly(ptp.created_at);
+  const promisedDate = toDateOnly(ptp.promised_date);
+  const promisedAmount = Number(ptp.promised_amount || 0);
+
+  const paymentsWithinWindow = (payments ?? []).filter((payment) => {
+    const paidOn = toDateOnly(payment.paid_on);
+    if (!paidOn) return false;
+    return paidOn >= bookedOn && paidOn <= promisedDate;
+  });
+
+  const paidWithinWindow = paymentsWithinWindow.reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0
+  );
+
+  const effectiveStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
+
+  return {
+    effectiveStatus,
+    effectiveKeptAmount: effectiveStatus === 'Kept' ? paidWithinWindow : 0,
+  };
+}
+
 type AgentSummaryRow = {
   collectorName: string;
   totalBooked: number;
@@ -98,7 +125,6 @@ export default async function PtpsPage({
     );
   }
 
-  // 1) Load current PTPs
   const { data: initialRows, error: initialError } = await supabase
     .from('ptps')
     .select('*')
@@ -114,7 +140,6 @@ export default async function PtpsPage({
     );
   }
 
-  // 2) Auto-resolve overdue open PTPs and PERSIST their broken/kept result
   const overdueOpenPtps = (initialRows ?? []).filter(
     (row) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
   );
@@ -166,7 +191,6 @@ export default async function PtpsPage({
       .eq('id', ptp.account_id);
   }
 
-  // 3) Reload PTPs after status persistence
   const { data: rows, error } = await supabase
     .from('ptps')
     .select('*')
@@ -191,11 +215,22 @@ export default async function PtpsPage({
     { cfid: string | null; debtor_name: string | null; status: string | null }
   >();
 
+  const paymentsByAccountId = new Map<
+    string,
+    Array<{ amount: number | null; paid_on: string | null }>
+  >();
+
   if (accountIds.length > 0) {
-    const { data: accounts } = await supabase
-      .from('accounts')
-      .select('id, cfid, debtor_name, status')
-      .in('id', accountIds);
+    const [{ data: accounts }, { data: payments }] = await Promise.all([
+      supabase
+        .from('accounts')
+        .select('id, cfid, debtor_name, status')
+        .in('id', accountIds),
+      supabase
+        .from('payments')
+        .select('account_id, amount, paid_on')
+        .in('account_id', accountIds),
+    ]);
 
     for (const account of accounts ?? []) {
       accountsById.set(String(account.id), {
@@ -204,30 +239,66 @@ export default async function PtpsPage({
         status: account.status ?? null,
       });
     }
+
+    for (const payment of payments ?? []) {
+      const key = String(payment.account_id || '');
+      if (!key) continue;
+      const current = paymentsByAccountId.get(key) || [];
+      current.push({
+        amount: payment.amount ?? null,
+        paid_on: payment.paid_on ?? null,
+      });
+      paymentsByAccountId.set(key, current);
+    }
   }
 
   const allRows = (rows ?? []).map((row) => {
     const account = row.account_id ? accountsById.get(String(row.account_id)) : null;
+    const payments = row.account_id ? paymentsByAccountId.get(String(row.account_id)) || [] : [];
+
+    let effectiveStatus = row.status || '-';
+    let effectiveKeptAmount = Number(row.kept_amount || 0);
+
+    const needsDerivedOutcome =
+      row.status === 'Promise To Pay' && isPastDue(row.promised_date);
+
+    const needsDerivedKeptAmount =
+      row.status === 'Kept' && Number(row.kept_amount || 0) <= 0;
+
+    if (needsDerivedOutcome || needsDerivedKeptAmount) {
+      const derived = resolvePtpOutcomeFromPayments(row, payments);
+
+      if (needsDerivedOutcome) {
+        effectiveStatus = derived.effectiveStatus;
+      }
+
+      if (row.status === 'Kept' || derived.effectiveStatus === 'Kept') {
+        effectiveKeptAmount = derived.effectiveKeptAmount;
+      }
+    }
+
     return {
       ...row,
       accountMeta: account ?? null,
+      effectiveStatus,
+      effectiveKeptAmount,
     };
   });
 
-  const openPtps = allRows.filter((row) => row.status === 'Promise To Pay').length;
-  const keptPtps = allRows.filter((row) => row.status === 'Kept').length;
-  const brokenPtps = allRows.filter((row) => row.status === 'Broken').length;
+  const openPtps = allRows.filter((row) => row.effectiveStatus === 'Promise To Pay').length;
+  const keptPtps = allRows.filter((row) => row.effectiveStatus === 'Kept').length;
+  const brokenPtps = allRows.filter((row) => row.effectiveStatus === 'Broken').length;
 
   const dueToday = allRows.filter(
-    (row) => row.status === 'Promise To Pay' && isToday(row.promised_date)
+    (row) => row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date)
   ).length;
 
   const filteredRows = allRows.filter((row) => {
     if (!filter) return true;
-    if (filter === 'open') return row.status === 'Promise To Pay';
-    if (filter === 'due-today') return row.status === 'Promise To Pay' && isToday(row.promised_date);
-    if (filter === 'kept') return row.status === 'Kept';
-    if (filter === 'broken') return row.status === 'Broken';
+    if (filter === 'open') return row.effectiveStatus === 'Promise To Pay';
+    if (filter === 'due-today') return row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date);
+    if (filter === 'kept') return row.effectiveStatus === 'Kept';
+    if (filter === 'broken') return row.effectiveStatus === 'Broken';
     return true;
   });
 
@@ -244,7 +315,6 @@ export default async function PtpsPage({
             ? 'Broken PTPs'
             : '';
 
-  // 4) 6-month report
   const sixMonthsAgo = monthsAgoDate(6);
   const reportRows = allRows.filter((row) => {
     const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
@@ -269,11 +339,11 @@ export default async function PtpsPage({
 
     current.totalBooked += 1;
     current.totalPromisedAmount += Number(row.promised_amount || 0);
-    current.totalKeptAmount += Number(row.kept_amount || 0);
+    current.totalKeptAmount += Number(row.effectiveKeptAmount || 0);
 
-    if (row.status === 'Promise To Pay') current.openPtps += 1;
-    if (row.status === 'Kept') current.keptPtps += 1;
-    if (row.status === 'Broken') current.brokenPtps += 1;
+    if (row.effectiveStatus === 'Promise To Pay') current.openPtps += 1;
+    if (row.effectiveStatus === 'Kept') current.keptPtps += 1;
+    if (row.effectiveStatus === 'Broken') current.brokenPtps += 1;
     if (row.is_rebooked === true) current.rebookedPtps += 1;
 
     agentMap.set(collectorName, current);
@@ -289,18 +359,18 @@ export default async function PtpsPage({
     })
     .sort((a, b) => a.collectorName.localeCompare(b.collectorName));
 
-  const teamKeptPtps = reportRows.filter((row) => row.status === 'Kept').length;
-  const teamBrokenPtps = reportRows.filter((row) => row.status === 'Broken').length;
+  const teamKeptPtps = reportRows.filter((row) => row.effectiveStatus === 'Kept').length;
+  const teamBrokenPtps = reportRows.filter((row) => row.effectiveStatus === 'Broken').length;
   const teamResolved = teamKeptPtps + teamBrokenPtps;
 
   const teamSummary = {
     totalBooked: reportRows.length,
-    openPtps: reportRows.filter((row) => row.status === 'Promise To Pay').length,
+    openPtps: reportRows.filter((row) => row.effectiveStatus === 'Promise To Pay').length,
     keptPtps: teamKeptPtps,
     brokenPtps: teamBrokenPtps,
     rebookedPtps: reportRows.filter((row) => row.is_rebooked === true).length,
     totalPromisedAmount: reportRows.reduce((sum, row) => sum + Number(row.promised_amount || 0), 0),
-    totalKeptAmount: reportRows.reduce((sum, row) => sum + Number(row.kept_amount || 0), 0),
+    totalKeptAmount: reportRows.reduce((sum, row) => sum + Number(row.effectiveKeptAmount || 0), 0),
     keptRatePct: teamResolved > 0 ? Number(((teamKeptPtps / teamResolved) * 100).toFixed(2)) : 0,
   };
 
@@ -325,11 +395,11 @@ export default async function PtpsPage({
 
     current.totalBooked += 1;
     current.totalPromisedAmount += Number(row.promised_amount || 0);
-    current.totalKeptAmount += Number(row.kept_amount || 0);
+    current.totalKeptAmount += Number(row.effectiveKeptAmount || 0);
 
-    if (row.status === 'Promise To Pay') current.openPtps += 1;
-    if (row.status === 'Kept') current.keptPtps += 1;
-    if (row.status === 'Broken') current.brokenPtps += 1;
+    if (row.effectiveStatus === 'Promise To Pay') current.openPtps += 1;
+    if (row.effectiveStatus === 'Kept') current.keptPtps += 1;
+    if (row.effectiveStatus === 'Broken') current.brokenPtps += 1;
     if (row.is_rebooked === true) current.rebookedPtps += 1;
 
     monthlyMap.set(key, current);
@@ -494,7 +564,7 @@ export default async function PtpsPage({
                 <td className="px-4 py-3">{currency(Number(row.promised_amount || 0))}</td>
                 <td className="px-4 py-3">{formatDate(row.created_at)}</td>
                 <td className="px-4 py-3">{formatDate(row.promised_date)}</td>
-                <td className="px-4 py-3">{row.status || '-'}</td>
+                <td className="px-4 py-3">{row.effectiveStatus || '-'}</td>
                 <td className="px-4 py-3">{formatDate(row.created_at)}</td>
                 <td className="px-4 py-3">{row.collector_name || '-'}</td>
               </tr>
