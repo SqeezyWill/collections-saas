@@ -41,8 +41,36 @@ function monthsAgoDate(months: number) {
   return d.toISOString();
 }
 
+function monthKeyFromDate(value: string | null | undefined) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function monthLabelFromKey(key: string) {
+  const [year, month] = key.split('-');
+  const d = new Date(Number(year), Number(month) - 1, 1);
+  return d.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+}
+
 type AgentSummaryRow = {
   collectorName: string;
+  totalBooked: number;
+  openPtps: number;
+  keptPtps: number;
+  brokenPtps: number;
+  rebookedPtps: number;
+  totalPromisedAmount: number;
+  totalKeptAmount: number;
+  keptRatePct: number;
+};
+
+type MonthlySummaryRow = {
+  monthKey: string;
+  monthLabel: string;
   totalBooked: number;
   openPtps: number;
   keptPtps: number;
@@ -213,7 +241,6 @@ export default async function PtpsPage({
             ? 'Broken PTPs'
             : '';
 
-  // last 6 months report
   const sixMonthsAgo = monthsAgoDate(6);
   const reportRows = allRows.filter((row) => {
     const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
@@ -258,17 +285,61 @@ export default async function PtpsPage({
     })
     .sort((a, b) => a.collectorName.localeCompare(b.collectorName));
 
-  const teamResolved = keptPtps + brokenPtps;
+  const teamKeptPtps = reportRows.filter((row) => row.status === 'Kept').length;
+  const teamBrokenPtps = reportRows.filter((row) => row.status === 'Broken').length;
+  const teamResolved = teamKeptPtps + teamBrokenPtps;
+
   const teamSummary = {
     totalBooked: reportRows.length,
     openPtps: reportRows.filter((row) => row.status === 'Promise To Pay').length,
-    keptPtps: reportRows.filter((row) => row.status === 'Kept').length,
-    brokenPtps: reportRows.filter((row) => row.status === 'Broken').length,
+    keptPtps: teamKeptPtps,
+    brokenPtps: teamBrokenPtps,
     rebookedPtps: reportRows.filter((row) => row.is_rebooked === true).length,
     totalPromisedAmount: reportRows.reduce((sum, row) => sum + Number(row.promised_amount || 0), 0),
     totalKeptAmount: reportRows.reduce((sum, row) => sum + Number(row.kept_amount || 0), 0),
-    keptRatePct: teamResolved > 0 ? Number(((keptPtps / teamResolved) * 100).toFixed(2)) : 0,
+    keptRatePct: teamResolved > 0 ? Number(((teamKeptPtps / teamResolved) * 100).toFixed(2)) : 0,
   };
+
+  const monthlyMap = new Map<string, MonthlySummaryRow>();
+
+  for (const row of reportRows) {
+    const key = monthKeyFromDate(row.created_at);
+    if (!key) continue;
+
+    const current = monthlyMap.get(key) || {
+      monthKey: key,
+      monthLabel: monthLabelFromKey(key),
+      totalBooked: 0,
+      openPtps: 0,
+      keptPtps: 0,
+      brokenPtps: 0,
+      rebookedPtps: 0,
+      totalPromisedAmount: 0,
+      totalKeptAmount: 0,
+      keptRatePct: 0,
+    };
+
+    current.totalBooked += 1;
+    current.totalPromisedAmount += Number(row.promised_amount || 0);
+    current.totalKeptAmount += Number(row.kept_amount || 0);
+
+    if (row.status === 'Promise To Pay') current.openPtps += 1;
+    if (row.status === 'Kept') current.keptPtps += 1;
+    if (row.status === 'Broken') current.brokenPtps += 1;
+    if (row.is_rebooked === true) current.rebookedPtps += 1;
+
+    monthlyMap.set(key, current);
+  }
+
+  const monthlySummaries = Array.from(monthlyMap.values())
+    .map((row) => {
+      const resolved = row.keptPtps + row.brokenPtps;
+      return {
+        ...row,
+        keptRatePct: resolved > 0 ? Number(((row.keptPtps / resolved) * 100).toFixed(2)) : 0,
+      };
+    })
+    .sort((a, b) => b.monthKey.localeCompare(a.monthKey));
 
   return (
     <div className="space-y-6">
@@ -501,6 +572,47 @@ export default async function PtpsPage({
         {agentSummaries.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
             No PTP history found in the last 6 months.
+          </div>
+        ) : null}
+
+        <div className="pt-2">
+          <h3 className="text-base font-semibold text-slate-900">Monthly Trend — Last 6 Months</h3>
+          <p className="mt-1 text-sm text-slate-500">
+            Monthly PTP performance trend for the whole team.
+          </p>
+        </div>
+
+        <DataTable
+          headers={[
+            'Month',
+            'Booked',
+            'Open',
+            'Kept',
+            'Broken',
+            'Rebooked',
+            'Promised Amount',
+            'Kept Amount',
+            'Kept Rate',
+          ]}
+        >
+          {monthlySummaries.map((row) => (
+            <tr key={row.monthKey}>
+              <td className="px-4 py-3 font-medium">{row.monthLabel}</td>
+              <td className="px-4 py-3">{row.totalBooked}</td>
+              <td className="px-4 py-3">{row.openPtps}</td>
+              <td className="px-4 py-3">{row.keptPtps}</td>
+              <td className="px-4 py-3">{row.brokenPtps}</td>
+              <td className="px-4 py-3">{row.rebookedPtps}</td>
+              <td className="px-4 py-3">{currency(row.totalPromisedAmount)}</td>
+              <td className="px-4 py-3">{currency(row.totalKeptAmount)}</td>
+              <td className="px-4 py-3">{row.keptRatePct}%</td>
+            </tr>
+          ))}
+        </DataTable>
+
+        {monthlySummaries.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+            No monthly PTP history found in the last 6 months.
           </div>
         ) : null}
       </div>
