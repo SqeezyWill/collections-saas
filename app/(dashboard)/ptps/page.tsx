@@ -4,6 +4,7 @@ import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
 const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
+const TOP_TABLE_LIMIT = 15;
 
 function isToday(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -33,6 +34,24 @@ function isPastDue(dateValue: string | null | undefined) {
 function buildPageUrl(filter: string) {
   return filter ? `/ptps?filter=${encodeURIComponent(filter)}` : '/ptps';
 }
+
+function monthsAgoDate(months: number) {
+  const d = new Date();
+  d.setMonth(d.getMonth() - months);
+  return d.toISOString();
+}
+
+type AgentSummaryRow = {
+  collectorName: string;
+  totalBooked: number;
+  openPtps: number;
+  keptPtps: number;
+  brokenPtps: number;
+  rebookedPtps: number;
+  totalPromisedAmount: number;
+  totalKeptAmount: number;
+  keptRatePct: number;
+};
 
 export default async function PtpsPage({
   searchParams,
@@ -181,6 +200,8 @@ export default async function PtpsPage({
     return true;
   });
 
+  const topRows = filteredRows.slice(0, TOP_TABLE_LIMIT);
+
   const filterLabel =
     filter === 'open'
       ? 'Open PTPs'
@@ -191,6 +212,63 @@ export default async function PtpsPage({
           : filter === 'broken'
             ? 'Broken PTPs'
             : '';
+
+  // last 6 months report
+  const sixMonthsAgo = monthsAgoDate(6);
+  const reportRows = allRows.filter((row) => {
+    const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+    return createdAt >= new Date(sixMonthsAgo).getTime();
+  });
+
+  const agentMap = new Map<string, AgentSummaryRow>();
+
+  for (const row of reportRows) {
+    const collectorName = String(row.collector_name || 'Unassigned').trim() || 'Unassigned';
+    const current = agentMap.get(collectorName) || {
+      collectorName,
+      totalBooked: 0,
+      openPtps: 0,
+      keptPtps: 0,
+      brokenPtps: 0,
+      rebookedPtps: 0,
+      totalPromisedAmount: 0,
+      totalKeptAmount: 0,
+      keptRatePct: 0,
+    };
+
+    current.totalBooked += 1;
+    current.totalPromisedAmount += Number(row.promised_amount || 0);
+    current.totalKeptAmount += Number(row.kept_amount || 0);
+
+    if (row.status === 'Promise To Pay') current.openPtps += 1;
+    if (row.status === 'Kept') current.keptPtps += 1;
+    if (row.status === 'Broken') current.brokenPtps += 1;
+    if (row.is_rebooked === true) current.rebookedPtps += 1;
+
+    agentMap.set(collectorName, current);
+  }
+
+  const agentSummaries = Array.from(agentMap.values())
+    .map((row) => {
+      const resolved = row.keptPtps + row.brokenPtps;
+      return {
+        ...row,
+        keptRatePct: resolved > 0 ? Number(((row.keptPtps / resolved) * 100).toFixed(2)) : 0,
+      };
+    })
+    .sort((a, b) => a.collectorName.localeCompare(b.collectorName));
+
+  const teamResolved = keptPtps + brokenPtps;
+  const teamSummary = {
+    totalBooked: reportRows.length,
+    openPtps: reportRows.filter((row) => row.status === 'Promise To Pay').length,
+    keptPtps: reportRows.filter((row) => row.status === 'Kept').length,
+    brokenPtps: reportRows.filter((row) => row.status === 'Broken').length,
+    rebookedPtps: reportRows.filter((row) => row.is_rebooked === true).length,
+    totalPromisedAmount: reportRows.reduce((sum, row) => sum + Number(row.promised_amount || 0), 0),
+    totalKeptAmount: reportRows.reduce((sum, row) => sum + Number(row.kept_amount || 0), 0),
+    keptRatePct: teamResolved > 0 ? Number(((keptPtps / teamResolved) * 100).toFixed(2)) : 0,
+  };
 
   return (
     <div className="space-y-6">
@@ -285,54 +363,147 @@ export default async function PtpsPage({
         </div>
       </div>
 
-      <DataTable
-        headers={[
-          'CFID',
-          'Client Name',
-          'Product',
-          'Promised Amount',
-          'PTP Booked',
-          'Promise Date',
-          'Status',
-          'Booked On',
-          'Collector',
-        ]}
-      >
-        {filteredRows.map((row) => {
-          const account = row.accountMeta;
-
-          return (
-            <tr key={row.id}>
-              <td className="px-4 py-3 font-medium">{account?.cfid || '-'}</td>
-              <td className="px-4 py-3">
-                {row.account_id ? (
-                  <Link
-                    href={`/accounts/${row.account_id}`}
-                    className="font-medium text-slate-700 hover:text-slate-900 hover:underline"
-                  >
-                    {account?.debtor_name || 'Open Account'}
-                  </Link>
-                ) : (
-                  account?.debtor_name || '-'
-                )}
-              </td>
-              <td className="px-4 py-3">{row.product || '-'}</td>
-              <td className="px-4 py-3">{currency(Number(row.promised_amount || 0))}</td>
-              <td className="px-4 py-3">{formatDate(row.created_at)}</td>
-              <td className="px-4 py-3">{formatDate(row.promised_date)}</td>
-              <td className="px-4 py-3">{row.status || '-'}</td>
-              <td className="px-4 py-3">{formatDate(row.created_at)}</td>
-              <td className="px-4 py-3">{row.collector_name || '-'}</td>
-            </tr>
-          );
-        })}
-      </DataTable>
-
-      {filteredRows.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
-          No PTPs found for this filter.
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">Recent PTP Activity</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Showing {topRows.length} of {filteredRows.length} PTP records for the selected filter.
+            </p>
+          </div>
         </div>
-      ) : null}
+
+        <DataTable
+          headers={[
+            'CFID',
+            'Client Name',
+            'Product',
+            'Promised Amount',
+            'PTP Booked',
+            'Promise Date',
+            'Status',
+            'Booked On',
+            'Collector',
+          ]}
+        >
+          {topRows.map((row) => {
+            const account = row.accountMeta;
+
+            return (
+              <tr key={row.id}>
+                <td className="px-4 py-3 font-medium">{account?.cfid || '-'}</td>
+                <td className="px-4 py-3">
+                  {row.account_id ? (
+                    <Link
+                      href={`/accounts/${row.account_id}`}
+                      className="font-medium text-slate-700 hover:text-slate-900 hover:underline"
+                    >
+                      {account?.debtor_name || 'Open Account'}
+                    </Link>
+                  ) : (
+                    account?.debtor_name || '-'
+                  )}
+                </td>
+                <td className="px-4 py-3">{row.product || '-'}</td>
+                <td className="px-4 py-3">{currency(Number(row.promised_amount || 0))}</td>
+                <td className="px-4 py-3">{formatDate(row.created_at)}</td>
+                <td className="px-4 py-3">{formatDate(row.promised_date)}</td>
+                <td className="px-4 py-3">{row.status || '-'}</td>
+                <td className="px-4 py-3">{formatDate(row.created_at)}</td>
+                <td className="px-4 py-3">{row.collector_name || '-'}</td>
+              </tr>
+            );
+          })}
+        </DataTable>
+
+        {topRows.length === 0 ? (
+          <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+            No PTPs found for this filter.
+          </div>
+        ) : null}
+      </div>
+
+      <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">PTP Performance Report — Last 6 Months</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Historical promise-to-pay performance for the whole team and by agent.
+          </p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-4 xl:grid-cols-8">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Booked</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">{teamSummary.totalBooked}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Open</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">{teamSummary.openPtps}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Kept</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">{teamSummary.keptPtps}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Broken</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">{teamSummary.brokenPtps}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Rebooked</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">{teamSummary.rebookedPtps}</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Promised</p>
+            <p className="mt-2 text-base font-semibold text-slate-900">
+              {currency(teamSummary.totalPromisedAmount)}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Kept Amount</p>
+            <p className="mt-2 text-base font-semibold text-slate-900">
+              {currency(teamSummary.totalKeptAmount)}
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs text-slate-500">Kept Rate</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">{teamSummary.keptRatePct}%</p>
+          </div>
+        </div>
+
+        <DataTable
+          headers={[
+            'Agent',
+            'Booked',
+            'Open',
+            'Kept',
+            'Broken',
+            'Rebooked',
+            'Promised Amount',
+            'Kept Amount',
+            'Kept Rate',
+          ]}
+        >
+          {agentSummaries.map((row) => (
+            <tr key={row.collectorName}>
+              <td className="px-4 py-3 font-medium">{row.collectorName}</td>
+              <td className="px-4 py-3">{row.totalBooked}</td>
+              <td className="px-4 py-3">{row.openPtps}</td>
+              <td className="px-4 py-3">{row.keptPtps}</td>
+              <td className="px-4 py-3">{row.brokenPtps}</td>
+              <td className="px-4 py-3">{row.rebookedPtps}</td>
+              <td className="px-4 py-3">{currency(row.totalPromisedAmount)}</td>
+              <td className="px-4 py-3">{currency(row.totalKeptAmount)}</td>
+              <td className="px-4 py-3">{row.keptRatePct}%</td>
+            </tr>
+          ))}
+        </DataTable>
+
+        {agentSummaries.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+            No PTP history found in the last 6 months.
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
