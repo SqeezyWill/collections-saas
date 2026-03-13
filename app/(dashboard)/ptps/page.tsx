@@ -18,6 +18,18 @@ function isToday(dateValue: string | null | undefined) {
   );
 }
 
+function toDateOnly(value: string | null | undefined) {
+  if (!value) return '';
+  return String(value).slice(0, 10);
+}
+
+function isPastDue(dateValue: string | null | undefined) {
+  if (!dateValue) return false;
+  const dateOnly = toDateOnly(dateValue);
+  const today = toDateOnly(new Date().toISOString());
+  return Boolean(dateOnly) && dateOnly < today;
+}
+
 export default async function PtpsPage() {
   if (!supabase) {
     return (
@@ -28,6 +40,67 @@ export default async function PtpsPage() {
     );
   }
 
+  // 1) Load all PTPs for this tenant
+  const { data: initialRows, error: initialError } = await supabase
+    .from('ptps')
+    .select('*')
+    .eq('company_id', COMPANY_ID)
+    .order('created_at', { ascending: false });
+
+  if (initialError) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">PTPs</h1>
+        <p className="text-red-600">Failed to load PTPs: {initialError.message}</p>
+      </div>
+    );
+  }
+
+  // 2) Auto-resolve overdue open PTPs
+  const overdueOpenPtps = (initialRows ?? []).filter(
+    (row) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
+  );
+
+  for (const ptp of overdueOpenPtps) {
+    const bookedOn = toDateOnly(ptp.created_at);
+    const promisedDate = toDateOnly(ptp.promised_date);
+
+    const { data: paymentRows, error: paymentError } = await supabase
+      .from('payments')
+      .select('amount, paid_on')
+      .eq('account_id', ptp.account_id);
+
+    if (paymentError) {
+      continue;
+    }
+
+    const paidWithinWindow = (paymentRows ?? [])
+      .filter((payment) => {
+        const paidOn = toDateOnly(payment.paid_on);
+        if (!paidOn) return false;
+
+        return paidOn >= bookedOn && paidOn <= promisedDate;
+      })
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+    const promisedAmount = Number(ptp.promised_amount || 0);
+    const nextStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
+
+    await supabase
+      .from('ptps')
+      .update({ status: nextStatus })
+      .eq('id', ptp.id);
+
+    await supabase
+      .from('accounts')
+      .update({
+        status: nextStatus,
+        last_action_date: promisedDate || toDateOnly(new Date().toISOString()),
+      })
+      .eq('id', ptp.account_id);
+  }
+
+  // 3) Reload PTPs after status refresh
   const { data: rows, error } = await supabase
     .from('ptps')
     .select('*')
