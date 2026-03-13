@@ -30,7 +30,18 @@ function isPastDue(dateValue: string | null | undefined) {
   return Boolean(dateOnly) && dateOnly < today;
 }
 
-export default async function PtpsPage() {
+function buildPageUrl(filter: string) {
+  return filter ? `/ptps?filter=${encodeURIComponent(filter)}` : '/ptps';
+}
+
+export default async function PtpsPage({
+  searchParams,
+}: {
+  searchParams?: Promise<{ filter?: string }>;
+}) {
+  const resolved = searchParams ? await searchParams : {};
+  const filter = typeof resolved?.filter === 'string' ? resolved.filter.trim() : '';
+
   if (!supabase) {
     return (
       <div className="space-y-4">
@@ -40,7 +51,6 @@ export default async function PtpsPage() {
     );
   }
 
-  // 1) Load all PTPs for this tenant
   const { data: initialRows, error: initialError } = await supabase
     .from('ptps')
     .select('*')
@@ -56,7 +66,6 @@ export default async function PtpsPage() {
     );
   }
 
-  // 2) Auto-resolve overdue open PTPs
   const overdueOpenPtps = (initialRows ?? []).filter(
     (row) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
   );
@@ -70,15 +79,12 @@ export default async function PtpsPage() {
       .select('amount, paid_on')
       .eq('account_id', ptp.account_id);
 
-    if (paymentError) {
-      continue;
-    }
+    if (paymentError) continue;
 
     const paidWithinWindow = (paymentRows ?? [])
       .filter((payment) => {
         const paidOn = toDateOnly(payment.paid_on);
         if (!paidOn) return false;
-
         return paidOn >= bookedOn && paidOn <= promisedDate;
       })
       .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
@@ -86,10 +92,7 @@ export default async function PtpsPage() {
     const promisedAmount = Number(ptp.promised_amount || 0);
     const nextStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
 
-    await supabase
-      .from('ptps')
-      .update({ status: nextStatus })
-      .eq('id', ptp.id);
+    await supabase.from('ptps').update({ status: nextStatus }).eq('id', ptp.id);
 
     await supabase
       .from('accounts')
@@ -100,7 +103,6 @@ export default async function PtpsPage() {
       .eq('id', ptp.account_id);
   }
 
-  // 3) Reload PTPs after status refresh
   const { data: rows, error } = await supabase
     .from('ptps')
     .select('*')
@@ -136,13 +138,34 @@ export default async function PtpsPage() {
     }
   }
 
-  const openPtps = (rows ?? []).filter((row) => row.status === 'Promise To Pay').length;
-  const keptPtps = (rows ?? []).filter((row) => row.status === 'Kept').length;
-  const brokenPtps = (rows ?? []).filter((row) => row.status === 'Broken').length;
+  const allRows = rows ?? [];
 
-  const dueToday = (rows ?? []).filter(
+  const openPtps = allRows.filter((row) => row.status === 'Promise To Pay').length;
+  const keptPtps = allRows.filter((row) => row.status === 'Kept').length;
+  const brokenPtps = allRows.filter((row) => row.status === 'Broken').length;
+  const dueToday = allRows.filter(
     (row) => row.status === 'Promise To Pay' && isToday(row.promised_date)
   ).length;
+
+  const filteredRows = allRows.filter((row) => {
+    if (!filter) return true;
+    if (filter === 'open') return row.status === 'Promise To Pay';
+    if (filter === 'due-today') return row.status === 'Promise To Pay' && isToday(row.promised_date);
+    if (filter === 'kept') return row.status === 'Kept';
+    if (filter === 'broken') return row.status === 'Broken';
+    return true;
+  });
+
+  const filterLabel =
+    filter === 'open'
+      ? 'Open PTPs'
+      : filter === 'due-today'
+        ? 'Due Today'
+        : filter === 'kept'
+          ? 'Kept PTPs'
+          : filter === 'broken'
+            ? 'Broken PTPs'
+            : '';
 
   return (
     <div className="space-y-6">
@@ -151,6 +174,68 @@ export default async function PtpsPage() {
         <p className="mt-1 text-slate-500">
           Live promise-to-pay activity linked to account workspaces.
         </p>
+        {filterLabel ? (
+          <p className="mt-2 inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">
+            Filter: {filterLabel}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <Link
+          href={buildPageUrl('')}
+          className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+            !filter
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          All
+        </Link>
+
+        <Link
+          href={buildPageUrl('open')}
+          className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+            filter === 'open'
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          Open
+        </Link>
+
+        <Link
+          href={buildPageUrl('due-today')}
+          className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+            filter === 'due-today'
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          Due Today
+        </Link>
+
+        <Link
+          href={buildPageUrl('kept')}
+          className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+            filter === 'kept'
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          Kept
+        </Link>
+
+        <Link
+          href={buildPageUrl('broken')}
+          className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+            filter === 'broken'
+              ? 'border-slate-900 bg-slate-900 text-white'
+              : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          Broken
+        </Link>
       </div>
 
       <div className="grid gap-4 md:grid-cols-4">
@@ -188,7 +273,7 @@ export default async function PtpsPage() {
           'Collector',
         ]}
       >
-        {(rows ?? []).map((row) => {
+        {filteredRows.map((row) => {
           const account = row.account_id ? accountsById.get(String(row.account_id)) : null;
 
           return (
@@ -217,6 +302,12 @@ export default async function PtpsPage() {
           );
         })}
       </DataTable>
+
+      {filteredRows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+          No PTPs found for this filter.
+        </div>
+      ) : null}
     </div>
   );
 }
