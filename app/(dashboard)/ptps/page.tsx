@@ -98,6 +98,7 @@ export default async function PtpsPage({
     );
   }
 
+  // 1) Load current PTPs
   const { data: initialRows, error: initialError } = await supabase
     .from('ptps')
     .select('*')
@@ -113,6 +114,7 @@ export default async function PtpsPage({
     );
   }
 
+  // 2) Auto-resolve overdue open PTPs and PERSIST their broken/kept result
   const overdueOpenPtps = (initialRows ?? []).filter(
     (row) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
   );
@@ -164,6 +166,7 @@ export default async function PtpsPage({
       .eq('id', ptp.account_id);
   }
 
+  // 3) Reload PTPs after status persistence
   const { data: rows, error } = await supabase
     .from('ptps')
     .select('*')
@@ -241,6 +244,7 @@ export default async function PtpsPage({
             ? 'Broken PTPs'
             : '';
 
+  // 4) 6-month report
   const sixMonthsAgo = monthsAgoDate(6);
   const reportRows = allRows.filter((row) => {
     const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
@@ -343,16 +347,27 @@ export default async function PtpsPage({
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold">PTPs</h1>
-        <p className="mt-1 text-slate-500">
-          Live promise-to-pay activity linked to account workspaces.
-        </p>
-        {filterLabel ? (
-          <p className="mt-2 inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">
-            Filter: {filterLabel}
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+        <div>
+          <h1 className="text-3xl font-semibold">PTPs</h1>
+          <p className="mt-1 text-slate-500">
+            Live promise-to-pay activity linked to account workspaces.
           </p>
-        ) : null}
+          {filterLabel ? (
+            <p className="mt-2 inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">
+              Filter: {filterLabel}
+            </p>
+          ) : null}
+        </div>
+
+        <div className="flex flex-wrap gap-3">
+          <a
+            href="/api/ptps/report/export"
+            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Export Excel
+          </a>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3">
