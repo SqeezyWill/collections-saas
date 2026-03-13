@@ -56,7 +56,17 @@ export default async function NewPtpPage({ params }: PageProps) {
       throw new Error('Promised date cannot be in the past.');
     }
 
+    const { data: lastBrokenPtp } = await supabase
+      .from('ptps')
+      .select('id,status,created_at')
+      .eq('account_id', id)
+      .eq('status', 'Broken')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
     const ptpStatus = 'Promise To Pay';
+    const isRebooked = Boolean(lastBrokenPtp?.id);
 
     const { error: ptpError } = await supabase.from('ptps').insert({
       company_id: account.company_id,
@@ -66,6 +76,12 @@ export default async function NewPtpPage({ params }: PageProps) {
       promised_amount: promisedAmount,
       promised_date: promisedDate,
       status: ptpStatus,
+      parent_ptp_id: lastBrokenPtp?.id || null,
+      is_rebooked: isRebooked,
+      collector_id: null,
+      kept_amount: 0,
+      resolved_at: null,
+      resolution_source: null,
     });
 
     if (ptpError) {
@@ -85,7 +101,9 @@ export default async function NewPtpPage({ params }: PageProps) {
       throw new Error(accountUpdateError.message);
     }
 
-    const noteBody = `PTP booked: ${promisedAmount} due on ${promisedDate}`;
+    const noteBody = isRebooked
+      ? `PTP rebooked: ${promisedAmount} due on ${promisedDate}`
+      : `PTP booked: ${promisedAmount} due on ${promisedDate}`;
 
     const { error: noteError } = await supabase.from('notes').insert({
       company_id: account.company_id,
@@ -154,9 +172,9 @@ export default async function NewPtpPage({ params }: PageProps) {
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            New PTPs are automatically saved as <span className="font-medium">Promise To Pay</span>.
-            The system should later mark them as <span className="font-medium">Kept</span> or{' '}
-            <span className="font-medium">Broken</span> based on payments received by the due date.
+            Each PTP is saved as a separate record for reporting. If a previous PTP on this
+            account was broken, the new booking is saved as a rebook linked to that earlier
+            broken promise.
           </div>
 
           <div className="flex flex-wrap gap-3 pt-2">
