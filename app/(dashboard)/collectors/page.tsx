@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
@@ -16,7 +17,12 @@ type Row = {
   loanCollected: number;
   cardCollected: number;
   openPtps: number;
-  keptRate: number; // percentage number
+  keptPtps: number;
+  brokenPtps: number;
+  callbacksDueToday: number;
+  overdueCallbacks: number;
+  staleAccounts: number;
+  keptRate: number;
 };
 
 function downloadCsv(filename: string, rows: Record<string, any>[]) {
@@ -46,6 +52,71 @@ function downloadCsv(filename: string, rows: Record<string, any>[]) {
   a.remove();
 
   URL.revokeObjectURL(url);
+}
+
+function toDateOnly(value: string | null | undefined) {
+  if (!value) return '';
+  return String(value).slice(0, 10);
+}
+
+function isToday(dateValue: string | null | undefined) {
+  if (!dateValue) return false;
+
+  const iso = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  let date: Date;
+
+  if (iso) {
+    const year = Number(iso[1]);
+    const month = Number(iso[2]);
+    const day = Number(iso[3]);
+    date = new Date(year, month - 1, day);
+  } else {
+    date = new Date(dateValue);
+  }
+
+  if (Number.isNaN(date.getTime())) return false;
+
+  const now = new Date();
+
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+function isPastDue(dateValue: string | null | undefined) {
+  if (!dateValue) return false;
+  const dateOnly = toDateOnly(dateValue);
+  const today = toDateOnly(new Date().toISOString());
+  return Boolean(dateOnly) && dateOnly < today;
+}
+
+function resolvePtpOutcomeFromPayments(
+  ptp: any,
+  payments: Array<{ amount: number | null; paid_on: string | null }>
+) {
+  const bookedOn = toDateOnly(ptp.created_at);
+  const promisedDate = toDateOnly(ptp.promised_date);
+  const promisedAmount = Number(ptp.promised_amount || 0);
+
+  const paymentsWithinWindow = (payments ?? []).filter((payment) => {
+    const paidOn = toDateOnly(payment.paid_on);
+    if (!paidOn) return false;
+    return paidOn >= bookedOn && paidOn <= promisedDate;
+  });
+
+  const paidWithinWindow = paymentsWithinWindow.reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0
+  );
+
+  const effectiveStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
+
+  return {
+    effectiveStatus,
+    effectiveKeptAmount: effectiveStatus === 'Kept' ? paidWithinWindow : 0,
+  };
 }
 
 async function fetchAllRows(table: 'accounts' | 'payments' | 'ptps') {
@@ -124,10 +195,62 @@ export default function CollectorsPage() {
     })();
   }, []);
 
-  const allRows: Row[] = useMemo(() => {
-    const { accounts, payments, ptps } = state;
+  const normalizedPtps = useMemo(() => {
+    const paymentsByAccountId = new Map<
+      string,
+      Array<{ amount: number | null; paid_on: string | null; collector_name?: string | null }>
+    >();
 
-    // Collectors from accounts is the “assigned book” source of truth.
+    for (const payment of state.payments) {
+      const key = String(payment.account_id || '');
+      if (!key) continue;
+
+      const current = paymentsByAccountId.get(key) || [];
+      current.push({
+        amount: payment.amount ?? null,
+        paid_on: payment.paid_on ?? null,
+        collector_name: payment.collector_name ?? null,
+      });
+      paymentsByAccountId.set(key, current);
+    }
+
+    return state.ptps.map((ptp) => {
+      const accountPayments = ptp.account_id
+        ? paymentsByAccountId.get(String(ptp.account_id)) || []
+        : [];
+
+      let effectiveStatus = ptp.status || '-';
+      let effectiveKeptAmount = Number(ptp.kept_amount || 0);
+
+      const needsDerivedOutcome =
+        ptp.status === 'Promise To Pay' && isPastDue(ptp.promised_date);
+
+      const needsDerivedKeptAmount =
+        ptp.status === 'Kept' && Number(ptp.kept_amount || 0) <= 0;
+
+      if (needsDerivedOutcome || needsDerivedKeptAmount) {
+        const derived = resolvePtpOutcomeFromPayments(ptp, accountPayments);
+
+        if (needsDerivedOutcome) {
+          effectiveStatus = derived.effectiveStatus;
+        }
+
+        if (ptp.status === 'Kept' || derived.effectiveStatus === 'Kept') {
+          effectiveKeptAmount = derived.effectiveKeptAmount;
+        }
+      }
+
+      return {
+        ...ptp,
+        effectiveStatus,
+        effectiveKeptAmount,
+      };
+    });
+  }, [state.ptps, state.payments]);
+
+  const allRows: Row[] = useMemo(() => {
+    const { accounts, payments } = state;
+
     const collectors = Array.from(
       new Set(accounts.map((a) => a.collector_name).filter(Boolean))
     ).sort((a, b) => String(a).localeCompare(String(b)));
@@ -135,14 +258,13 @@ export default function CollectorsPage() {
     return collectors.map((collector) => {
       const collectorAccounts = accounts.filter((a) => a.collector_name === collector);
       const collectorPayments = payments.filter((p) => p.collector_name === collector);
-      const collectorPtps = ptps.filter((p) => p.collector_name === collector);
+      const collectorPtps = normalizedPtps.filter((p) => p.collector_name === collector);
 
       const totalCollected = collectorPayments.reduce(
         (sum, p) => sum + Number(p.amount || 0),
         0
       );
 
-      // Product split: best-effort using product strings (adjust if your product naming differs)
       const loanCollected = collectorPayments
         .filter((p) => String(p.product || '').toLowerCase().includes('loan'))
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
@@ -151,13 +273,28 @@ export default function CollectorsPage() {
         .filter((p) => String(p.product || '').toLowerCase().includes('card'))
         .reduce((sum, p) => sum + Number(p.amount || 0), 0);
 
-      const openPtps = collectorPtps.filter((p) => p.status === 'Promise To Pay').length;
+      const openPtps = collectorPtps.filter((p) => p.effectiveStatus === 'Promise To Pay').length;
+      const keptPtps = collectorPtps.filter((p) => p.effectiveStatus === 'Kept').length;
+      const brokenPtps = collectorPtps.filter((p) => p.effectiveStatus === 'Broken').length;
 
-      const kept = collectorPtps.filter((p) => p.resolution_type === 'kept').length;
-      const broken = collectorPtps.filter((p) => p.resolution_type === 'broken').length;
-      const resolved = kept + broken;
+      const resolved = keptPtps + brokenPtps;
+      const keptRate = resolved > 0 ? (keptPtps / resolved) * 100 : 0;
 
-      const keptRate = resolved > 0 ? (kept / resolved) * 100 : 0;
+      const callbacksDueToday = collectorAccounts.filter(
+        (a) => a.status === 'Callback Requested' && isToday(a.next_action_date)
+      ).length;
+
+      const overdueCallbacks = collectorAccounts.filter(
+        (a) => a.status === 'Callback Requested' && isPastDue(a.next_action_date)
+      ).length;
+
+      const staleAccounts = collectorAccounts.filter((a) => {
+        if (!a.last_action_date) return true;
+        const today = toDateOnly(new Date().toISOString());
+        const lastAction = toDateOnly(a.last_action_date);
+        if (!lastAction) return true;
+        return lastAction < today && isPastDue(a.last_action_date);
+      }).length;
 
       return {
         collector: String(collector),
@@ -166,21 +303,29 @@ export default function CollectorsPage() {
         loanCollected,
         cardCollected,
         openPtps,
+        keptPtps,
+        brokenPtps,
+        callbacksDueToday,
+        overdueCallbacks,
+        staleAccounts,
         keptRate: Number(keptRate.toFixed(1)),
       };
     });
-  }, [state]);
+  }, [state, normalizedPtps]);
 
   const totals = useMemo(() => {
     const totalCollectors = allRows.length;
     const totalAssigned = allRows.reduce((s, r) => s + Number(r.assignedAccounts || 0), 0);
     const totalCollected = allRows.reduce((s, r) => s + Number(r.totalCollected || 0), 0);
     const totalOpenPtps = allRows.reduce((s, r) => s + Number(r.openPtps || 0), 0);
+    const totalBrokenPtps = allRows.reduce((s, r) => s + Number(r.brokenPtps || 0), 0);
+    const totalCallbacksDueToday = allRows.reduce((s, r) => s + Number(r.callbacksDueToday || 0), 0);
+    const totalOverdueCallbacks = allRows.reduce((s, r) => s + Number(r.overdueCallbacks || 0), 0);
 
     const weightedKeptRate =
       totalAssigned > 0
         ? allRows.reduce(
-            (s, r) => s + (Number(r.keptRate || 0) * Number(r.assignedAccounts || 0)),
+            (s, r) => s + Number(r.keptRate || 0) * Number(r.assignedAccounts || 0),
             0
           ) / totalAssigned
         : 0;
@@ -192,6 +337,9 @@ export default function CollectorsPage() {
       totalAssigned,
       totalCollected,
       totalOpenPtps,
+      totalBrokenPtps,
+      totalCallbacksDueToday,
+      totalOverdueCallbacks,
       weightedKeptRate,
       avgCollectedPerAssigned,
     };
@@ -199,7 +347,6 @@ export default function CollectorsPage() {
 
   const totalPages = Math.max(1, Math.ceil(allRows.length / PAGE_SIZE));
 
-  // if the number of collectors changes (e.g. after load), clamp page
   useEffect(() => {
     setPage((p) => Math.min(Math.max(1, p), totalPages));
   }, [totalPages]);
@@ -217,6 +364,11 @@ export default function CollectorsPage() {
       'Loan Collected': r.loanCollected,
       'Card Collected': r.cardCollected,
       'Open PTPs': r.openPtps,
+      'Kept PTPs': r.keptPtps,
+      'Broken PTPs': r.brokenPtps,
+      'Callbacks Due Today': r.callbacksDueToday,
+      'Overdue Callbacks': r.overdueCallbacks,
+      'Stale Accounts': r.staleAccounts,
       'PTP Kept Rate (%)': r.keptRate,
       'Avg Collected per Assigned':
         r.assignedAccounts > 0 ? (r.totalCollected / r.assignedAccounts).toFixed(2) : '0.00',
@@ -249,19 +401,35 @@ export default function CollectorsPage() {
         <div>
           <h1 className="text-3xl font-semibold">Collector Performance</h1>
           <p className="mt-1 text-slate-500">
-            Per-agent productivity, assigned books, payments, and PTP performance.
+            Per-agent productivity, assigned books, payments, and follow-up pressure.
           </p>
         </div>
 
-        <button
-          onClick={handleDownload}
-          className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 lg:w-auto"
-        >
-          Download Report (CSV)
-        </button>
+        <div className="flex flex-wrap gap-3">
+          <Link
+            href="/accounts?status=Callback%20Requested"
+            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Callback Queue
+          </Link>
+
+          <Link
+            href="/ptps?filter=broken"
+            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Broken PTPs
+          </Link>
+
+          <button
+            onClick={handleDownload}
+            className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 lg:w-auto"
+          >
+            Download Report (CSV)
+          </button>
+        </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <p className="text-sm text-slate-500">Collectors</p>
           <p className="mt-2 text-3xl font-semibold text-slate-900">{totals.totalCollectors}</p>
@@ -283,10 +451,24 @@ export default function CollectorsPage() {
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">PTP Health</p>
+          <p className="text-sm text-slate-500">Open PTPs</p>
           <p className="mt-2 text-3xl font-semibold text-slate-900">{totals.totalOpenPtps}</p>
           <p className="mt-2 text-sm text-slate-500">
             Weighted kept rate: {totals.weightedKeptRate.toFixed(1)}%
+          </p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm text-slate-500">Broken PTPs</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-900">{totals.totalBrokenPtps}</p>
+          <p className="mt-2 text-sm text-slate-500">Pressure points for intervention</p>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <p className="text-sm text-slate-500">Callback Pressure</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-900">{totals.totalCallbacksDueToday}</p>
+          <p className="mt-2 text-sm text-slate-500">
+            Overdue callbacks: {totals.totalOverdueCallbacks}
           </p>
         </div>
       </div>
@@ -294,11 +476,16 @@ export default function CollectorsPage() {
       <DataTable
         headers={[
           'Collector',
-          'Assigned accounts',
+          'Assigned',
           'Total collected',
           'Loan collected',
           'Card collected',
           'Open PTPs',
+          'Kept PTPs',
+          'Broken PTPs',
+          'Callbacks today',
+          'Overdue callbacks',
+          'Stale accounts',
           'PTP kept rate',
           'Avg / assigned',
         ]}
@@ -314,6 +501,11 @@ export default function CollectorsPage() {
               <td className="px-4 py-3">{currency(row.loanCollected)}</td>
               <td className="px-4 py-3">{currency(row.cardCollected)}</td>
               <td className="px-4 py-3">{row.openPtps}</td>
+              <td className="px-4 py-3">{row.keptPtps}</td>
+              <td className="px-4 py-3">{row.brokenPtps}</td>
+              <td className="px-4 py-3">{row.callbacksDueToday}</td>
+              <td className="px-4 py-3">{row.overdueCallbacks}</td>
+              <td className="px-4 py-3">{row.staleAccounts}</td>
               <td className="px-4 py-3">{row.keptRate}%</td>
               <td className="px-4 py-3">{currency(avg)}</td>
             </tr>
