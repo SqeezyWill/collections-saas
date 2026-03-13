@@ -41,6 +41,13 @@ const SEARCH_OPTIONS: Array<{ value: SearchField; label: string }> = [
   { value: 'customer_id', label: 'CUSTOMER ID' },
 ];
 
+const QUICK_VIEWS = [
+  { label: 'Open PTPs', href: '/accounts?filter=open-ptps' },
+  { label: 'PTPs Due Today', href: '/accounts?filter=ptps-due-today' },
+  { label: 'Broken PTPs', href: '/ptps?filter=broken' },
+  { label: 'Payments', href: '/payments' },
+];
+
 const TOGGLE_EVENT = 'app:toggle-sidebar';
 
 export function Topbar() {
@@ -167,7 +174,6 @@ export function Topbar() {
       try {
         setLoading(true);
 
-        const client = supabase as NonNullable<typeof supabase>;
         const {
           data: { session },
         } = await client.auth.getSession();
@@ -276,64 +282,86 @@ export function Topbar() {
                 setShowDropdown(true);
               }}
               onFocus={() => {
-                if (results.length > 0) setShowDropdown(true);
+                if (results.length > 0 || query.trim().length >= 2) setShowDropdown(true);
               }}
               placeholder="Search selected field..."
               className="w-72 bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400"
             />
           </form>
 
-          {showDropdown && query.trim().length >= 2 ? (
-            <div className="absolute right-0 z-50 mt-2 w-[420px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
-              <div className="border-b border-slate-100 px-4 py-3 text-xs font-medium uppercase tracking-wide text-slate-500">
-                Search Results
+          {showDropdown ? (
+            <div className="absolute right-0 z-50 mt-2 w-[440px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl">
+              <div className="border-b border-slate-100 px-4 py-3">
+                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Search Results
+                </p>
               </div>
 
-              {loading ? (
-                <div className="px-4 py-4 text-sm text-slate-500">Searching...</div>
-              ) : results.length > 0 ? (
-                <div className="max-h-96 overflow-y-auto">
-                  {results.map((result) => (
-                    <Link
-                      key={result.id}
-                      href={`/accounts/${result.id}`}
-                      onClick={() => setShowDropdown(false)}
-                      className="block border-b border-slate-100 px-4 py-3 hover:bg-slate-50"
+              {query.trim().length >= 2 ? (
+                loading ? (
+                  <div className="px-4 py-4 text-sm text-slate-500">Searching...</div>
+                ) : results.length > 0 ? (
+                  <div className="max-h-96 overflow-y-auto">
+                    {results.map((result) => (
+                      <Link
+                        key={result.id}
+                        href={`/accounts/${result.id}`}
+                        onClick={() => setShowDropdown(false)}
+                        className="block border-b border-slate-100 px-4 py-3 hover:bg-slate-50"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <p className="font-medium text-slate-900">
+                            {result.debtor_name || 'Unnamed Account'}
+                          </p>
+                          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
+                            {result.cfid || 'No CFID'}
+                          </span>
+                        </div>
+
+                        <div className="mt-1 space-y-1 text-sm text-slate-500">
+                          <p>Account: {result.account_no || '-'}</p>
+                          <p>Phone: {result.primary_phone || result.contacts || '-'}</p>
+                        </div>
+                      </Link>
+                    ))}
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const trimmed = query.trim();
+                        const params = new URLSearchParams();
+                        params.set('search', trimmed);
+                        params.set('searchField', searchField);
+                        setShowDropdown(false);
+                        router.push(`/accounts?${params.toString()}`);
+                      }}
+                      className="w-full bg-slate-50 px-4 py-3 text-left text-sm font-medium text-slate-700 hover:bg-slate-100"
                     >
-                      <div className="flex items-center justify-between gap-3">
-                        <p className="font-medium text-slate-900">
-                          {result.debtor_name || 'Unnamed Account'}
-                        </p>
-                        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium text-slate-600">
-                          {result.cfid || 'No CFID'}
-                        </span>
-                      </div>
-
-                      <div className="mt-1 space-y-1 text-sm text-slate-500">
-                        <p>Account: {result.account_no || '-'}</p>
-                        <p>Phone: {result.primary_phone || result.contacts || '-'}</p>
-                      </div>
-                    </Link>
-                  ))}
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const trimmed = query.trim();
-                      const params = new URLSearchParams();
-                      params.set('search', trimmed);
-                      params.set('searchField', searchField);
-                      setShowDropdown(false);
-                      router.push(`/accounts?${params.toString()}`);
-                    }}
-                    className="w-full bg-slate-50 px-4 py-3 text-left text-sm font-medium text-slate-700 hover:bg-slate-100"
-                  >
-                    View all results
-                  </button>
-                </div>
+                      View all results
+                    </button>
+                  </div>
+                ) : (
+                  <div className="px-4 py-4 text-sm text-slate-500">
+                    No matching accounts found.
+                  </div>
+                )
               ) : (
-                <div className="px-4 py-4 text-sm text-slate-500">
-                  No matching accounts found.
+                <div className="p-4">
+                  <p className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Quick Views
+                  </p>
+                  <div className="grid gap-2">
+                    {QUICK_VIEWS.map((item) => (
+                      <Link
+                        key={item.label}
+                        href={item.href}
+                        onClick={() => setShowDropdown(false)}
+                        className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-3 text-sm font-medium text-slate-700 hover:bg-white"
+                      >
+                        {item.label}
+                      </Link>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
