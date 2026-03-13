@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useSearchParams, useRouter, usePathname } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
@@ -59,6 +59,36 @@ const SAVED_VIEWS = [
     buildHref: () => '/accounts?filter=ptps-due-today',
   },
   {
+    key: 'broken_ptps',
+    label: 'Broken PTP Follow-up',
+    helper: 'Accounts linked to broken promises',
+    buildHref: () => '/accounts?filter=broken-ptps',
+  },
+  {
+    key: 'callbacks_today',
+    label: 'Callbacks Due Today',
+    helper: 'Callback actions due today',
+    buildHref: () => '/accounts?filter=callbacks-due-today',
+  },
+  {
+    key: 'overdue_callbacks',
+    label: 'Overdue Callbacks',
+    helper: 'Missed callback actions needing follow-up',
+    buildHref: () => '/accounts?filter=overdue-callbacks',
+  },
+  {
+    key: 'next_actions_today',
+    label: 'Next Actions Due Today',
+    helper: 'Accounts with next action due today',
+    buildHref: () => '/accounts?filter=next-actions-today',
+  },
+  {
+    key: 'stale_accounts',
+    label: 'Stale Accounts',
+    helper: 'No action in 3+ days or no action date',
+    buildHref: () => '/accounts?filter=stale-accounts',
+  },
+  {
     key: 'paid',
     label: 'Paid Accounts',
     helper: 'Accounts marked paid',
@@ -94,6 +124,7 @@ type AccountRow = {
   amount_paid: number | null;
   status: string | null;
   last_action_date: string | null;
+  next_action_date?: string | null;
   identification: string | null;
   customer_id: string | null;
 };
@@ -114,6 +145,21 @@ const ALLOWED_SEARCH_FIELDS: SearchField[] = [
   'identification',
   'customer_id',
 ];
+
+function toDateOnly(value: string | null | undefined) {
+  if (!value) return '';
+  return String(value).slice(0, 10);
+}
+
+function todayDateString() {
+  return toDateOnly(new Date().toISOString());
+}
+
+function daysAgoDateString(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return toDateOnly(d.toISOString());
+}
 
 function isToday(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -227,8 +273,6 @@ function buildExportUrl(params: {
 
 export default function AccountsPage() {
   const searchParams = useSearchParams();
-  const router = useRouter();
-  const pathname = usePathname();
 
   const search = searchParams.get('search')?.trim() || '';
   const rawSearchField = searchParams.get('searchField')?.trim() || 'cfid';
@@ -311,6 +355,8 @@ export default function AccountsPage() {
         setProfile(profileData as UserProfile);
 
         const companyId = String(profileData.company_id);
+        const today = todayDateString();
+        const staleThreshold = daysAgoDateString(3);
 
         const collectorQuery = await supabase
           .from('accounts')
@@ -327,7 +373,11 @@ export default function AccountsPage() {
 
         let matchedAccountIds: string[] | null = null;
 
-        if (filter === 'open-ptps' || filter === 'ptps-due-today') {
+        if (
+          filter === 'open-ptps' ||
+          filter === 'ptps-due-today' ||
+          filter === 'broken-ptps'
+        ) {
           const { data: ptpRows, error: ptpError } = await supabase
             .from('ptps')
             .select('*')
@@ -338,14 +388,16 @@ export default function AccountsPage() {
           }
 
           const filteredPtps = (ptpRows ?? []).filter((ptp: any) => {
-            const isOpenPtp = ptp.status === 'Promise To Pay';
-
             if (filter === 'open-ptps') {
-              return isOpenPtp;
+              return ptp.status === 'Promise To Pay';
             }
 
             if (filter === 'ptps-due-today') {
-              return isOpenPtp && isToday(ptp.promised_date);
+              return ptp.status === 'Promise To Pay' && isToday(ptp.promised_date);
+            }
+
+            if (filter === 'broken-ptps') {
+              return ptp.status === 'Broken';
             }
 
             return true;
@@ -371,6 +423,22 @@ export default function AccountsPage() {
             matchedAccountIds.length > 0
               ? query.in('id', matchedAccountIds)
               : query.eq('id', EMPTY_UUID);
+        }
+
+        if (filter === 'callbacks-due-today') {
+          query = query.eq('status', 'Callback Requested').eq('next_action_date', today);
+        }
+
+        if (filter === 'overdue-callbacks') {
+          query = query.eq('status', 'Callback Requested').lt('next_action_date', today);
+        }
+
+        if (filter === 'next-actions-today') {
+          query = query.eq('next_action_date', today);
+        }
+
+        if (filter === 'stale-accounts') {
+          query = query.or(`last_action_date.is.null,last_action_date.lte.${staleThreshold}`);
         }
 
         if (search) {
@@ -433,7 +501,19 @@ export default function AccountsPage() {
   useEffect(() => {
     setSelectedIds([]);
     setBulkMessage(null);
-  }, [search, searchField, collector, status, minBalance, maxBalance, lastActionFrom, lastActionTo, normalizedLimit, effectivePage, filter]);
+  }, [
+    search,
+    searchField,
+    collector,
+    status,
+    minBalance,
+    maxBalance,
+    lastActionFrom,
+    lastActionTo,
+    normalizedLimit,
+    effectivePage,
+    filter,
+  ]);
 
   const totalBalance = useMemo(
     () => rows.reduce((sum, row) => sum + Number(row.balance || 0), 0),
@@ -452,15 +532,28 @@ export default function AccountsPage() {
 
   const totalPages = totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
 
-  const headers = ['Select', ...finalColumns.map(
-    (key) => AVAILABLE_COLUMNS.find((col) => col.key === key)?.label || key
-  )];
+  const headers = [
+    'Select',
+    ...finalColumns.map(
+      (key) => AVAILABLE_COLUMNS.find((col) => col.key === key)?.label || key
+    ),
+  ];
 
   const filterLabel =
     filter === 'open-ptps'
       ? 'Open PTP Accounts'
       : filter === 'ptps-due-today'
       ? 'PTPs Due Today'
+      : filter === 'broken-ptps'
+      ? 'Broken PTP Follow-up'
+      : filter === 'callbacks-due-today'
+      ? 'Callbacks Due Today'
+      : filter === 'overdue-callbacks'
+      ? 'Overdue Callbacks'
+      : filter === 'next-actions-today'
+      ? 'Next Actions Due Today'
+      : filter === 'stale-accounts'
+      ? 'Stale Accounts'
       : '';
 
   const selectedBalance = useMemo(
@@ -506,7 +599,9 @@ export default function AccountsPage() {
     if (action === 'export') {
       const selectedRows = rows.filter((row) => selectedIds.includes(row.id));
       const selectedCfids = selectedRows.map((row) => row.cfid).filter(Boolean).join(', ');
-      setBulkMessage(`Selected ${selectedIds.length} account(s) for export view. CFIDs: ${selectedCfids || 'N/A'}`);
+      setBulkMessage(
+        `Selected ${selectedIds.length} account(s) for export view. CFIDs: ${selectedCfids || 'N/A'}`
+      );
       return;
     }
 
@@ -520,10 +615,19 @@ export default function AccountsPage() {
     }
   }
 
-  function currentViewHref(buildHref: string) {
-    return buildHref === '/accounts'
-      ? pathname + (searchParams.toString() ? `?${searchParams.toString()}` : '')
-      : buildHref;
+  function isSavedViewActive(viewKey: string) {
+    return (
+      (viewKey === 'all' && !filter && !status) ||
+      (viewKey === 'open_ptps' && filter === 'open-ptps') ||
+      (viewKey === 'ptps_today' && filter === 'ptps-due-today') ||
+      (viewKey === 'broken_ptps' && filter === 'broken-ptps') ||
+      (viewKey === 'callbacks_today' && filter === 'callbacks-due-today') ||
+      (viewKey === 'overdue_callbacks' && filter === 'overdue-callbacks') ||
+      (viewKey === 'next_actions_today' && filter === 'next-actions-today') ||
+      (viewKey === 'stale_accounts' && filter === 'stale-accounts') ||
+      (viewKey === 'paid' && status === 'Paid') ||
+      (viewKey === 'escalated' && status === 'Escalated')
+    );
   }
 
   if (loading) {
@@ -614,12 +718,7 @@ export default function AccountsPage() {
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {SAVED_VIEWS.map((view) => {
               const href = view.buildHref();
-              const isActive =
-                (view.key === 'all' && !filter && !status) ||
-                (view.key === 'open_ptps' && filter === 'open-ptps') ||
-                (view.key === 'ptps_today' && filter === 'ptps-due-today') ||
-                (view.key === 'paid' && status === 'Paid') ||
-                (view.key === 'escalated' && status === 'Escalated');
+              const isActive = isSavedViewActive(view.key);
 
               return (
                 <Link
@@ -657,7 +756,9 @@ export default function AccountsPage() {
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs uppercase tracking-wide text-slate-500">Selected Balance</p>
-              <p className="mt-2 text-base font-semibold text-slate-900">{currency(selectedBalance)}</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">
+                {currency(selectedBalance)}
+              </p>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -879,7 +980,9 @@ export default function AccountsPage() {
               />
             </td>
 
-            {finalColumns.includes('cfid') ? <td className="px-4 py-3 font-medium">{row.cfid || '-'}</td> : null}
+            {finalColumns.includes('cfid') ? (
+              <td className="px-4 py-3 font-medium">{row.cfid || '-'}</td>
+            ) : null}
             {finalColumns.includes('debtor_name') ? (
               <td className="px-4 py-3">
                 <Link href={`/accounts/${row.id}`} className="hover:text-slate-900 hover:underline">
@@ -887,17 +990,41 @@ export default function AccountsPage() {
                 </Link>
               </td>
             ) : null}
-            {finalColumns.includes('phone') ? <td className="px-4 py-3">{row.primary_phone || row.contacts || '-'}</td> : null}
-            {finalColumns.includes('account_no') ? <td className="px-4 py-3">{row.account_no || '-'}</td> : null}
-            {finalColumns.includes('product') ? <td className="px-4 py-3">{row.product || '-'}</td> : null}
-            {finalColumns.includes('product_code') ? <td className="px-4 py-3">{row.product_code || '-'}</td> : null}
-            {finalColumns.includes('collector_name') ? <td className="px-4 py-3">{row.collector_name || '-'}</td> : null}
-            {finalColumns.includes('balance') ? <td className="px-4 py-3">{currency(Number(row.balance || 0))}</td> : null}
-            {finalColumns.includes('amount_paid') ? <td className="px-4 py-3">{currency(Number(row.amount_paid || 0))}</td> : null}
-            {finalColumns.includes('status') ? <td className="px-4 py-3">{row.status || '-'}</td> : null}
-            {finalColumns.includes('last_action_date') ? <td className="px-4 py-3">{row.last_action_date ? formatDate(row.last_action_date) : '-'}</td> : null}
-            {finalColumns.includes('identification') ? <td className="px-4 py-3">{row.identification || '-'}</td> : null}
-            {finalColumns.includes('customer_id') ? <td className="px-4 py-3">{row.customer_id || '-'}</td> : null}
+            {finalColumns.includes('phone') ? (
+              <td className="px-4 py-3">{row.primary_phone || row.contacts || '-'}</td>
+            ) : null}
+            {finalColumns.includes('account_no') ? (
+              <td className="px-4 py-3">{row.account_no || '-'}</td>
+            ) : null}
+            {finalColumns.includes('product') ? (
+              <td className="px-4 py-3">{row.product || '-'}</td>
+            ) : null}
+            {finalColumns.includes('product_code') ? (
+              <td className="px-4 py-3">{row.product_code || '-'}</td>
+            ) : null}
+            {finalColumns.includes('collector_name') ? (
+              <td className="px-4 py-3">{row.collector_name || '-'}</td>
+            ) : null}
+            {finalColumns.includes('balance') ? (
+              <td className="px-4 py-3">{currency(Number(row.balance || 0))}</td>
+            ) : null}
+            {finalColumns.includes('amount_paid') ? (
+              <td className="px-4 py-3">{currency(Number(row.amount_paid || 0))}</td>
+            ) : null}
+            {finalColumns.includes('status') ? (
+              <td className="px-4 py-3">{row.status || '-'}</td>
+            ) : null}
+            {finalColumns.includes('last_action_date') ? (
+              <td className="px-4 py-3">
+                {row.last_action_date ? formatDate(row.last_action_date) : '-'}
+              </td>
+            ) : null}
+            {finalColumns.includes('identification') ? (
+              <td className="px-4 py-3">{row.identification || '-'}</td>
+            ) : null}
+            {finalColumns.includes('customer_id') ? (
+              <td className="px-4 py-3">{row.customer_id || '-'}</td>
+            ) : null}
           </tr>
         ))}
       </DataTable>
@@ -990,7 +1117,9 @@ export default function AccountsPage() {
           </div>
         ) : (
           <p className="text-sm text-slate-500">
-            {showingAll ? `Showing first ${rows.length} accounts` : `Page ${effectivePage} of ${totalPages}`}
+            {showingAll
+              ? `Showing first ${rows.length} accounts`
+              : `Page ${effectivePage} of ${totalPages}`}
           </p>
         )}
       </div>
