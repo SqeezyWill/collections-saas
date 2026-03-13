@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
@@ -38,6 +38,39 @@ const DEFAULT_COLUMNS = [
   'status',
   'last_action_date',
 ];
+
+const SAVED_VIEWS = [
+  {
+    key: 'all',
+    label: 'All Accounts',
+    helper: 'Full operational portfolio',
+    buildHref: () => '/accounts',
+  },
+  {
+    key: 'open_ptps',
+    label: 'Open PTP Accounts',
+    helper: 'Accounts with active promises',
+    buildHref: () => '/accounts?filter=open-ptps',
+  },
+  {
+    key: 'ptps_today',
+    label: 'PTPs Due Today',
+    helper: 'Promises due today',
+    buildHref: () => '/accounts?filter=ptps-due-today',
+  },
+  {
+    key: 'paid',
+    label: 'Paid Accounts',
+    helper: 'Accounts marked paid',
+    buildHref: () => '/accounts?status=Paid',
+  },
+  {
+    key: 'escalated',
+    label: 'Escalated Accounts',
+    helper: 'Accounts needing management attention',
+    buildHref: () => '/accounts?status=Escalated',
+  },
+] as const;
 
 type UserProfile = {
   id: string;
@@ -194,6 +227,8 @@ function buildExportUrl(params: {
 
 export default function AccountsPage() {
   const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
 
   const search = searchParams.get('search')?.trim() || '';
   const rawSearchField = searchParams.get('searchField')?.trim() || 'cfid';
@@ -236,6 +271,8 @@ export default function AccountsPage() {
   const [rows, setRows] = useState<AccountRow[]>([]);
   const [totalAccounts, setTotalAccounts] = useState(0);
   const [collectorOptions, setCollectorOptions] = useState<string[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkMessage, setBulkMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -393,6 +430,11 @@ export default function AccountsPage() {
     filter,
   ]);
 
+  useEffect(() => {
+    setSelectedIds([]);
+    setBulkMessage(null);
+  }, [search, searchField, collector, status, minBalance, maxBalance, lastActionFrom, lastActionTo, normalizedLimit, effectivePage, filter]);
+
   const totalBalance = useMemo(
     () => rows.reduce((sum, row) => sum + Number(row.balance || 0), 0),
     [rows]
@@ -410,16 +452,79 @@ export default function AccountsPage() {
 
   const totalPages = totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
 
-  const headers = finalColumns.map(
+  const headers = ['Select', ...finalColumns.map(
     (key) => AVAILABLE_COLUMNS.find((col) => col.key === key)?.label || key
-  );
+  )];
 
   const filterLabel =
     filter === 'open-ptps'
       ? 'Open PTP Accounts'
       : filter === 'ptps-due-today'
-        ? 'PTPs Due Today'
-        : '';
+      ? 'PTPs Due Today'
+      : '';
+
+  const selectedBalance = useMemo(
+    () =>
+      rows
+        .filter((row) => selectedIds.includes(row.id))
+        .reduce((sum, row) => sum + Number(row.balance || 0), 0),
+    [rows, selectedIds]
+  );
+
+  const currentPageIds = useMemo(() => rows.map((row) => row.id), [rows]);
+
+  const allCurrentPageSelected =
+    currentPageIds.length > 0 && currentPageIds.every((id) => selectedIds.includes(id));
+
+  function toggleRow(id: string) {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((item) => item !== id);
+      return [...prev, id];
+    });
+  }
+
+  function toggleSelectPage() {
+    setSelectedIds((prev) => {
+      if (allCurrentPageSelected) {
+        return prev.filter((id) => !currentPageIds.includes(id));
+      }
+
+      return Array.from(new Set([...prev, ...currentPageIds]));
+    });
+  }
+
+  function clearSelection() {
+    setSelectedIds([]);
+  }
+
+  function handleBulkAction(action: 'export' | 'mark_review' | 'assign') {
+    if (selectedIds.length === 0) {
+      setBulkMessage('Please select at least one account.');
+      return;
+    }
+
+    if (action === 'export') {
+      const selectedRows = rows.filter((row) => selectedIds.includes(row.id));
+      const selectedCfids = selectedRows.map((row) => row.cfid).filter(Boolean).join(', ');
+      setBulkMessage(`Selected ${selectedIds.length} account(s) for export view. CFIDs: ${selectedCfids || 'N/A'}`);
+      return;
+    }
+
+    if (action === 'mark_review') {
+      setBulkMessage(`Selected ${selectedIds.length} account(s) for management review.`);
+      return;
+    }
+
+    if (action === 'assign') {
+      setBulkMessage(`Selected ${selectedIds.length} account(s) ready for reassignment workflow.`);
+    }
+  }
+
+  function currentViewHref(buildHref: string) {
+    return buildHref === '/accounts'
+      ? pathname + (searchParams.toString() ? `?${searchParams.toString()}` : '')
+      : buildHref;
+  }
 
   if (loading) {
     return (
@@ -497,6 +602,120 @@ export default function AccountsPage() {
         </div>
       </div>
 
+      <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-slate-900">Saved Views</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Jump quickly into common operational worklists.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {SAVED_VIEWS.map((view) => {
+              const href = view.buildHref();
+              const isActive =
+                (view.key === 'all' && !filter && !status) ||
+                (view.key === 'open_ptps' && filter === 'open-ptps') ||
+                (view.key === 'ptps_today' && filter === 'ptps-due-today') ||
+                (view.key === 'paid' && status === 'Paid') ||
+                (view.key === 'escalated' && status === 'Escalated');
+
+              return (
+                <Link
+                  key={view.key}
+                  href={href}
+                  className={`rounded-2xl border p-4 transition ${
+                    isActive
+                      ? 'border-slate-900 bg-slate-900 text-white'
+                      : 'border-slate-200 bg-slate-50 text-slate-800 hover:bg-white'
+                  }`}
+                >
+                  <p className="text-sm font-medium">{view.label}</p>
+                  <p className={`mt-1 text-xs ${isActive ? 'text-slate-200' : 'text-slate-500'}`}>
+                    {view.helper}
+                  </p>
+                </Link>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="mb-4">
+            <h2 className="text-lg font-semibold text-slate-900">Bulk Selection</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Work on selected accounts faster from the current page.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Selected</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-900">{selectedIds.length}</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Selected Balance</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">{currency(selectedBalance)}</p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Page Rows</p>
+              <p className="mt-2 text-2xl font-semibold text-slate-900">{rows.length}</p>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={toggleSelectPage}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              {allCurrentPageSelected ? 'Unselect Page' : 'Select Page'}
+            </button>
+
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Clear Selection
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleBulkAction('export')}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Bulk Export
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleBulkAction('mark_review')}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Mark for Review
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleBulkAction('assign')}
+              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Reassign Selected
+            </button>
+          </div>
+
+          {bulkMessage ? (
+            <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              {bulkMessage}
+            </p>
+          ) : null}
+        </div>
+      </div>
+
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <form className="space-y-4">
           <input type="hidden" name="filter" value={filter} />
@@ -547,6 +766,8 @@ export default function AccountsPage() {
               <option value="Paid">Paid</option>
               <option value="Escalated">Escalated</option>
               <option value="Promise To Pay">Promise To Pay</option>
+              <option value="Broken">Broken</option>
+              <option value="Callback Requested">Callback Requested</option>
             </select>
           </div>
 
@@ -649,6 +870,15 @@ export default function AccountsPage() {
       <DataTable headers={headers}>
         {rows.map((row) => (
           <tr key={row.id}>
+            <td className="px-4 py-3">
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(row.id)}
+                onChange={() => toggleRow(row.id)}
+                className="h-4 w-4 rounded border-slate-300"
+              />
+            </td>
+
             {finalColumns.includes('cfid') ? <td className="px-4 py-3 font-medium">{row.cfid || '-'}</td> : null}
             {finalColumns.includes('debtor_name') ? (
               <td className="px-4 py-3">
