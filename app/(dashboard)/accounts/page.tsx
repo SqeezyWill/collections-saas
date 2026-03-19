@@ -162,6 +162,10 @@ function daysAgoDateString(days: number) {
   return toDateOnly(d.toISOString());
 }
 
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
+
 function isToday(dateValue: string | null | undefined) {
   if (!dateValue) return false;
 
@@ -351,6 +355,9 @@ export default function AccountsPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
+  const canManageUploads =
+    normalizeRole(profile?.role) === 'super_admin' || normalizeRole(profile?.role) === 'admin';
+
   useEffect(() => {
     let mounted = true;
 
@@ -421,25 +428,27 @@ export default function AccountsPage() {
           }
 
           const filteredPtps = (ptpRows ?? []).filter((ptp: any) => {
-  const isOpenPtp = ptp.status === 'Promise To Pay';
-  const isBrokenPtp =
-    ptp.status === 'Broken' ||
-    (ptp.status === 'Promise To Pay' && ptp.promised_date && toDateOnly(ptp.promised_date) < today);
+            const isOpenPtp = ptp.status === 'Promise To Pay';
+            const isBrokenPtp =
+              ptp.status === 'Broken' ||
+              (ptp.status === 'Promise To Pay' &&
+                ptp.promised_date &&
+                toDateOnly(ptp.promised_date) < today);
 
-  if (filter === 'open-ptps') {
-    return isOpenPtp;
-  }
+            if (filter === 'open-ptps') {
+              return isOpenPtp;
+            }
 
-  if (filter === 'ptps-due-today') {
-    return isOpenPtp && isToday(ptp.promised_date);
-  }
+            if (filter === 'ptps-due-today') {
+              return isOpenPtp && isToday(ptp.promised_date);
+            }
 
-  if (filter === 'broken-ptps') {
-    return isBrokenPtp;
-  }
+            if (filter === 'broken-ptps') {
+              return isBrokenPtp;
+            }
 
-  return true;
-});
+            return true;
+          });
 
           matchedAccountIds = Array.from(
             new Set(
@@ -814,14 +823,6 @@ export default function AccountsPage() {
 
         <div className="flex flex-wrap gap-3">
           <a
-            href="/accounts-import-template.csv"
-            download
-            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Download Template
-          </a>
-
-          <a
             href={buildExportUrl({
               search,
               searchField,
@@ -839,19 +840,38 @@ export default function AccountsPage() {
             Export Excel
           </a>
 
-          <Link
-            href="/accounts/product-upload"
-            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Product Upload
-          </Link>
+          {canManageUploads ? (
+            <>
+              <a
+                href="/accounts-import-template.csv"
+                download
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Download Template
+              </a>
 
-          <Link
-            href="/accounts/upload"
-            className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-          >
-            Upload CSV
-          </Link>
+              <Link
+                href="/accounts/product-upload"
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Product Upload
+              </Link>
+
+              <Link
+                href="/accounts/upload"
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                New Accounts Upload
+              </Link>
+
+              <Link
+                href="/accounts/update-upload"
+                className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                Accounts Update Upload
+              </Link>
+            </>
+          ) : null}
         </div>
       </div>
 
