@@ -6,109 +6,45 @@ import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 type ParsedRow = Record<string, string>;
-type PreviewRow = ParsedRow & { __cfid: string };
-
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
+type PreviewRow = ParsedRow & {
+  __cfid: string;
+  __portfolioCategory: string;
+  __productCode: string;
+};
 
 const EXPECTED_HEADERS = [
-  'CFID',
-  'DEBTOR NAMES',
-  'IDENTIFICATION',
-  'CONTACT(s)',
-  'EMAIL(s)',
-  'ACCOUNT NO.',
-  'SERVICE ACCOUNT',
-  'CONTRACT NO.',
-  'DEBT CATEGORY',
-  'DEBT TYPE',
-  'CURRENCY',
-  'PRINCIPAL AMOUNT',
-  'OUTSOURCED AMOUNT',
-  'AMOUNT PAID',
-  'ARREARS',
-  'BALANCE',
-  'WAIVER',
-  'BALANCE AFTER WAIVER',
-  'LOAN TAKEN DATE',
-  'LOAN DUE DATE',
-  'OUTSOURCE DATE',
-  'AMOUNT REPAID',
-  'CLIENT',
-  'PRODUCT',
-  'DPD',
-  'DPD LEVEL',
-  'EMI',
-  'HELD BY',
-  'HELD FOR DAYS',
-  'CONTACTABILITY',
-  'CONTACT TYPE',
-  'CONTACT STATUS',
-  'DAYS SINCE OUTSOURCE',
-  'LAST PAY DATE',
-  'LAST PAY AMOUNT',
-  'LAST ACTION DATE',
-  'NEXT ACTION DATE',
-  'LAST RPC UPDATED DATE',
-  'USER ID',
-  'BRANCH',
-  'CUSTOMER_ID',
-  'BATCH NO',
-  'LOANS COUNTER',
-  'NON PAYMENT REASON',
-  'EMPLOYER',
-  'RISK CATEGORY',
-  'SEGMENTS',
+  'loan_id',
+  'customer_id',
+  'customer_names',
+  'customer_phoneno',
+  'national_id',
+  'region',
+  'loan_status',
+  'loan_type',
+  'score',
+  'risk_segment',
+  'installment_type',
+  'funded_date',
+  'due_date',
+  'last_installment_date',
+  'days_late_lastinstallment',
+  'duration',
+  'total_due',
+  'repaid_amounts',
+  'Outstanding_balance',
+  'days_late',
+  'officer',
+  'PTP_offered',
+  'PTP_due_date',
+  'PTP_amount',
+  'Reachability',
+  'Collectability',
+  'Officer Feedback 1',
+  'Officer Feedback 2',
 ] as const;
-
-function toNumber(value: string) {
-  const cleaned = String(value || '').replace(/,/g, '').trim();
-  if (!cleaned) return null;
-  const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function toInteger(value: string) {
-  const num = toNumber(value);
-  return num === null ? null : Math.trunc(num);
-}
-
-function toDate(value: string) {
-  const raw = String(value || '').trim();
-  return raw || null;
-}
-
-function cleanText(value: string) {
-  const raw = String(value || '').trim();
-  return raw || null;
-}
 
 function padCfid(num: number) {
   return String(num).padStart(3, '0');
-}
-
-function normalizeStatus(row: ParsedRow) {
-  const contactStatus = String(row['CONTACT STATUS'] || '').trim();
-  if (contactStatus) return contactStatus;
-  return 'Open';
-}
-
-function normalizeProduct(value: string) {
-  const raw = String(value || '').trim();
-  return raw || null;
-}
-
-function normalizeProductCode(value: string) {
-  const raw = String(value || '').trim().toLowerCase();
-  return raw || null;
-}
-
-function getPrimaryPhone(rawContacts: string) {
-  const parts = String(rawContacts || '')
-    .split(/[;,/]/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-  return parts[0] || null;
 }
 
 function getNumericCfid(value: unknown) {
@@ -116,6 +52,21 @@ function getNumericCfid(value: unknown) {
   if (!digits) return null;
   const parsed = Number(digits);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeLoanType(value: unknown) {
+  const raw = String(value || '').trim();
+  return raw || null;
+}
+
+function normalizePortfolioCategory(value: unknown) {
+  const loanType = String(value || '').trim().toUpperCase();
+  if (!loanType) return '';
+  return loanType === 'POCHI' ? 'POCHI' : 'Non-Pochi';
+}
+
+function normalizeStrategyProductCode() {
+  return 'mobile_loan';
 }
 
 export default function UploadAccountsPage() {
@@ -165,7 +116,9 @@ export default function UploadAccountsPage() {
 
           const allRows = (results.data || []) as ParsedRow[];
           const filteredRows = allRows.filter(
-            (row) => String(row['DEBTOR NAMES'] || '').trim() !== ''
+            (row) =>
+              String(row['customer_names'] || '').trim() !== '' ||
+              String(row['loan_id'] || '').trim() !== ''
           );
 
           const { data: existingCfids, error: cfidError } = await supabase
@@ -191,9 +144,12 @@ export default function UploadAccountsPage() {
           const generatedPreview = filteredRows.map((row) => {
             const cfid = padCfid(nextNumber);
             nextNumber += 1;
+
             return {
               ...row,
               __cfid: cfid,
+              __portfolioCategory: normalizePortfolioCategory(row['loan_type']),
+              __productCode: normalizeStrategyProductCode(),
             };
           });
 
@@ -228,63 +184,6 @@ export default function UploadAccountsPage() {
 
     setImporting(true);
 
-    const payload = previewRows.map((row) => ({
-      company_id: COMPANY_ID,
-      cfid: row.__cfid,
-      debtor_name: cleanText(row['DEBTOR NAMES']),
-      identification: cleanText(row['IDENTIFICATION']),
-      contacts: cleanText(row['CONTACT(s)']),
-      primary_phone: getPrimaryPhone(String(row['CONTACT(s)'] || '')),
-      emails: cleanText(row['EMAIL(s)']),
-      account_no: cleanText(row['ACCOUNT NO.']),
-      service_account: cleanText(row['SERVICE ACCOUNT']),
-      contract_no: cleanText(row['CONTRACT NO.']),
-      debt_category: cleanText(row['DEBT CATEGORY']),
-      debt_type: cleanText(row['DEBT TYPE']),
-      currency: cleanText(row['CURRENCY']) || 'KES',
-      principal_amount: toNumber(row['PRINCIPAL AMOUNT']),
-      outsourced_amount: toNumber(row['OUTSOURCED AMOUNT']),
-      amount_paid: toNumber(row['AMOUNT PAID']) ?? 0,
-      arrears: toNumber(row['ARREARS']),
-      balance: toNumber(row['BALANCE']) ?? 0,
-      waiver: toNumber(row['WAIVER']),
-      balance_after_waiver: toNumber(row['BALANCE AFTER WAIVER']),
-      loan_taken_date: toDate(row['LOAN TAKEN DATE']),
-      loan_due_date: toDate(row['LOAN DUE DATE']),
-      outsource_date: toDate(row['OUTSOURCE DATE']),
-      amount_repaid: toNumber(row['AMOUNT REPAID']),
-      client_name: cleanText(row['CLIENT']),
-      product: normalizeProduct(row['PRODUCT']),
-      product_code: normalizeProductCode(row['PRODUCT']),
-      dpd: toInteger(row['DPD']) ?? 0,
-      dpd_level: cleanText(row['DPD LEVEL']),
-      emi: toNumber(row['EMI']),
-      collector_name: cleanText(row['HELD BY']),
-      held_by: cleanText(row['HELD BY']),
-      held_for_days: toInteger(row['HELD FOR DAYS']),
-      contactability: cleanText(row['CONTACTABILITY']),
-      contact_type: cleanText(row['CONTACT TYPE']),
-      contact_status: cleanText(row['CONTACT STATUS']),
-      status: normalizeStatus(row),
-      days_since_outsource: toInteger(row['DAYS SINCE OUTSOURCE']),
-      last_pay_date: toDate(row['LAST PAY DATE']),
-      last_pay_amount: toNumber(row['LAST PAY AMOUNT']),
-      last_action_date: toDate(row['LAST ACTION DATE']),
-      next_action_date: toDate(row['NEXT ACTION DATE']),
-      last_rpc_updated_date: toDate(row['LAST RPC UPDATED DATE']),
-      user_id_ref: cleanText(row['USER ID']),
-      branch: cleanText(row['BRANCH']),
-      customer_id: cleanText(row['CUSTOMER_ID']),
-      batch_no: cleanText(row['BATCH NO']),
-      loans_counter: toInteger(row['LOANS COUNTER']),
-      non_payment_reason: cleanText(row['NON PAYMENT REASON']),
-      employer_name: cleanText(row['EMPLOYER']),
-      employer_details: cleanText(row['EMPLOYER']),
-      risk_category: cleanText(row['RISK CATEGORY']),
-      segments: cleanText(row['SEGMENTS']),
-      employment_status: 'UNKNOWN',
-    }));
-
     try {
       const response = await fetch('/api/accounts/import', {
         method: 'POST',
@@ -303,13 +202,15 @@ export default function UploadAccountsPage() {
         return;
       }
 
-      const importedCount = Number(result?.importedCount || payload.length || 0);
+      const importedCount = Number(result?.importedCount || previewRows.length || 0);
+      const notesImportedCount = Number(result?.notesImportedCount || 0);
       const assignedCount = Number(result?.strategySummary?.assignedCount || 0);
       const skippedCount = Number(result?.strategySummary?.skippedCount || 0);
       const failedCount = Number(result?.strategySummary?.failedCount || 0);
 
       setMessage(
         `Import complete. ${importedCount} account(s) uploaded successfully. ` +
+          `Notes: ${notesImportedCount}. ` +
           `Strategies: ${assignedCount} assigned, ${skippedCount} skipped, ${failedCount} failed.`
       );
       setPreviewRows([]);
@@ -326,8 +227,9 @@ export default function UploadAccountsPage() {
         <div>
           <h1 className="text-3xl font-semibold text-slate-900">Upload Accounts CSV</h1>
           <p className="mt-1 text-slate-500">
-            Use the standard template headers. Product values are taken exactly as uploaded.
-            CFIDs are generated automatically from the next available number.
+            Use the new standard mobile loans template. CFIDs are generated automatically.
+            Loan type is stored as product, portfolio grouping is derived as POCHI or Non-Pochi,
+            and strategy compatibility is retained using mobile_loan.
           </p>
         </div>
 
@@ -356,7 +258,9 @@ export default function UploadAccountsPage() {
           </div>
 
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
-            Required in practice: at least <strong>DEBTOR NAMES</strong>. Most other columns may be blank and can be updated later in the app.
+            Required in practice: at least <strong>loan_id</strong> or <strong>customer_names</strong>.
+            Officer Feedback 1 and Officer Feedback 2 will be imported into notes. PTP fields will
+            be carried into account update context and notes.
           </div>
 
           {loadingPreview ? <p className="text-sm text-slate-500">Preparing preview...</p> : null}
@@ -376,25 +280,27 @@ export default function UploadAccountsPage() {
                   <thead className="bg-slate-50 text-left text-slate-600">
                     <tr>
                       <th className="px-4 py-3">Generated CFID</th>
-                      <th className="px-4 py-3">Debtor</th>
-                      <th className="px-4 py-3">Account No.</th>
-                      <th className="px-4 py-3">Product</th>
+                      <th className="px-4 py-3">Customer</th>
+                      <th className="px-4 py-3">Loan ID</th>
+                      <th className="px-4 py-3">Loan Type</th>
+                      <th className="px-4 py-3">Portfolio Category</th>
                       <th className="px-4 py-3">Phone</th>
-                      <th className="px-4 py-3">Collector</th>
+                      <th className="px-4 py-3">Officer</th>
                     </tr>
                   </thead>
                   <tbody>
                     {previewRows.slice(0, 10).map((row) => (
                       <tr
-                        key={`${row.__cfid}-${row['ACCOUNT NO.'] || row['DEBTOR NAMES']}`}
+                        key={`${row.__cfid}-${row['loan_id'] || row['customer_names']}`}
                         className="border-t border-slate-200"
                       >
                         <td className="px-4 py-3 font-medium text-slate-900">{row.__cfid}</td>
-                        <td className="px-4 py-3">{row['DEBTOR NAMES'] || '-'}</td>
-                        <td className="px-4 py-3">{row['ACCOUNT NO.'] || '-'}</td>
-                        <td className="px-4 py-3">{row['PRODUCT'] || '-'}</td>
-                        <td className="px-4 py-3">{row['CONTACT(s)'] || '-'}</td>
-                        <td className="px-4 py-3">{row['HELD BY'] || '-'}</td>
+                        <td className="px-4 py-3">{row['customer_names'] || '-'}</td>
+                        <td className="px-4 py-3">{row['loan_id'] || '-'}</td>
+                        <td className="px-4 py-3">{normalizeLoanType(row['loan_type']) || '-'}</td>
+                        <td className="px-4 py-3">{row.__portfolioCategory || '-'}</td>
+                        <td className="px-4 py-3">{row['customer_phoneno'] || '-'}</td>
+                        <td className="px-4 py-3">{row['officer'] || '-'}</td>
                       </tr>
                     ))}
                   </tbody>

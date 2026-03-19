@@ -8,6 +8,7 @@ const ACCOUNTS_TABLE = 'accounts';
 const STRATEGIES_TABLE = 'strategies';
 const MAP_TABLE = 'strategy_products';
 const PRODUCTS_TABLE = 'products';
+const NOTES_TABLE = 'notes';
 
 type ParsedRow = Record<string, string>;
 
@@ -37,24 +38,8 @@ function padCfid(num: number) {
   return String(num).padStart(3, '0');
 }
 
-function normalizeStatus(row: ParsedRow) {
-  const contactStatus = String(row['CONTACT STATUS'] || '').trim();
-  if (contactStatus) return contactStatus;
-  return 'Open';
-}
-
-function normalizeProduct(value: unknown) {
-  const raw = String(value ?? '').trim();
-  return raw || null;
-}
-
-function normalizeProductCode(value: unknown) {
-  const raw = String(value ?? '').trim().toLowerCase();
-  return raw || null;
-}
-
-function getPrimaryPhone(rawContacts: unknown) {
-  const parts = String(rawContacts ?? '')
+function getPrimaryPhone(rawPhone: unknown) {
+  const parts = String(rawPhone ?? '')
     .split(/[;,/]/)
     .map((item) => item.trim())
     .filter(Boolean);
@@ -125,13 +110,64 @@ function getBucketMeta(dpd: number | null) {
   return {
     key: '121_plus',
     label: '121+',
-    aliases: ['121+', '121 plus', '120+', '120 plus', '121_and_above', '121 and above', 'over 120'],
+    aliases: [
+      '121+',
+      '121 plus',
+      '120+',
+      '120 plus',
+      '121_and_above',
+      '121 and above',
+      'over 120',
+    ],
   };
 }
 
 function matchesBucket(strategy: any, bucketAliases: string[]) {
   const haystack = `${normalize(strategy?.name)} ${normalize(strategy?.description)}`;
   return bucketAliases.some((alias) => haystack.includes(normalize(alias)));
+}
+
+function normalizeStatus(row: ParsedRow) {
+  return cleanText(row['loan_status']) || 'Open';
+}
+
+function normalizeLoanType(value: unknown) {
+  return cleanText(value);
+}
+
+function normalizePortfolioCategory(value: unknown) {
+  const loanType = String(value ?? '').trim().toUpperCase();
+  if (!loanType) return null;
+  return loanType === 'POCHI' ? 'POCHI' : 'Non-Pochi';
+}
+
+function normalizeStrategyProductCode() {
+  return 'mobile_loan';
+}
+
+function buildImportedNote(row: ParsedRow) {
+  const lines: string[] = [];
+
+  const feedback1 = cleanText(row['Officer Feedback 1']);
+  const feedback2 = cleanText(row['Officer Feedback 2']);
+  const ptpOffered = cleanText(row['PTP_offered']);
+  const ptpDueDate = cleanText(row['PTP_due_date']);
+  const ptpAmount = cleanText(row['PTP_amount']);
+  const reachability = cleanText(row['Reachability']);
+  const collectability = cleanText(row['Collectability']);
+
+  if (feedback1) lines.push(`Officer Feedback 1: ${feedback1}`);
+  if (feedback2) lines.push(`Officer Feedback 2: ${feedback2}`);
+  if (ptpOffered) lines.push(`PTP Offered: ${ptpOffered}`);
+  if (ptpDueDate) lines.push(`PTP Due Date: ${ptpDueDate}`);
+  if (ptpAmount) lines.push(`PTP Amount: ${ptpAmount}`);
+  if (reachability) lines.push(`Reachability: ${reachability}`);
+  if (collectability) lines.push(`Collectability: ${collectability}`);
+
+  const today = new Date().toISOString().slice(0, 10);
+  lines.push(`Upload Update Date: ${today}`);
+
+  return lines.join('\n').trim();
 }
 
 async function getMaxExistingCfid(admin: NonNullable<typeof supabaseAdmin>) {
@@ -171,52 +207,6 @@ async function getMaxExistingCfid(admin: NonNullable<typeof supabaseAdmin>) {
   return maxCfid;
 }
 
-async function buildProductCodeResolver(admin: NonNullable<typeof supabaseAdmin>) {
-  const { data, error } = await admin
-    .from(PRODUCTS_TABLE)
-    .select('name,code,is_active')
-    .eq('is_active', true);
-
-  if (error) {
-    throw new Error(`Failed to read products: ${error.message}`);
-  }
-
-  const products = data ?? [];
-
-  function canonicalize(value: unknown) {
-    return String(value ?? '')
-      .trim()
-      .toLowerCase()
-      .replace(/&/g, ' and ')
-      .replace(/[^a-z0-9]+/g, '_')
-      .replace(/^_+|_+$/g, '')
-      .replace(/_loans$/, '_loan')
-      .replace(/_cards$/, '_card');
-  }
-
-  const byCanonical = new Map<string, string>();
-
-  for (const product of products) {
-    const code = String(product.code || '').trim();
-    const name = String(product.name || '').trim();
-
-    if (code) {
-      byCanonical.set(canonicalize(code), code);
-    }
-
-    if (name) {
-      byCanonical.set(canonicalize(name), code);
-    }
-  }
-
-  return function resolveProductCode(value: unknown) {
-    const raw = String(value ?? '').trim();
-    if (!raw) return null;
-
-    return byCanonical.get(canonicalize(raw)) ?? null;
-  };
-}
-
 async function resolveStrategyForAccount(
   admin: NonNullable<typeof supabaseAdmin>,
   input: {
@@ -225,7 +215,7 @@ async function resolveStrategyForAccount(
     dpd: number | null;
   }
 ) {
-  const productCode = normalizeProductCode(input.productCode);
+  const productCode = cleanText(input.productCode)?.toLowerCase() || null;
 
   if (!productCode) {
     return {
@@ -410,22 +400,13 @@ export async function POST(req: NextRequest) {
   }
 
   const filteredRows = rows.filter(
-    (row) => String(row?.['DEBTOR NAMES'] || '').trim() !== ''
+    (row) =>
+      String(row?.['customer_names'] || '').trim() !== '' ||
+      String(row?.['loan_id'] || '').trim() !== ''
   );
 
   if (!filteredRows.length) {
     return NextResponse.json({ error: 'No valid rows found to import.' }, { status: 400 });
-  }
-
-  let resolveProductCode: (value: unknown) => string | null;
-
-  try {
-    resolveProductCode = await buildProductCodeResolver(admin);
-  } catch (error: any) {
-    return NextResponse.json(
-      { error: error?.message || 'Failed to read products.' },
-      { status: 500 }
-    );
   }
 
   let maxExistingCfid = 0;
@@ -439,68 +420,54 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  console.log('IMPORT DEBUG maxExistingCfid:', maxExistingCfid);
-
   let nextNumber = maxExistingCfid + 1;
 
   const payload = filteredRows.map((row) => {
     const cfid = padCfid(nextNumber);
     nextNumber += 1;
 
+    const loanType = normalizeLoanType(row['loan_type']);
+    const portfolioCategory = normalizePortfolioCategory(row['loan_type']);
+    const productCode = normalizeStrategyProductCode();
+
     return {
       company_id: COMPANY_ID,
       cfid,
-      debtor_name: cleanText(row['DEBTOR NAMES']),
-      identification: cleanText(row['IDENTIFICATION']),
-      contacts: cleanText(row['CONTACT(s)']),
-      primary_phone: getPrimaryPhone(row['CONTACT(s)']),
-      emails: cleanText(row['EMAIL(s)']),
-      account_no: cleanText(row['ACCOUNT NO.']),
-      service_account: cleanText(row['SERVICE ACCOUNT']),
-      contract_no: cleanText(row['CONTRACT NO.']),
-      debt_category: cleanText(row['DEBT CATEGORY']),
-      debt_type: cleanText(row['DEBT TYPE']),
-      currency: cleanText(row['CURRENCY']) || 'KES',
-      principal_amount: toNumber(row['PRINCIPAL AMOUNT']),
-      outsourced_amount: toNumber(row['OUTSOURCED AMOUNT']),
-      amount_paid: toNumber(row['AMOUNT PAID']) ?? 0,
-      arrears: toNumber(row['ARREARS']),
-      balance: toNumber(row['BALANCE']) ?? 0,
-      waiver: toNumber(row['WAIVER']),
-      balance_after_waiver: toNumber(row['BALANCE AFTER WAIVER']),
-      loan_taken_date: toDate(row['LOAN TAKEN DATE']),
-      loan_due_date: toDate(row['LOAN DUE DATE']),
-      outsource_date: toDate(row['OUTSOURCE DATE']),
-      amount_repaid: toNumber(row['AMOUNT REPAID']),
-      client_name: cleanText(row['CLIENT']),
-      product: normalizeProduct(row['PRODUCT']),
-      product_code: resolveProductCode(row['PRODUCT']),
-      dpd: toInteger(row['DPD']) ?? 0,
-      dpd_level: cleanText(row['DPD LEVEL']),
-      emi: toNumber(row['EMI']),
-      collector_name: cleanText(row['HELD BY']),
-      held_by: cleanText(row['HELD BY']),
-      held_for_days: toInteger(row['HELD FOR DAYS']),
-      contactability: cleanText(row['CONTACTABILITY']),
-      contact_type: cleanText(row['CONTACT TYPE']),
-      contact_status: cleanText(row['CONTACT STATUS']),
+      account_no: cleanText(row['loan_id']),
+      customer_id: cleanText(row['customer_id']),
+      debtor_name: cleanText(row['customer_names']),
+      contacts: cleanText(row['customer_phoneno']),
+      primary_phone: getPrimaryPhone(row['customer_phoneno']),
+      identification: cleanText(row['national_id']),
+      region: cleanText(row['region']),
       status: normalizeStatus(row),
-      days_since_outsource: toInteger(row['DAYS SINCE OUTSOURCE']),
-      last_pay_date: toDate(row['LAST PAY DATE']),
-      last_pay_amount: toNumber(row['LAST PAY AMOUNT']),
-      last_action_date: toDate(row['LAST ACTION DATE']),
-      next_action_date: toDate(row['NEXT ACTION DATE']),
-      last_rpc_updated_date: toDate(row['LAST RPC UPDATED DATE']),
-      user_id_ref: cleanText(row['USER ID']),
-      branch: cleanText(row['BRANCH']),
-      customer_id: cleanText(row['CUSTOMER_ID']),
-      batch_no: cleanText(row['BATCH NO']),
-      loans_counter: toInteger(row['LOANS COUNTER']),
-      non_payment_reason: cleanText(row['NON PAYMENT REASON']),
-      employer_name: cleanText(row['EMPLOYER']),
-      employer_details: cleanText(row['EMPLOYER']),
-      risk_category: cleanText(row['RISK CATEGORY']),
-      segments: cleanText(row['SEGMENTS']),
+      product: loanType,
+      product_code: productCode,
+      portfolio_category: portfolioCategory,
+      score: toNumber(row['score']),
+      risk_segment: cleanText(row['risk_segment']),
+      installment_type: cleanText(row['installment_type']),
+      funded_date: toDate(row['funded_date']),
+      loan_taken_date: toDate(row['funded_date']),
+      loan_due_date: toDate(row['due_date']),
+      due_date: toDate(row['due_date']),
+      last_installment_date: toDate(row['last_installment_date']),
+      days_late_lastinstallment: toInteger(row['days_late_lastinstallment']),
+      duration: toInteger(row['duration']),
+      outsourced_amount: toNumber(row['total_due']),
+      total_due: toNumber(row['total_due']),
+      amount_paid: toNumber(row['repaid_amounts']) ?? 0,
+      balance: toNumber(row['Outstanding_balance']) ?? 0,
+      dpd: toInteger(row['days_late']) ?? 0,
+      collector_name: cleanText(row['officer']),
+      held_by: cleanText(row['officer']),
+      ptp_offered: cleanText(row['PTP_offered']),
+      ptp_due_date: toDate(row['PTP_due_date']),
+      ptp_amount: toNumber(row['PTP_amount']),
+      contactability: cleanText(row['Reachability']),
+      collectability: cleanText(row['Collectability']),
+      last_action_date: new Date().toISOString().slice(0, 10),
+      next_action_date: toDate(row['PTP_due_date']),
       employment_status: 'UNKNOWN',
     };
   });
@@ -512,6 +479,30 @@ export async function POST(req: NextRequest) {
 
   if (insertError) {
     return NextResponse.json({ error: insertError.message }, { status: 500 });
+  }
+
+  const notesPayload = (insertedAccounts ?? [])
+    .map((account, index) => {
+      const row = filteredRows[index];
+      const body = buildImportedNote(row);
+
+      if (!body) return null;
+
+      return {
+        company_id: COMPANY_ID,
+        account_id: account.id,
+        author_id: '11111111-1111-1111-1111-111111111111',
+        created_by_name: 'System User',
+        body,
+      };
+    })
+    .filter(Boolean);
+
+  if (notesPayload.length > 0) {
+    const { error: notesError } = await admin.from(NOTES_TABLE).insert(notesPayload);
+    if (notesError) {
+      return NextResponse.json({ error: notesError.message }, { status: 500 });
+    }
   }
 
   const strategyResults = [];
@@ -564,6 +555,7 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     success: true,
     importedCount: insertedAccounts?.length || 0,
+    notesImportedCount: notesPayload.length,
     strategySummary: {
       assignedCount,
       skippedCount,
