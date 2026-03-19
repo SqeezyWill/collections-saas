@@ -11,9 +11,6 @@ export const revalidate = 0;
 const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
 const PAGE_SIZE = 1000;
 
-export default async function DashboardPage() {
-  noStore();
-
 function isCurrentMonth(dateValue: string | null | undefined) {
   if (!dateValue) return false;
 
@@ -149,7 +146,22 @@ async function fetchAllRows(table: 'accounts' | 'payments' | 'ptps') {
   return allRows;
 }
 
+function alertClasses(tone: string) {
+  if (tone === 'red') {
+    return 'border-red-200 bg-red-50 text-red-700';
+  }
+  if (tone === 'amber') {
+    return 'border-amber-200 bg-amber-50 text-amber-700';
+  }
+  if (tone === 'blue') {
+    return 'border-blue-200 bg-blue-50 text-blue-700';
+  }
+  return 'border-slate-200 bg-slate-50 text-slate-700';
+}
+
 export default async function DashboardPage() {
+  noStore();
+
   if (!supabase) {
     return (
       <div className="space-y-4">
@@ -543,19 +555,6 @@ export default async function DashboardPage() {
       ],
     },
   ];
-
-  function alertClasses(tone: string) {
-    if (tone === 'red') {
-      return 'border-red-200 bg-red-50 text-red-700';
-    }
-    if (tone === 'amber') {
-      return 'border-amber-200 bg-amber-50 text-amber-700';
-    }
-    if (tone === 'blue') {
-      return 'border-blue-200 bg-blue-50 text-blue-700';
-    }
-    return 'border-slate-200 bg-slate-50 text-slate-700';
-  }
 
   return (
     <div className="space-y-6">
