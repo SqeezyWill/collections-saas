@@ -522,6 +522,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
     { label: 'Customer ID', value: detailValue(account.customer_id) },
     { label: 'CFID', value: detailValue(account.cfid) },
     { label: 'Collector', value: detailValue(account.collector_name) },
+    { label: 'Region', value: detailValue(account.region) },
     {
       label: 'Phone Number(s)',
       value:
@@ -553,6 +554,18 @@ export default async function AccountDetailPage({ params }: PageProps) {
   const debtDetails = [
     { label: 'Product Name', value: detailValue(account.product) },
     { label: 'Product Category', value: detailValue(account.product_code) },
+    { label: 'Portfolio Category', value: detailValue(account.portfolio_category) },
+    { label: 'Score', value: detailValue(account.score) },
+    { label: 'Installment Type', value: detailValue(account.installment_type) },
+    { label: 'Funded Date', value: formatDate(account.funded_date || account.loan_taken_date) },
+    { label: 'Due Date', value: formatDate(account.due_date || account.loan_due_date) },
+    { label: 'Last Installment Date', value: formatDate(account.last_installment_date) },
+    {
+      label: 'Days Late Last Installment',
+      value: detailValue(account.days_late_lastinstallment),
+    },
+    { label: 'Duration / Tenure', value: detailValue(account.duration) },
+    { label: 'Total Due', value: currency(Number(account.total_due || 0)) },
     { label: 'Balance', value: currency(Number(account.balance || 0)) },
     { label: 'Amount Paid', value: currency(Number(account.amount_paid || 0)) },
     { label: 'Status', value: detailValue(account.status) },
