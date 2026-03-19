@@ -1,11 +1,18 @@
+import { unstable_noStore as noStore } from 'next/cache';
 import Link from 'next/link';
 import { KpiCard } from '@/components/KpiCard';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency } from '@/lib/utils';
 
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
 const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
 const PAGE_SIZE = 1000;
+
+export default async function DashboardPage() {
+  noStore();
 
 function isCurrentMonth(dateValue: string | null | undefined) {
   if (!dateValue) return false;

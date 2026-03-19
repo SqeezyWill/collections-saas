@@ -1,6 +1,10 @@
+import { unstable_noStore as noStore } from 'next/cache';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
 
@@ -17,6 +21,8 @@ function isCurrentMonth(dateValue: string | null | undefined) {
 }
 
 export default async function PaymentsPage() {
+  noStore();
+
   if (!supabase) {
     return (
       <div className="space-y-4">
