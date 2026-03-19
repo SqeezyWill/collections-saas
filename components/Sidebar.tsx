@@ -14,6 +14,7 @@ import {
   LayoutDashboard,
   LogOut,
   ShieldCheck,
+  Upload,
   Wallet,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -42,6 +43,12 @@ const recoveryReportLinks: NavLink[] = [
   { href: '/ptps', label: 'PTPs', icon: CreditCard },
 ];
 
+const uploadToolLinks: NavLink[] = [
+  { href: '/accounts/upload', label: 'New Accounts Upload', icon: Upload },
+  { href: '/accounts/update-upload', label: 'Accounts Update Upload', icon: Upload },
+  { href: '/accounts/product-upload', label: 'Product Upload', icon: Upload },
+];
+
 const STORAGE_KEY = 'sidebar_collapsed_v1';
 const PIN_KEY = 'sidebar_pinned_open_v1';
 const TOGGLE_EVENT = 'app:toggle-sidebar';
@@ -57,6 +64,7 @@ function linksForRole(role: string) {
     return {
       links: baseLinks,
       recoveryLinks: recoveryReportLinks,
+      uploadLinks: uploadToolLinks,
     };
   }
 
@@ -64,21 +72,22 @@ function linksForRole(role: string) {
     return {
       links: baseLinks.filter((link) => link.href !== '/admin'),
       recoveryLinks: recoveryReportLinks,
+      uploadLinks: uploadToolLinks,
     };
   }
 
   if (normalizedRole === 'agent') {
     return {
-      links: baseLinks.filter((link) =>
-        ['/dashboard', '/accounts'].includes(link.href)
-      ),
+      links: baseLinks.filter((link) => ['/dashboard', '/accounts'].includes(link.href)),
       recoveryLinks: recoveryReportLinks,
+      uploadLinks: [],
     };
   }
 
   return {
     links: [{ href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard }],
     recoveryLinks: [],
+    uploadLinks: [],
   };
 }
 
@@ -92,6 +101,7 @@ export function Sidebar() {
   const [loggingOut, setLoggingOut] = useState(false);
   const [role, setRole] = useState('agent');
   const [reportsOpen, setReportsOpen] = useState(true);
+  const [uploadToolsOpen, setUploadToolsOpen] = useState(true);
 
   const hoverCloseTimer = useRef<number | null>(null);
 
@@ -119,7 +129,7 @@ export function Sidebar() {
     loadRole();
   }, []);
 
-  const { links, recoveryLinks } = useMemo(() => linksForRole(role), [role]);
+  const { links, recoveryLinks, uploadLinks } = useMemo(() => linksForRole(role), [role]);
 
   useEffect(() => {
     try {
@@ -169,14 +179,20 @@ export function Sidebar() {
   const effectiveCollapsed = getEffectiveCollapsed(collapsed, pinnedOpen, isHovering);
 
   const activeHref = useMemo(() => {
-    const candidates = [...links, ...recoveryLinks].sort((a, b) => b.href.length - a.href.length);
+    const candidates = [...links, ...recoveryLinks, ...uploadLinks].sort(
+      (a, b) => b.href.length - a.href.length
+    );
 
     return (
       candidates.find((l) => pathname === l.href || pathname.startsWith(`${l.href}/`))?.href || ''
     );
-  }, [pathname, links, recoveryLinks]);
+  }, [pathname, links, recoveryLinks, uploadLinks]);
 
   const isRecoverySectionActive = recoveryLinks.some(
+    (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
+  );
+
+  const isUploadSectionActive = uploadLinks.some(
     (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
   );
 
@@ -185,6 +201,12 @@ export function Sidebar() {
       setReportsOpen(true);
     }
   }, [isRecoverySectionActive]);
+
+  useEffect(() => {
+    if (isUploadSectionActive) {
+      setUploadToolsOpen(true);
+    }
+  }, [isUploadSectionActive]);
 
   function handleMouseEnter() {
     if (pinnedOpen) return;
@@ -350,6 +372,58 @@ export function Sidebar() {
                 {!effectiveCollapsed && reportsOpen ? (
                   <div className="mt-1 space-y-1 pl-4">
                     {recoveryLinks.map(({ href, label, icon: Icon }) => {
+                      const isActive = href === activeHref;
+
+                      return (
+                        <Link
+                          key={href}
+                          href={href}
+                          className={[
+                            'flex items-center gap-3 rounded-xl px-3 py-3 transition',
+                            isActive
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-300 hover:bg-slate-900 hover:text-white',
+                          ].join(' ')}
+                        >
+                          <Icon size={16} />
+                          <span className="truncate">{label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {uploadLinks.length > 0 ? (
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setUploadToolsOpen((prev) => !prev)}
+                  className={[
+                    'flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition',
+                    isUploadSectionActive
+                      ? 'bg-slate-900 text-white'
+                      : 'text-slate-300 hover:bg-slate-900 hover:text-white',
+                    effectiveCollapsed ? 'justify-center' : '',
+                  ].join(' ')}
+                  title={effectiveCollapsed ? 'Upload Tools' : undefined}
+                >
+                  <Upload size={18} />
+                  {!effectiveCollapsed ? (
+                    <>
+                      <span className="flex-1 truncate">Upload Tools</span>
+                      <ChevronDown
+                        size={16}
+                        className={`transition-transform ${uploadToolsOpen ? 'rotate-180' : 'rotate-0'}`}
+                      />
+                    </>
+                  ) : null}
+                </button>
+
+                {!effectiveCollapsed && uploadToolsOpen ? (
+                  <div className="mt-1 space-y-1 pl-4">
+                    {uploadLinks.map(({ href, label, icon: Icon }) => {
                       const isActive = href === activeHref;
 
                       return (
