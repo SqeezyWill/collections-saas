@@ -6,10 +6,23 @@ import { useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 type ParsedRow = Record<string, string>;
+
+type PreviewStatus =
+  | 'new'
+  | 'duplicate_exact'
+  | 'conflict_same_loan_diff_customer'
+  | 'same_customer_other_facility'
+  | 'duplicate_in_file';
+
 type PreviewRow = ParsedRow & {
   __cfid: string;
   __portfolioCategory: string;
   __productCode: string;
+  __status: PreviewStatus;
+  __statusMessage: string;
+  __existingAccountNo: string;
+  __existingCustomerId: string;
+  __existingDebtorName: string;
 };
 
 const EXPECTED_HEADERS = [
@@ -69,6 +82,20 @@ function normalizeStrategyProductCode() {
   return 'mobile_loan';
 }
 
+function toneForStatus(status: PreviewStatus) {
+  if (status === 'new') return 'bg-emerald-100 text-emerald-700';
+  if (status === 'same_customer_other_facility') return 'bg-amber-100 text-amber-700';
+  return 'bg-rose-100 text-rose-700';
+}
+
+function labelForStatus(status: PreviewStatus) {
+  if (status === 'new') return 'Will Import';
+  if (status === 'same_customer_other_facility') return 'Customer Has Another Facility';
+  if (status === 'duplicate_exact') return 'Duplicate Existing Account';
+  if (status === 'conflict_same_loan_diff_customer') return 'Loan Conflict';
+  return 'Duplicate In File';
+}
+
 export default function UploadAccountsPage() {
   const [fileName, setFileName] = useState('');
   const [missingHeaders, setMissingHeaders] = useState<string[]>([]);
@@ -79,6 +106,22 @@ export default function UploadAccountsPage() {
   const [errorMessage, setErrorMessage] = useState('');
 
   const previewCount = useMemo(() => previewRows.length, [previewRows]);
+
+  const summary = useMemo(() => {
+    return {
+      newCount: previewRows.filter((row) => row.__status === 'new').length,
+      sameCustomerOtherFacilityCount: previewRows.filter(
+        (row) => row.__status === 'same_customer_other_facility'
+      ).length,
+      duplicateExactCount: previewRows.filter((row) => row.__status === 'duplicate_exact').length,
+      conflictCount: previewRows.filter(
+        (row) => row.__status === 'conflict_same_loan_diff_customer'
+      ).length,
+      duplicateInFileCount: previewRows.filter((row) => row.__status === 'duplicate_in_file').length,
+    };
+  }, [previewRows]);
+
+  const importableCount = summary.newCount + summary.sameCustomerOtherFacilityCount;
 
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -132,6 +175,46 @@ export default function UploadAccountsPage() {
             return;
           }
 
+          const loanIds = Array.from(
+            new Set(filteredRows.map((row) => String(row['loan_id'] || '').trim()).filter(Boolean))
+          );
+
+          const customerIds = Array.from(
+            new Set(
+              filteredRows.map((row) => String(row['customer_id'] || '').trim()).filter(Boolean)
+            )
+          );
+
+          const [
+            { data: existingByLoan, error: existingLoanError },
+            { data: existingByCustomer, error: existingCustomerError },
+          ] = await Promise.all([
+            loanIds.length > 0
+              ? supabase
+                  .from('accounts')
+                  .select('id,account_no,customer_id,debtor_name')
+                  .in('account_no', loanIds)
+              : Promise.resolve({ data: [], error: null } as any),
+            customerIds.length > 0
+              ? supabase
+                  .from('accounts')
+                  .select('id,account_no,customer_id,debtor_name')
+                  .in('customer_id', customerIds)
+              : Promise.resolve({ data: [], error: null } as any),
+          ]);
+
+          if (existingLoanError) {
+            setErrorMessage(`Failed to read existing loans: ${existingLoanError.message}`);
+            setLoadingPreview(false);
+            return;
+          }
+
+          if (existingCustomerError) {
+            setErrorMessage(`Failed to read existing customers: ${existingCustomerError.message}`);
+            setLoadingPreview(false);
+            return;
+          }
+
           const maxExistingCfid = Math.max(
             0,
             ...((existingCfids || [])
@@ -139,22 +222,98 @@ export default function UploadAccountsPage() {
               .filter((value): value is number => value !== null))
           );
 
+          const existingLoanMap = new Map<string, any>();
+          for (const item of existingByLoan || []) {
+            const key = String(item.account_no || '').trim();
+            if (key) existingLoanMap.set(key, item);
+          }
+
+          const existingCustomerMap = new Map<string, any[]>();
+          for (const item of existingByCustomer || []) {
+            const key = String(item.customer_id || '').trim();
+            if (!key) continue;
+            const current = existingCustomerMap.get(key) || [];
+            current.push(item);
+            existingCustomerMap.set(key, current);
+          }
+
+          const seenCompoundKeys = new Set<string>();
+          const seenLoanIds = new Set<string>();
+
           let nextNumber = maxExistingCfid + 1;
 
-          const generatedPreview = filteredRows.map((row) => {
+          const generatedPreview: PreviewRow[] = filteredRows.map((row) => {
             const cfid = padCfid(nextNumber);
             nextNumber += 1;
+
+            const loanId = String(row['loan_id'] || '').trim();
+            const customerId = String(row['customer_id'] || '').trim();
+            const compoundKey = `${loanId}::${customerId}`;
+
+            const existingLoan = loanId ? existingLoanMap.get(loanId) : null;
+            const existingCustomerFacilities = customerId ? existingCustomerMap.get(customerId) || [] : [];
+
+            let status: PreviewStatus = 'new';
+            let statusMessage = '';
+            let existingAccountNo = '';
+            let existingCustomerId = '';
+            let existingDebtorName = '';
+
+            if (seenCompoundKeys.has(compoundKey)) {
+              status = 'duplicate_in_file';
+              statusMessage = 'Duplicate row in this upload with the same loan_id and customer_id.';
+            } else if (loanId && seenLoanIds.has(loanId)) {
+              status = 'duplicate_in_file';
+              statusMessage = 'Duplicate loan_id appears more than once in this upload.';
+            } else if (existingLoan) {
+              existingAccountNo = String(existingLoan.account_no || '');
+              existingCustomerId = String(existingLoan.customer_id || '');
+              existingDebtorName = String(existingLoan.debtor_name || '');
+
+              if (String(existingLoan.customer_id || '').trim() === customerId) {
+                status = 'duplicate_exact';
+                statusMessage = 'This account already exists with the same loan_id and customer_id.';
+              } else {
+                status = 'conflict_same_loan_diff_customer';
+                statusMessage = 'This loan_id already exists under a different customer_id.';
+              }
+            } else if (
+              customerId &&
+              existingCustomerFacilities.some(
+                (facility) => String(facility.account_no || '').trim() !== loanId
+              )
+            ) {
+              const otherFacility =
+                existingCustomerFacilities.find(
+                  (facility) => String(facility.account_no || '').trim() !== loanId
+                ) || null;
+
+              existingAccountNo = String(otherFacility?.account_no || '');
+              existingCustomerId = String(otherFacility?.customer_id || '');
+              existingDebtorName = String(otherFacility?.debtor_name || '');
+              status = 'same_customer_other_facility';
+              statusMessage =
+                'This customer already has another facility in the system. This row can still be imported.';
+            }
+
+            if (loanId) seenLoanIds.add(loanId);
+            if (loanId || customerId) seenCompoundKeys.add(compoundKey);
 
             return {
               ...row,
               __cfid: cfid,
               __portfolioCategory: normalizePortfolioCategory(row['loan_type']),
               __productCode: normalizeStrategyProductCode(),
+              __status: status,
+              __statusMessage: statusMessage,
+              __existingAccountNo: existingAccountNo,
+              __existingCustomerId: existingCustomerId,
+              __existingDebtorName: existingDebtorName,
             };
           });
 
           setPreviewRows(generatedPreview);
-          setMessage(`Preview ready. ${generatedPreview.length} row(s) will be imported.`);
+          setMessage(`Preview ready. ${generatedPreview.length} row(s) reviewed.`);
         } catch (error: any) {
           setErrorMessage(error?.message || 'Failed to prepare preview.');
         } finally {
@@ -182,6 +341,15 @@ export default function UploadAccountsPage() {
       return;
     }
 
+    const importableRows = previewRows.filter(
+      (row) => row.__status === 'new' || row.__status === 'same_customer_other_facility'
+    );
+
+    if (!importableRows.length) {
+      setErrorMessage('There are no importable rows. Remove duplicates or conflicts first.');
+      return;
+    }
+
     setImporting(true);
 
     try {
@@ -202,16 +370,23 @@ export default function UploadAccountsPage() {
         return;
       }
 
-      const importedCount = Number(result?.importedCount || previewRows.length || 0);
+      const importedCount = Number(result?.importedCount || 0);
       const notesImportedCount = Number(result?.notesImportedCount || 0);
       const assignedCount = Number(result?.strategySummary?.assignedCount || 0);
       const skippedCount = Number(result?.strategySummary?.skippedCount || 0);
       const failedCount = Number(result?.strategySummary?.failedCount || 0);
+      const duplicateExactCount = Number(result?.duplicateSummary?.duplicateExactCount || 0);
+      const conflictCount = Number(result?.duplicateSummary?.conflictCount || 0);
+      const sameCustomerOtherFacilityCount = Number(
+        result?.duplicateSummary?.sameCustomerOtherFacilityCount || 0
+      );
 
       setMessage(
         `Import complete. ${importedCount} account(s) uploaded successfully. ` +
           `Notes: ${notesImportedCount}. ` +
-          `Strategies: ${assignedCount} assigned, ${skippedCount} skipped, ${failedCount} failed.`
+          `Strategies: ${assignedCount} assigned, ${skippedCount} skipped, ${failedCount} failed. ` +
+          `Duplicates blocked: ${duplicateExactCount}. Conflicts blocked: ${conflictCount}. ` +
+          `Other facilities allowed: ${sameCustomerOtherFacilityCount}.`
       );
       setPreviewRows([]);
       setFileName('');
@@ -275,46 +450,112 @@ export default function UploadAccountsPage() {
 
           {previewRows.length > 0 ? (
             <>
+              <div className="grid gap-4 md:grid-cols-5">
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-slate-500">Rows Reviewed</p>
+                  <p className="mt-2 text-2xl font-semibold text-slate-900">{previewRows.length}</p>
+                </div>
+
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-emerald-700">Will Import</p>
+                  <p className="mt-2 text-2xl font-semibold text-emerald-800">{summary.newCount}</p>
+                </div>
+
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-amber-700">Other Facilities</p>
+                  <p className="mt-2 text-2xl font-semibold text-amber-800">
+                    {summary.sameCustomerOtherFacilityCount}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-rose-700">Duplicates</p>
+                  <p className="mt-2 text-2xl font-semibold text-rose-800">
+                    {summary.duplicateExactCount + summary.duplicateInFileCount}
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
+                  <p className="text-xs uppercase tracking-wide text-rose-700">Conflicts</p>
+                  <p className="mt-2 text-2xl font-semibold text-rose-800">{summary.conflictCount}</p>
+                </div>
+              </div>
+
               <div className="overflow-x-auto rounded-2xl border border-slate-200">
                 <table className="min-w-full text-sm">
                   <thead className="bg-slate-50 text-left text-slate-600">
                     <tr>
+                      <th className="px-4 py-3">Status</th>
                       <th className="px-4 py-3">Generated CFID</th>
                       <th className="px-4 py-3">Customer</th>
                       <th className="px-4 py-3">Loan ID</th>
+                      <th className="px-4 py-3">Customer ID</th>
                       <th className="px-4 py-3">Loan Type</th>
                       <th className="px-4 py-3">Portfolio Category</th>
                       <th className="px-4 py-3">Phone</th>
                       <th className="px-4 py-3">Officer</th>
+                      <th className="px-4 py-3">Preview Note</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {previewRows.slice(0, 10).map((row) => (
+                    {previewRows.slice(0, 20).map((row) => (
                       <tr
                         key={`${row.__cfid}-${row['loan_id'] || row['customer_names']}`}
                         className="border-t border-slate-200"
                       >
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${toneForStatus(
+                              row.__status
+                            )}`}
+                          >
+                            {labelForStatus(row.__status)}
+                          </span>
+                        </td>
                         <td className="px-4 py-3 font-medium text-slate-900">{row.__cfid}</td>
                         <td className="px-4 py-3">{row['customer_names'] || '-'}</td>
                         <td className="px-4 py-3">{row['loan_id'] || '-'}</td>
+                        <td className="px-4 py-3">{row['customer_id'] || '-'}</td>
                         <td className="px-4 py-3">{normalizeLoanType(row['loan_type']) || '-'}</td>
                         <td className="px-4 py-3">{row.__portfolioCategory || '-'}</td>
                         <td className="px-4 py-3">{row['customer_phoneno'] || '-'}</td>
                         <td className="px-4 py-3">{row['officer'] || '-'}</td>
+                        <td className="px-4 py-3 text-xs text-slate-600">
+                          {row.__statusMessage ? (
+                            <div className="space-y-1">
+                              <p>{row.__statusMessage}</p>
+                              {row.__existingDebtorName || row.__existingAccountNo ? (
+                                <p className="text-slate-500">
+                                  Existing: {row.__existingDebtorName || '-'} | Loan:{' '}
+                                  {row.__existingAccountNo || '-'} | Customer ID:{' '}
+                                  {row.__existingCustomerId || '-'}
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : (
+                            'Ready to import.'
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
 
+              {previewRows.length > 20 ? (
+                <p className="text-sm text-slate-500">
+                  Showing first 20 rows of {previewRows.length} preview rows.
+                </p>
+              ) : null}
+
               <div className="flex flex-wrap gap-3">
                 <button
                   type="button"
                   onClick={handleImport}
-                  disabled={importing}
+                  disabled={importing || importableCount === 0}
                   className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  {importing ? 'Importing...' : `Import ${previewCount} Accounts`}
+                  {importing ? 'Importing...' : `Import ${importableCount} Accounts`}
                 </button>
 
                 <Link

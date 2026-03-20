@@ -12,6 +12,14 @@ const NOTES_TABLE = 'notes';
 
 type ParsedRow = Record<string, string>;
 
+type PreparedInsertRow = {
+  row: ParsedRow;
+  payload: Record<string, any>;
+  duplicateStatus: 'new' | 'duplicate_exact' | 'conflict_same_loan_diff_customer' | 'same_customer_other_facility';
+  duplicateMessage: string | null;
+  existingAccountId: string | null;
+};
+
 function toNumber(value: unknown) {
   const cleaned = String(value ?? '').replace(/,/g, '').trim();
   if (!cleaned) return null;
@@ -409,6 +417,40 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No valid rows found to import.' }, { status: 400 });
   }
 
+  const loanIds = Array.from(
+    new Set(filteredRows.map((row) => String(row['loan_id'] || '').trim()).filter(Boolean))
+  );
+
+  const customerIds = Array.from(
+    new Set(filteredRows.map((row) => String(row['customer_id'] || '').trim()).filter(Boolean))
+  );
+
+  const [{ data: existingByLoan, error: existingLoanError }, { data: existingByCustomer, error: existingCustomerError }] =
+    await Promise.all([
+      loanIds.length > 0
+        ? admin
+            .from(ACCOUNTS_TABLE)
+            .select('id,account_no,customer_id,debtor_name,cfid')
+            .eq('company_id', COMPANY_ID)
+            .in('account_no', loanIds)
+        : Promise.resolve({ data: [], error: null } as any),
+      customerIds.length > 0
+        ? admin
+            .from(ACCOUNTS_TABLE)
+            .select('id,account_no,customer_id,debtor_name,cfid')
+            .eq('company_id', COMPANY_ID)
+            .in('customer_id', customerIds)
+        : Promise.resolve({ data: [], error: null } as any),
+    ]);
+
+  if (existingLoanError) {
+    return NextResponse.json({ error: existingLoanError.message }, { status: 500 });
+  }
+
+  if (existingCustomerError) {
+    return NextResponse.json({ error: existingCustomerError.message }, { status: 500 });
+  }
+
   let maxExistingCfid = 0;
 
   try {
@@ -420,9 +462,68 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let nextNumber = maxExistingCfid + 1;
+  const existingLoanMap = new Map<string, any>();
+  for (const item of existingByLoan ?? []) {
+    const key = String(item.account_no || '').trim();
+    if (key) existingLoanMap.set(key, item);
+  }
 
-  const payload = filteredRows.map((row) => {
+  const existingCustomerMap = new Map<string, any[]>();
+  for (const item of existingByCustomer ?? []) {
+    const key = String(item.customer_id || '').trim();
+    if (!key) continue;
+    const current = existingCustomerMap.get(key) || [];
+    current.push(item);
+    existingCustomerMap.set(key, current);
+  }
+
+  const preparedRows: PreparedInsertRow[] = [];
+  const duplicateResults: Array<Record<string, unknown>> = [];
+
+  let nextNumber = maxExistingCfid + 1;
+  const pendingLoanKeys = new Set<string>();
+  const pendingCustomerLoanKeys = new Set<string>();
+
+  for (const row of filteredRows) {
+    const loanId = String(row['loan_id'] || '').trim();
+    const customerId = String(row['customer_id'] || '').trim();
+    const compoundKey = `${loanId}::${customerId}`;
+
+    const existingLoan = loanId ? existingLoanMap.get(loanId) : null;
+    const existingCustomerFacilities = customerId ? existingCustomerMap.get(customerId) || [] : [];
+
+    let duplicateStatus: PreparedInsertRow['duplicateStatus'] = 'new';
+    let duplicateMessage: string | null = null;
+    let existingAccountId: string | null = null;
+
+    if (pendingCustomerLoanKeys.has(compoundKey)) {
+      duplicateStatus = 'duplicate_exact';
+      duplicateMessage = 'Duplicate row in current upload: same loan_id and customer_id.';
+    } else if (loanId && pendingLoanKeys.has(loanId)) {
+      duplicateStatus = 'conflict_same_loan_diff_customer';
+      duplicateMessage = 'Conflict in current upload: same loan_id appears more than once.';
+    } else if (existingLoan) {
+      existingAccountId = String(existingLoan.id);
+
+      if (String(existingLoan.customer_id || '').trim() === customerId) {
+        duplicateStatus = 'duplicate_exact';
+        duplicateMessage = 'Account already exists with the same loan_id and customer_id.';
+      } else {
+        duplicateStatus = 'conflict_same_loan_diff_customer';
+        duplicateMessage =
+          'Conflict: same loan_id already exists under a different customer_id.';
+      }
+    } else if (
+      customerId &&
+      existingCustomerFacilities.some(
+        (facility) => String(facility.account_no || '').trim() !== loanId
+      )
+    ) {
+      duplicateStatus = 'same_customer_other_facility';
+      duplicateMessage =
+        'Customer already has another facility in the system. New facility will still be created.';
+    }
+
     const cfid = padCfid(nextNumber);
     nextNumber += 1;
 
@@ -430,7 +531,7 @@ export async function POST(req: NextRequest) {
     const portfolioCategory = normalizePortfolioCategory(row['loan_type']);
     const productCode = normalizeStrategyProductCode();
 
-    return {
+    const payload = {
       company_id: COMPANY_ID,
       cfid,
       account_no: cleanText(row['loan_id']),
@@ -466,11 +567,65 @@ export async function POST(req: NextRequest) {
       next_action_date: toDate(row['PTP_due_date']),
       employment_status: 'UNKNOWN',
     };
-  });
+
+    preparedRows.push({
+      row,
+      payload,
+      duplicateStatus,
+      duplicateMessage,
+      existingAccountId,
+    });
+
+    duplicateResults.push({
+      loan_id: loanId || null,
+      customer_id: customerId || null,
+      customer_names: cleanText(row['customer_names']),
+      status: duplicateStatus,
+      message: duplicateMessage,
+      existingAccountId,
+      willImport:
+        duplicateStatus === 'new' || duplicateStatus === 'same_customer_other_facility',
+    });
+
+    if (loanId) pendingLoanKeys.add(loanId);
+    if (loanId || customerId) pendingCustomerLoanKeys.add(compoundKey);
+  }
+
+  const rowsToInsert = preparedRows.filter(
+    (item) => item.duplicateStatus === 'new' || item.duplicateStatus === 'same_customer_other_facility'
+  );
+
+  const duplicateExactCount = preparedRows.filter(
+    (item) => item.duplicateStatus === 'duplicate_exact'
+  ).length;
+
+  const conflictCount = preparedRows.filter(
+    (item) => item.duplicateStatus === 'conflict_same_loan_diff_customer'
+  ).length;
+
+  const sameCustomerOtherFacilityCount = preparedRows.filter(
+    (item) => item.duplicateStatus === 'same_customer_other_facility'
+  ).length;
+
+  if (rowsToInsert.length === 0) {
+    return NextResponse.json({
+      success: false,
+      importedCount: 0,
+      duplicateSummary: {
+        duplicateExactCount,
+        conflictCount,
+        sameCustomerOtherFacilityCount,
+      },
+      duplicateResults,
+      error: 'No new accounts to import. All rows are duplicates or conflicts.',
+    });
+  }
+
+  const insertPayload = rowsToInsert.map((item) => item.payload);
 
   const { data: insertedAccounts, error: insertError } = await admin
     .from(ACCOUNTS_TABLE)
-    .insert(payload)
+    .insert(insertPayload)
     .select('id,cfid,product_code,dpd');
 
   if (insertError) {
@@ -479,9 +634,10 @@ export async function POST(req: NextRequest) {
 
   const notesPayload = (insertedAccounts ?? [])
     .map((account, index) => {
-      const row = filteredRows[index];
-      const body = buildImportedNote(row);
+      const sourceRow = rowsToInsert[index]?.row;
+      if (!sourceRow) return null;
 
+      const body = buildImportedNote(sourceRow);
       if (!body) return null;
 
       return {
@@ -552,6 +708,12 @@ export async function POST(req: NextRequest) {
     success: true,
     importedCount: insertedAccounts?.length || 0,
     notesImportedCount: notesPayload.length,
+    duplicateSummary: {
+      duplicateExactCount,
+      conflictCount,
+      sameCustomerOtherFacilityCount,
+    },
+    duplicateResults,
     strategySummary: {
       assignedCount,
       skippedCount,
