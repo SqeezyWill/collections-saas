@@ -1,133 +1,173 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdminRole, requireSuperAdminRole } from '@/lib/server-auth';
+import { getServerAuthContext } from '@/lib/server-auth';
 
 const PROFILE_TABLE = 'user_profiles';
-const DEFAULT_PASSWORD = 'credcoll@2026';
+const COMPANIES_TABLE = 'companies';
 
-export async function GET(req: NextRequest) {
-  const auth = await requireAdminRole(req);
-  if ('error' in auth) {
-    return NextResponse.json({ error: auth.error }, { status: auth.status });
+async function resolveCompanyId(rawCompanyInput: unknown) {
+  const input = String(rawCompanyInput || '').trim();
+  if (!input) {
+    throw new Error('Company is required.');
   }
 
   if (!supabaseAdmin) {
-    return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
+    throw new Error('Supabase admin is not configured.');
   }
 
-  const { searchParams } = new URL(req.url);
-  const companyIdParam = searchParams.get('companyId')?.trim() || '';
-  const role = searchParams.get('role')?.trim() || '';
-  const search = searchParams.get('search')?.trim() || '';
+  const lowered = input.toLowerCase();
 
-  let q = supabaseAdmin.from(PROFILE_TABLE).select('id,name,email,role,company_id');
-
-  // super_admin can see all users; admin is restricted to their own tenant
-  if (auth.user.role !== 'super_admin') {
-    if (!auth.user.companyId) {
-      return NextResponse.json({ error: 'No company assigned to current user.' }, { status: 403 });
-    }
-    q = q.eq('company_id', auth.user.companyId);
-  } else if (companyIdParam) {
-    q = q.eq('company_id', companyIdParam);
-  }
-
-  if (role) q = q.eq('role', role);
-
-  if (search) {
-    const s = search.replace(/,/g, '');
-    q = q.or(`name.ilike.%${s}%,email.ilike.%${s}%`);
-  }
-
-  const { data, error } = await q;
+  const { data: companies, error } = await supabaseAdmin
+    .from(COMPANIES_TABLE)
+    .select('id,name,code');
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    throw new Error(error.message);
   }
 
-  const users = (data ?? [])
-    .map((row: any) => ({
+  const match =
+    (companies || []).find((company: any) => String(company.id || '').toLowerCase() === lowered) ||
+    (companies || []).find((company: any) => String(company.code || '').toLowerCase() === lowered) ||
+    (companies || []).find((company: any) => String(company.name || '').trim().toLowerCase() === lowered);
+
+  if (!match?.id) {
+    throw new Error('Selected company could not be resolved.');
+  }
+
+  return String(match.id);
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    if (!supabaseAdmin) {
+      return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
+    }
+
+    const auth = await getServerAuthContext(req);
+    if (!auth.authorized) {
+      return NextResponse.json({ error: auth.error || 'Unauthorized' }, { status: auth.status || 401 });
+    }
+
+    let q = supabaseAdmin.from(PROFILE_TABLE).select('id,name,email,role,company_id');
+
+    const companyIdParam = req.nextUrl.searchParams.get('companyId')?.trim();
+
+    if (auth.user.role === 'admin' && auth.user.companyId) {
+      q = q.eq('company_id', auth.user.companyId);
+    } else if (companyIdParam) {
+      const resolvedCompanyId = await resolveCompanyId(companyIdParam);
+      q = q.eq('company_id', resolvedCompanyId);
+    }
+
+    const { data, error } = await q.order('name', { ascending: true });
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    const users = (data ?? []).map((row: any) => ({
       id: row.id,
       name: row.name,
       email: row.email,
       role: row.role,
       companyId: row.company_id,
-    }))
-    .sort((a, b) => String(a.name || a.email || '').localeCompare(String(b.name || b.email || '')));
+    }));
 
-  return NextResponse.json({ users });
+    return NextResponse.json({ users });
+  } catch (error: any) {
+    return NextResponse.json(
+      { error: error?.message || 'Failed to load users.' },
+      { status: 500 }
+    );
+  }
 }
 
 export async function POST(req: NextRequest) {
-  const auth = await requireSuperAdminRole(req);
-  if ('error' in auth) {
-    return NextResponse.json({ error: auth.error }, { status: auth.status });
-  }
-
-  if (!supabaseAdmin) {
-    return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
-  }
-
-  const body = await req.json().catch(() => ({}));
-
-  const name = String(body.name || '').trim();
-  const email = String(body.email || '').trim().toLowerCase();
-  const role = String(body.role || '').trim();
-  const companyId = String(body.companyId || '').trim();
-  const password = String(body.password || '').trim() || DEFAULT_PASSWORD;
-
-  if (!name || !email || !role || !companyId) {
-    return NextResponse.json(
-      { error: 'name, email, role, companyId are required.' },
-      { status: 400 }
-    );
-  }
-
-  let authUserId: string | null = null;
-
   try {
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
+    if (!supabaseAdmin) {
+      return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
+    }
+
+    const auth = await getServerAuthContext(req);
+    if (!auth.authorized) {
+      return NextResponse.json({ error: auth.error || 'Unauthorized' }, { status: auth.status || 401 });
+    }
+
+    if (auth.user.role !== 'super_admin' && auth.user.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+    const body = await req.json().catch(() => null);
+
+    const name = String(body?.name || '').trim();
+    const email = String(body?.email || '').trim().toLowerCase();
+    const role = String(body?.role || '').trim();
+    const password = String(body?.password || '').trim();
+
+    if (!name || !email || !role || !password) {
+      return NextResponse.json(
+        { error: 'Name, email, role, and password are required.' },
+        { status: 400 }
+      );
+    }
+
+    let companyId = await resolveCompanyId(body?.companyId);
+
+    if (auth.user.role === 'admin') {
+      if (!auth.user.companyId) {
+        return NextResponse.json({ error: 'Admin user has no company scope.' }, { status: 400 });
+      }
+      companyId = auth.user.companyId;
+    }
+
+    const { data: createdUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
-      user_metadata: { name, role, companyId },
+      user_metadata: {
+        name,
+        role,
+        company_id: companyId,
+      },
     });
 
-    if (error) throw error;
-    authUserId = data.user?.id ?? null;
-  } catch (e: any) {
-    return NextResponse.json(
-      { error: e?.message || 'Failed to create auth user.' },
-      { status: 500 }
-    );
-  }
+    if (createError || !createdUser?.user?.id) {
+      return NextResponse.json(
+        { error: createError?.message || 'Failed to create auth user.' },
+        { status: 400 }
+      );
+    }
 
-  if (!authUserId) {
-    return NextResponse.json({ error: 'Failed to obtain user id.' }, { status: 500 });
-  }
+    const authUserId = createdUser.user.id;
 
-  const { error: profileError } = await supabaseAdmin
-    .from(PROFILE_TABLE)
-    .upsert(
-      { id: authUserId, name, email, role, company_id: companyId },
+    const { error: profileError } = await supabaseAdmin.from(PROFILE_TABLE).upsert(
+      {
+        id: authUserId,
+        name,
+        email,
+        role,
+        company_id: companyId,
+      },
       { onConflict: 'id' }
     );
 
-  if (profileError) {
+    if (profileError) {
+      return NextResponse.json({ error: profileError.message }, { status: 400 });
+    }
+
+    return NextResponse.json({
+      user: {
+        id: authUserId,
+        name,
+        email,
+        role,
+        companyId,
+      },
+    });
+  } catch (error: any) {
     return NextResponse.json(
-      { error: `Auth user created but profile insert failed: ${profileError.message}` },
+      { error: error?.message || 'Failed to create user.' },
       { status: 500 }
     );
   }
-
-  return NextResponse.json({
-    user: {
-      id: authUserId,
-      name,
-      email,
-      role,
-      companyId,
-      defaultPasswordApplied: !String(body.password || '').trim(),
-    },
-  });
 }

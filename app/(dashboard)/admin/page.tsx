@@ -154,23 +154,23 @@ export default function AdminPage() {
   });
 
   async function authHeaders(includeJson = false): Promise<Record<string, string>> {
-  const headers: Record<string, string> = {};
+    const headers: Record<string, string> = {};
 
-  if (includeJson) {
-    headers['Content-Type'] = 'application/json';
-  }
-
-  if (supabase) {
-    const { data } = await supabase.auth.getSession();
-    const token = data.session?.access_token;
-
-    if (token) {
-      headers.Authorization = `Bearer ${token}`;
+    if (includeJson) {
+      headers['Content-Type'] = 'application/json';
     }
-  }
 
-  return headers;
-}
+    if (supabase) {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+    }
+
+    return headers;
+  }
 
   function matchesCompany(userCompanyId: any, company: DbCompany) {
     const v = String(userCompanyId || '').trim().toLowerCase();
@@ -179,7 +179,6 @@ export default function AdminPage() {
     const name = String(company.name || '').trim().toLowerCase();
 
     if (!v) return false;
-
     if (v === id) return true;
     if (code && v === code) return true;
 
@@ -187,7 +186,9 @@ export default function AdminPage() {
       const simplifiedName = name.replace(/[^a-z0-9]+/g, ' ').trim();
       const simplifiedV = v.replace(/[^a-z0-9]+/g, ' ').trim();
 
-      if (simplifiedName.includes(simplifiedV) || simplifiedV.includes(simplifiedName)) return true;
+      if (simplifiedName.includes(simplifiedV) || simplifiedV.includes(simplifiedName)) {
+        return true;
+      }
 
       const words = simplifiedName.split(' ').filter(Boolean);
       if (words.includes(simplifiedV)) return true;
@@ -245,6 +246,7 @@ export default function AdminPage() {
         ...prev,
         companyId: prev.companyId || list[0]?.id || '',
       }));
+
       setEditState((prev) => ({
         ...prev,
         companyId: prev.companyId || list[0]?.id || '',
@@ -490,14 +492,12 @@ export default function AdminPage() {
   }
 
   function manageUsersForCompany(company: any) {
-    const code = String(company.code || '').trim().toLowerCase();
     const id = String(company.id || '').trim();
-    const filterValue = code || id;
-    if (!filterValue) return;
+    if (!id) return;
 
     setSearch('');
     setRoleFilter('');
-    setCompanyFilter(filterValue);
+    setCompanyFilter(id);
 
     requestAnimationFrame(() => {
       usersTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -643,12 +643,15 @@ export default function AdminPage() {
     setEditSuccess(null);
     setEditError(null);
 
+    const matchedCompany =
+      dbCompanies.find((company) => matchesCompany(user.companyId, company)) || null;
+
     setEditState({
       userId: String(user.id || ''),
       name: String(user.name || ''),
       email: String(user.email || ''),
       role: String(user.role || 'agent'),
-      companyId: String(user.companyId || dbCompanies[0]?.id || ''),
+      companyId: String(matchedCompany?.id || user.companyId || dbCompanies[0]?.id || ''),
     });
 
     setIsEditOpen(true);
@@ -1012,10 +1015,10 @@ export default function AdminPage() {
                     className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                   >
                     {dbCompanies.map((company) => (
-  <option key={company.id} value={company.id}>
-    {company.name} ({company.code})
-  </option>
-))}
+                      <option key={company.id} value={company.id}>
+                        {company.name} ({company.code})
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -1222,11 +1225,6 @@ export default function AdminPage() {
                   >
                     {dbCompanies.map((company) => (
                       <option key={company.id} value={company.id}>
-                        {company.name}
-                      </option>
-                    ))}
-                    {dbCompanies.map((company) => (
-                      <option key={`${company.id}-code`} value={company.code.toLowerCase()}>
                         {company.name} ({company.code})
                       </option>
                     ))}
@@ -1451,11 +1449,6 @@ export default function AdminPage() {
               {dbCompanies.map((company) => (
                 <option key={company.id} value={company.id}>
                   {company.name}
-                </option>
-              ))}
-              {dbCompanies.map((company) => (
-                <option key={`${company.id}-code`} value={company.code.toLowerCase()}>
-                  {company.name} ({company.code})
                 </option>
               ))}
             </select>
