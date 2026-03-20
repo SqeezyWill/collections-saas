@@ -49,6 +49,7 @@ function parseDateLike(value: unknown): Date | null {
     const month = Number(isoOnly[2]);
     const day = Number(isoOnly[3]);
     const parsed = new Date(year, month - 1, day);
+
     if (
       parsed.getFullYear() !== year ||
       parsed.getMonth() !== month - 1 ||
@@ -56,6 +57,7 @@ function parseDateLike(value: unknown): Date | null {
     ) {
       return null;
     }
+
     return parsed;
   }
 
@@ -65,6 +67,7 @@ function parseDateLike(value: unknown): Date | null {
     const month = Number(ddmmyyyy[2]);
     const year = Number(ddmmyyyy[3]);
     const parsed = new Date(year, month - 1, day);
+
     if (
       parsed.getFullYear() !== year ||
       parsed.getMonth() !== month - 1 ||
@@ -72,6 +75,7 @@ function parseDateLike(value: unknown): Date | null {
     ) {
       return null;
     }
+
     return parsed;
   }
 
@@ -582,6 +586,17 @@ export default async function AccountDetailPage({ params }: PageProps) {
     .order('created_at', { ascending: false })
     .limit(10);
 
+  const { data: relatedFacilities } =
+    account.customer_id
+      ? await supabaseAdmin
+          .from('accounts')
+          .select('id,debtor_name,account_no,product,portfolio_category,balance,status,dpd')
+          .eq('customer_id', account.customer_id)
+          .neq('id', id)
+          .order('created_at', { ascending: false })
+          .limit(10)
+      : { data: [] as any[] };
+
   const strategyResp = await fetchAccountStrategy(id);
   const assignedStrategy = strategyResp?.strategy ?? null;
   const strategyAssignment = strategyResp?.assignment ?? null;
@@ -777,6 +792,65 @@ export default async function AccountDetailPage({ params }: PageProps) {
           </p>
         </div>
       </div>
+
+      {account.customer_id ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Other Facilities for This Customer</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Other accounts linked to customer ID {account.customer_id}.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            {relatedFacilities && relatedFacilities.length > 0 ? (
+              <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 text-left text-slate-600">
+                    <tr>
+                      <th className="px-4 py-3">Debtor</th>
+                      <th className="px-4 py-3">Loan ID</th>
+                      <th className="px-4 py-3">Product</th>
+                      <th className="px-4 py-3">Portfolio Category</th>
+                      <th className="px-4 py-3">Balance</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3">DPD</th>
+                      <th className="px-4 py-3">Open</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {relatedFacilities.map((facility: any) => (
+                      <tr key={facility.id} className="border-t border-slate-200">
+                        <td className="px-4 py-3">{facility.debtor_name || '-'}</td>
+                        <td className="px-4 py-3">{facility.account_no || '-'}</td>
+                        <td className="px-4 py-3">{facility.product || '-'}</td>
+                        <td className="px-4 py-3">{facility.portfolio_category || '-'}</td>
+                        <td className="px-4 py-3">{currency(Number(facility.balance || 0))}</td>
+                        <td className="px-4 py-3">{facility.status || '-'}</td>
+                        <td className="px-4 py-3">{detailValue(facility.dpd)}</td>
+                        <td className="px-4 py-3">
+                          <Link
+                            href={`/accounts/${facility.id}`}
+                            className="text-sm font-medium text-slate-700 hover:text-slate-900 hover:underline"
+                          >
+                            View account
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                No other facilities found for this customer.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
