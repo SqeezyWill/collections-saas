@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { createClient } from '@supabase/supabase-js';
 import { KpiCard } from '@/components/KpiCard';
 import { DataTable } from '@/components/DataTable';
-import { supabase } from '@/lib/supabase';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { currency } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
@@ -133,7 +133,7 @@ async function fetchAllRows(
     restrictToCollector?: boolean;
   }
 ) {
-  if (!supabase) return [];
+  if (!supabaseAdmin) return [];
 
   const { companyId, collectorName, restrictToCollector } = input;
 
@@ -143,7 +143,7 @@ async function fetchAllRows(
   while (true) {
     const to = from + PAGE_SIZE - 1;
 
-    let query = supabase
+    let query = supabaseAdmin
       .from(table)
       .select('*')
       .eq('company_id', companyId)
@@ -189,11 +189,11 @@ function alertClasses(tone: string) {
 export default async function DashboardPage() {
   noStore();
 
-  if (!supabase) {
+  if (!supabaseAdmin) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Supabase is not configured.</p>
+        <p className="text-red-600">Supabase admin is not configured.</p>
       </div>
     );
   }
@@ -245,7 +245,7 @@ export default async function DashboardPage() {
 
   const userId = authUser.user.id;
 
-  const { data: profileData, error: profileError } = await supabase
+  const { data: profileData, error: profileError } = await supabaseAdmin
     .from('user_profiles')
     .select('id,name,role,company_id')
     .eq('id', userId)
@@ -446,7 +446,9 @@ export default async function DashboardPage() {
     };
   });
 
-  const accountProducts = Array.from(new Set(accountList.map((item) => item.product).filter(Boolean)));
+  const accountProducts = Array.from(
+    new Set(accountList.map((item) => item.product).filter(Boolean))
+  );
 
   const accountCoverage = accountProducts.map((product) => {
     const productAccounts = accountList.filter((item) => item.product === product);
@@ -492,7 +494,9 @@ export default async function DashboardPage() {
     return diff !== null && diff <= -3;
   });
 
-  const brokenPtpAccounts = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Broken');
+  const brokenPtpAccounts = normalizedPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Broken'
+  );
 
   const todayWorkQueue = [
     {
@@ -615,10 +619,7 @@ export default async function DashboardPage() {
     {
       category: 'Accounts',
       rows: [
-        {
-          metric: isAgent ? 'My Accounts' : 'Total Accounts',
-          value: totalAccounts.toLocaleString(),
-        },
+        { metric: isAgent ? 'My Accounts' : 'Total Accounts', value: totalAccounts.toLocaleString() },
         { metric: 'Paid Accounts', value: paidAccounts.toLocaleString() },
         { metric: 'Open Accounts', value: openAccounts.toLocaleString() },
       ],
@@ -688,9 +689,7 @@ export default async function DashboardPage() {
           <KpiCard
             title={isAgent ? 'My Open PTP Accounts' : 'Open PTP Accounts'}
             value={openPtps}
-            helper={
-              isAgent ? 'Assigned accounts with active promises' : 'Accounts with active promises'
-            }
+            helper={isAgent ? 'Assigned accounts with active promises' : 'Accounts with active promises'}
           />
         </Link>
 

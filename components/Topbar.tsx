@@ -26,6 +26,14 @@ type AuthProfile = {
   company_logo_url?: string | null;
 };
 
+type CompanyRow = {
+  id: string;
+  name: string | null;
+  code?: string | null;
+  logo_url?: string | null;
+  logoUrl?: string | null;
+};
+
 type SearchField =
   | 'cfid'
   | 'phone'
@@ -134,9 +142,8 @@ export function Topbar() {
   const isAgent = normalizedRole === 'agent';
   const collectorScope = String(profile?.name || '').trim();
 
-  const companyDisplayName =
-    profile?.company_name?.trim() ||
-    'Company Workspace';
+  const companyDisplayName = profile?.company_name?.trim() || 'Company Workspace';
+  const companyLogoUrl = profile?.company_logo_url?.trim() || '';
 
   function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -174,19 +181,42 @@ export function Topbar() {
         return;
       }
 
-      const { data, error } = await client
+      const { data: userProfile, error: profileError } = await client
         .from('user_profiles')
-        .select('id,name,email,company_id,role,company_name,company_logo_url')
+        .select('id,name,email,company_id,role')
         .eq('id', userId)
         .maybeSingle();
 
-      if (error) {
-        console.error('Failed to load profile in Topbar:', error);
+      if (profileError || !userProfile) {
+        console.error('Failed to load profile in Topbar:', profileError);
         setProfile(null);
         return;
       }
 
-      setProfile((data as AuthProfile) || null);
+      let companyName: string | null = null;
+      let companyLogoUrl: string | null = null;
+
+      if (userProfile.company_id) {
+        const { data: companyData, error: companyError } = await client
+          .from('companies')
+          .select('id,name,code,logo_url,logoUrl')
+          .eq('id', userProfile.company_id)
+          .maybeSingle();
+
+        if (companyError) {
+          console.error('Failed to load company in Topbar:', companyError);
+        } else if (companyData) {
+          const company = companyData as CompanyRow;
+          companyName = company.name ?? null;
+          companyLogoUrl = company.logo_url || company.logoUrl || null;
+        }
+      }
+
+      setProfile({
+        ...(userProfile as any),
+        company_name: companyName,
+        company_logo_url: companyLogoUrl,
+      });
     }
 
     loadProfile();
@@ -201,19 +231,42 @@ export function Topbar() {
         return;
       }
 
-      const { data, error } = await client
+      const { data: userProfile, error: profileError } = await client
         .from('user_profiles')
-        .select('id,name,email,company_id,role,company_name,company_logo_url')
+        .select('id,name,email,company_id,role')
         .eq('id', userId)
         .maybeSingle();
 
-      if (error) {
-        console.error('Failed to refresh profile in Topbar:', error);
+      if (profileError || !userProfile) {
+        console.error('Failed to refresh profile in Topbar:', profileError);
         setProfile(null);
         return;
       }
 
-      setProfile((data as AuthProfile) || null);
+      let companyName: string | null = null;
+      let companyLogoUrl: string | null = null;
+
+      if (userProfile.company_id) {
+        const { data: companyData, error: companyError } = await client
+          .from('companies')
+          .select('id,name,code,logo_url,logoUrl')
+          .eq('id', userProfile.company_id)
+          .maybeSingle();
+
+        if (companyError) {
+          console.error('Failed to refresh company in Topbar:', companyError);
+        } else if (companyData) {
+          const company = companyData as CompanyRow;
+          companyName = company.name ?? null;
+          companyLogoUrl = company.logo_url || company.logoUrl || null;
+        }
+      }
+
+      setProfile({
+        ...(userProfile as any),
+        company_name: companyName,
+        company_logo_url: companyLogoUrl,
+      });
     });
 
     return () => {
@@ -404,10 +457,10 @@ export function Topbar() {
         </button>
 
         <div className="flex items-center gap-3">
-          {profile?.company_logo_url ? (
+          {companyLogoUrl ? (
             <div className="relative h-10 w-10 overflow-hidden rounded-xl border border-slate-200 bg-white">
               <Image
-                src={profile.company_logo_url}
+                src={companyLogoUrl}
                 alt={companyDisplayName}
                 fill
                 className="object-contain"
@@ -595,9 +648,6 @@ export function Topbar() {
 
         <div className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700">
           {profile?.name || profile?.email || 'User'}
-          {profile?.role ? (
-            <span className="ml-2 text-xs text-slate-500">({profile.role})</span>
-          ) : null}
         </div>
       </div>
     </header>
