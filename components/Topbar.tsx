@@ -1,10 +1,10 @@
 'use client';
 
 import { Bell, Building2, Menu, Search } from 'lucide-react';
+import Image from 'next/image';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
-import { getCompany } from '@/lib/selectors';
 import { supabase } from '@/lib/supabase';
 
 type SearchResult = {
@@ -22,6 +22,8 @@ type AuthProfile = {
   email: string | null;
   company_id: string | null;
   role: string | null;
+  company_name?: string | null;
+  company_logo_url?: string | null;
 };
 
 type SearchField =
@@ -56,6 +58,10 @@ const QUICK_VIEWS = [
 ];
 
 const TOGGLE_EVENT = 'app:toggle-sidebar';
+
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
 
 function toDateOnly(value: string | null | undefined) {
   if (!value) return '';
@@ -106,7 +112,6 @@ export function Topbar() {
   const router = useRouter();
 
   const [profile, setProfile] = useState<AuthProfile | null>(null);
-  const company = getCompany(profile?.company_id || '');
 
   const [query, setQuery] = useState('');
   const [searchField, setSearchField] = useState<SearchField>('cfid');
@@ -124,6 +129,14 @@ export function Topbar() {
     () => alerts.reduce((sum, item) => sum + Number(item.count || 0), 0),
     [alerts]
   );
+
+  const normalizedRole = normalizeRole(profile?.role);
+  const isAgent = normalizedRole === 'agent';
+  const collectorScope = String(profile?.name || '').trim();
+
+  const companyDisplayName =
+    profile?.company_name?.trim() ||
+    'Company Workspace';
 
   function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -150,7 +163,7 @@ export function Topbar() {
   useEffect(() => {
     if (!supabase) return;
 
-    const client = supabase as NonNullable<typeof supabase>;
+    const client = supabase;
 
     async function loadProfile() {
       const { data: sessionData } = await client.auth.getSession();
@@ -163,7 +176,7 @@ export function Topbar() {
 
       const { data, error } = await client
         .from('user_profiles')
-        .select('id,name,email,company_id,role')
+        .select('id,name,email,company_id,role,company_name,company_logo_url')
         .eq('id', userId)
         .maybeSingle();
 
@@ -190,7 +203,7 @@ export function Topbar() {
 
       const { data, error } = await client
         .from('user_profiles')
-        .select('id,name,email,company_id,role')
+        .select('id,name,email,company_id,role,company_name,company_logo_url')
         .eq('id', userId)
         .maybeSingle();
 
@@ -216,16 +229,28 @@ export function Topbar() {
       return;
     }
 
-    const client = supabase as NonNullable<typeof supabase>;
+    const client = supabase;
 
     async function loadAlerts() {
       try {
+        let ptpQuery = client
+          .from('ptps')
+          .select('status,promised_date,collector_name')
+          .eq('company_id', companyId);
+
+        let accountsQuery = client
+          .from('accounts')
+          .select('status,next_action_date,last_action_date,collector_name')
+          .eq('company_id', companyId);
+
+        if (isAgent && collectorScope) {
+          ptpQuery = ptpQuery.eq('collector_name', collectorScope);
+          accountsQuery = accountsQuery.eq('collector_name', collectorScope);
+        }
+
         const [{ data: ptps }, { data: accounts }] = await Promise.all([
-          client.from('ptps').select('status,promised_date').eq('company_id', companyId),
-          client
-            .from('accounts')
-            .select('status,next_action_date,last_action_date')
-            .eq('company_id', companyId),
+          ptpQuery,
+          accountsQuery,
         ]);
 
         const dueTodayPtps = (ptps ?? []).filter(
@@ -276,7 +301,7 @@ export function Topbar() {
     }
 
     loadAlerts();
-  }, [profile?.company_id]);
+  }, [profile?.company_id, isAgent, collectorScope]);
 
   useEffect(() => {
     if (!supabase) {
@@ -285,7 +310,7 @@ export function Topbar() {
       return;
     }
 
-    const client = supabase as NonNullable<typeof supabase>;
+    const client = supabase;
 
     async function runSearch() {
       const trimmed = query.trim();
@@ -378,11 +403,28 @@ export function Topbar() {
           <Menu size={18} />
         </button>
 
-        <div>
-          <p className="text-sm text-slate-500">Current tenant</p>
-          <div className="mt-1 flex items-center gap-2 text-slate-900">
-            <Building2 size={18} />
-            <span className="font-semibold">{company?.name || 'Unknown company'}</span>
+        <div className="flex items-center gap-3">
+          {profile?.company_logo_url ? (
+            <div className="relative h-10 w-10 overflow-hidden rounded-xl border border-slate-200 bg-white">
+              <Image
+                src={profile.company_logo_url}
+                alt={companyDisplayName}
+                fill
+                className="object-contain"
+                sizes="40px"
+              />
+            </div>
+          ) : (
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-600">
+              <Building2 size={18} />
+            </div>
+          )}
+
+          <div>
+            <p className="text-sm text-slate-500">Current workspace</p>
+            <div className="mt-1 flex items-center gap-2 text-slate-900">
+              <span className="font-semibold">{companyDisplayName}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -553,6 +595,9 @@ export function Topbar() {
 
         <div className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-medium text-slate-700">
           {profile?.name || profile?.email || 'User'}
+          {profile?.role ? (
+            <span className="ml-2 text-xs text-slate-500">({profile.role})</span>
+          ) : null}
         </div>
       </div>
     </header>

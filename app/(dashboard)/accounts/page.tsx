@@ -436,10 +436,16 @@ export default function AccountsPage() {
           filter === 'ptps-due-today' ||
           filter === 'broken-ptps'
         ) {
-          const { data: ptpRows, error: ptpError } = await supabase
+          let ptpQuery = supabase
             .from('ptps')
             .select('*')
             .eq('company_id', companyId);
+
+          if (restrictToCollector) {
+            ptpQuery = ptpQuery.eq('collector_name', restrictToCollector);
+          }
+
+          const { data: ptpRows, error: ptpError } = await ptpQuery;
 
           if (ptpError) {
             throw new Error(`Failed to load PTP filter data: ${ptpError.message}`);
@@ -515,7 +521,7 @@ export default function AccountsPage() {
           query = query.or(buildSearchClause(searchField, safeSearch));
         }
 
-        if (collector) query = query.eq('collector_name', collector);
+        if (collector && !restrictToCollector) query = query.eq('collector_name', collector);
         if (status) query = query.eq('status', status);
         if (minBalance) query = query.gte('balance', Number(minBalance));
         if (maxBalance) query = query.lte('balance', Number(maxBalance));
@@ -858,7 +864,7 @@ export default function AccountsPage() {
             href={buildExportUrl({
               search,
               searchField,
-              collector,
+              collector: isAgent ? '' : collector,
               status,
               minBalance,
               maxBalance,

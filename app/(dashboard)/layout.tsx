@@ -116,14 +116,31 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
     const client = supabase;
 
-    async function loadAttention(companyId: string) {
+    async function loadAttention(userProfile: UserProfile) {
       try {
+        const companyId = String(userProfile.company_id || '').trim();
+        const role = normalizeRole(userProfile.role);
+        const isAgent = role === 'agent';
+        const collectorScope = String(userProfile.name || '').trim();
+
+        let ptpQuery = client
+          .from('ptps')
+          .select('status,promised_date,collector_name')
+          .eq('company_id', companyId);
+
+        let accountsQuery = client
+          .from('accounts')
+          .select('status,next_action_date,last_action_date,collector_name')
+          .eq('company_id', companyId);
+
+        if (isAgent && collectorScope) {
+          ptpQuery = ptpQuery.eq('collector_name', collectorScope);
+          accountsQuery = accountsQuery.eq('collector_name', collectorScope);
+        }
+
         const [{ data: ptps }, { data: accounts }] = await Promise.all([
-          client.from('ptps').select('status,promised_date').eq('company_id', companyId),
-          client
-            .from('accounts')
-            .select('status,next_action_date,last_action_date')
-            .eq('company_id', companyId),
+          ptpQuery,
+          accountsQuery,
         ]);
 
         if (!isMounted) return;
@@ -231,7 +248,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         }
 
         if (userProfile.company_id) {
-          await loadAttention(userProfile.company_id);
+          await loadAttention(userProfile);
         }
       } catch (err) {
         console.error('Dashboard layout unexpected auth error:', err);
@@ -282,11 +299,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           return;
         }
 
-        setProfile((profileData as UserProfile) || null);
+        const nextProfile = (profileData as UserProfile) || null;
+        setProfile(nextProfile);
         setCheckingAuth(false);
 
-        if (profileData?.company_id) {
-          await loadAttention(profileData.company_id);
+        if (nextProfile?.company_id) {
+          await loadAttention(nextProfile);
         }
       } catch (err) {
         console.error('Dashboard layout auth state unexpected error:', err);
