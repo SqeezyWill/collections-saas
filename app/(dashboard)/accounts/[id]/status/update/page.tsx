@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import PTPDispositionForm from './PTPDispositionForm';
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -12,70 +13,6 @@ const ACCOUNTS_TABLE = 'accounts';
 const STRATEGIES_TABLE = 'strategies';
 const MAP_TABLE = 'strategy_products';
 const PRODUCTS_TABLE = 'products';
-
-const CONTACT_TYPE_OPTIONS = [
-  'Right Party Contact',
-  'Third Party Contact',
-  'Wrong Number',
-  'No Answer',
-  'Switched Off',
-  'Voicemail',
-  'Office Line',
-  'SMS',
-  'Email',
-  'Walk In',
-];
-
-const CONTACT_STATUS_OPTIONS = [
-  'Contacted',
-  'Not Contacted',
-  'Promise To Pay',
-  'Paid',
-  'Disputing Debt',
-  'Requested Callback',
-  'Refused to Pay',
-  'Unreachable',
-  'Wrong Number',
-  'Escalated',
-];
-
-const NON_PAYMENT_REASON_OPTIONS = [
-  '',
-  'Financial Constraints',
-  'Lost Job',
-  'Business Downturn',
-  'Salary Delayed',
-  'Medical Reason',
-  'Disputing Debt',
-  'Already Paid',
-  'Not Aware of Debt',
-  'Wrong Allocation',
-  'Awaiting Callback',
-  'No Commitment',
-  'Other',
-];
-
-const CALL_TYPE_OPTIONS = [
-  '',
-  'Inbound Call',
-  'Outbound Call',
-  'SMS Follow-up',
-  'Email Follow-up',
-  'Office Visit',
-  'Field Visit',
-];
-
-const NEXT_ACTION_OPTIONS = [
-  '',
-  'Call Back',
-  'Send Reminder SMS',
-  'Send Demand Notice',
-  'Await Payment',
-  'Escalate Account',
-  'Field Visit',
-  'Skip Trace',
-  'Close Follow-up',
-];
 
 function todayDateString() {
   return new Date().toISOString().slice(0, 10);
@@ -193,7 +130,15 @@ function getBucketMeta(dpd: number | null) {
   return {
     key: '121_plus',
     label: '121+',
-    aliases: ['121+', '121 plus', '120+', '120 plus', '121_and_above', '121 and above', 'over 120'],
+    aliases: [
+      '121+',
+      '121 plus',
+      '120+',
+      '120 plus',
+      '121_and_above',
+      '121 and above',
+      'over 120',
+    ],
   };
 }
 
@@ -215,7 +160,7 @@ function deriveInteractionOutcome(values: {
   }
 
   if (contactStatus === 'Promise To Pay') {
-    return 'PTP';
+    return 'Promise To Pay';
   }
 
   if (contactStatus === 'Escalated' || nextAction === 'Escalate Account') {
@@ -269,7 +214,9 @@ async function resolveAutoStrategy(accountId: string) {
 
   const productCode = normalize(acct.product_code);
   if (!productCode) {
-    throw new Error('Account has no product_code. Set accounts.product_code first, then auto-assign.');
+    throw new Error(
+      'Account has no product_code. Set accounts.product_code first, then auto-assign.'
+    );
   }
 
   const dpd = getEffectiveDpd(acct);
@@ -422,8 +369,28 @@ export default async function UpdateStatusPage({ params }: PageProps) {
     const nonPaymentReason = String(formData.get('non_payment_reason') || '').trim();
     const callType = String(formData.get('call_type') || '').trim();
     const nextAction = String(formData.get('next_action') || '').trim();
-    const nextActionDate = String(formData.get('next_action_date') || '').trim();
+    const nextActionDateRaw = String(formData.get('next_action_date') || '').trim();
     const notes = String(formData.get('notes') || '').trim();
+
+    const ptpAmountRaw = String(formData.get('ptp_amount') || '').trim();
+    const ptpDueDate = String(formData.get('ptp_due_date') || '').trim();
+
+    const isPtp = contactStatus === 'Promise To Pay';
+
+    if (isPtp) {
+      if (!ptpAmountRaw) {
+        throw new Error('PTP amount is required when contact status is Promise To Pay.');
+      }
+
+      if (!ptpDueDate) {
+        throw new Error('PTP due date is required when contact status is Promise To Pay.');
+      }
+    }
+
+    const ptpAmount = ptpAmountRaw ? Number(ptpAmountRaw) : null;
+    if (isPtp && (!Number.isFinite(ptpAmount) || Number(ptpAmount) <= 0)) {
+      throw new Error('PTP amount must be a valid number greater than zero.');
+    }
 
     const interactionOutcome = deriveInteractionOutcome({
       contactType,
@@ -432,12 +399,14 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       nextAction,
     });
 
+    const effectiveNextActionDate = isPtp ? ptpDueDate : nextActionDateRaw;
+
     const updatePayload: Record<string, any> = {
       status: interactionOutcome,
       contact_type: contactType || null,
       contact_status: contactStatus || null,
       non_payment_reason: nonPaymentReason || null,
-      next_action_date: nextActionDate || null,
+      next_action_date: effectiveNextActionDate || null,
       last_action_date: todayDateString(),
     };
 
@@ -450,6 +419,25 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       throw new Error(updateError.message);
     }
 
+    if (isPtp) {
+      const { error: ptpError } = await supabase.from('ptps').insert({
+        company_id: account.company_id,
+        account_id: id,
+        promised_amount: Number(ptpAmount),
+        promised_date: ptpDueDate,
+        status: 'Promise To Pay',
+        collector_name: account.collector_name || null,
+        created_by_name: 'System User',
+        kept_amount: 0,
+        resolution_source: null,
+        is_rebooked: false,
+      });
+
+      if (ptpError) {
+        throw new Error(ptpError.message);
+      }
+    }
+
     await reassignAccountStrategy(id);
 
     const noteLines = [
@@ -459,7 +447,9 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       nonPaymentReason ? `Non Payment Reason: ${nonPaymentReason}` : '',
       callType ? `Call Type: ${callType}` : '',
       nextAction ? `Next Action: ${nextAction}` : '',
-      nextActionDate ? `Next Action Date: ${nextActionDate}` : '',
+      effectiveNextActionDate ? `Next Action Date: ${effectiveNextActionDate}` : '',
+      isPtp && ptpAmount ? `PTP Amount: ${ptpAmount}` : '',
+      isPtp && ptpDueDate ? `PTP Due Date: ${ptpDueDate}` : '',
       notes ? `Notes: ${notes}` : '',
     ].filter(Boolean);
 
@@ -496,149 +486,17 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <form action={saveStatus} className="space-y-6">
-          <div className="grid gap-5 md:grid-cols-2">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Interaction Outcome
-              </label>
-              <input
-                type="text"
-                value={initialInteractionOutcome}
-                disabled
-                className="w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm text-slate-500 outline-none"
-              />
-              <p className="mt-2 text-xs text-slate-500">
-                This is filled automatically by the system from the disposition fields below.
-              </p>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Contact Type
-              </label>
-              <select
-                name="contact_type"
-                defaultValue={account.contact_type || ''}
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              >
-                <option value="">Select contact type</option>
-                {CONTACT_TYPE_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Contact Status
-              </label>
-              <select
-                name="contact_status"
-                defaultValue={account.contact_status || ''}
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              >
-                <option value="">Select contact status</option>
-                {CONTACT_STATUS_OPTIONS.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Non Payment Reason
-              </label>
-              <select
-                name="non_payment_reason"
-                defaultValue={account.non_payment_reason || ''}
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              >
-                {NON_PAYMENT_REASON_OPTIONS.map((option) => (
-                  <option key={option || 'blank'} value={option}>
-                    {option || 'Select reason'}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Call Type
-              </label>
-              <select
-                name="call_type"
-                defaultValue=""
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              >
-                {CALL_TYPE_OPTIONS.map((option) => (
-                  <option key={option || 'blank'} value={option}>
-                    {option || 'Select call type'}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Next Action
-              </label>
-              <select
-                name="next_action"
-                defaultValue=""
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              >
-                {NEXT_ACTION_OPTIONS.map((option) => (
-                  <option key={option || 'blank'} value={option}>
-                    {option || 'Select next action'}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-2 block text-sm font-medium text-slate-700">
-                Next Action Date
-              </label>
-              <input
-                type="date"
-                name="next_action_date"
-                defaultValue={account.next_action_date || ''}
-                min={todayDateString()}
-                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="mb-2 block text-sm font-medium text-slate-700">Notes</label>
-            <textarea
-              name="notes"
-              rows={5}
-              placeholder="Add any extra collection notes..."
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-            />
-          </div>
-
-          <div className="flex items-center justify-end gap-3">
-            <Link
-              href={`/accounts/${id}`}
-              className="inline-flex items-center justify-center rounded-xl border border-slate-300 px-5 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Cancel
-            </Link>
-            <button
-              type="submit"
-              className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-5 py-3 text-sm font-medium text-white hover:bg-slate-800"
-            >
-              Save Disposition
-            </button>
-          </div>
-        </form>
+        <PTPDispositionForm
+          action={saveStatus}
+          accountId={id}
+          debtorName={account.debtor_name || null}
+          defaultContactType={account.contact_type || ''}
+          defaultContactStatus={account.contact_status || ''}
+          defaultNonPaymentReason={account.non_payment_reason || ''}
+          defaultNextActionDate={account.next_action_date || ''}
+          today={todayDateString()}
+          initialInteractionOutcome={initialInteractionOutcome}
+        />
       </div>
     </div>
   );
