@@ -1012,15 +1012,10 @@ export default function AdminPage() {
                     className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                   >
                     {dbCompanies.map((company) => (
-                      <option key={company.id} value={company.id}>
-                        {company.name}
-                      </option>
-                    ))}
-                    {dbCompanies.map((company) => (
-                      <option key={`${company.id}-code`} value={company.code.toLowerCase()}>
-                        {company.name} ({company.code})
-                      </option>
-                    ))}
+  <option key={company.id} value={company.id}>
+    {company.name} ({company.code})
+  </option>
+))}
                   </select>
                 </div>
               </div>

@@ -1,5 +1,7 @@
 import { unstable_noStore as noStore } from 'next/cache';
+import { cookies } from 'next/headers';
 import Link from 'next/link';
+import { createClient } from '@supabase/supabase-js';
 import { KpiCard } from '@/components/KpiCard';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
@@ -196,7 +198,41 @@ export default async function DashboardPage() {
     );
   }
 
-  const { data: authUser, error: authError } = await supabase.auth.getUser();
+  const cookieStore = await cookies();
+  const accessToken =
+    cookieStore.get('sb-access-token')?.value ||
+    cookieStore.get('supabase-access-token')?.value ||
+    '';
+
+  if (!accessToken) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">Unable to load user session.</p>
+      </div>
+    );
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">Supabase client env is not configured.</p>
+      </div>
+    );
+  }
+
+  const authClient = createClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+
+  const { data: authUser, error: authError } = await authClient.auth.getUser(accessToken);
 
   if (authError || !authUser?.user?.id) {
     return (
@@ -317,15 +353,9 @@ export default async function DashboardPage() {
 
   const totalAccounts = accountList.length;
 
-  const outstanding = accountList.reduce(
-    (sum, item) => sum + Number(item.balance || 0),
-    0
-  );
+  const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
 
-  const totalCollected = payments.reduce(
-    (sum, item) => sum + Number(item.amount || 0),
-    0
-  );
+  const totalCollected = payments.reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
   const collectedThisMonth = payments
     .filter((item) => isCurrentMonth(item.paid_on))
@@ -358,29 +388,18 @@ export default async function DashboardPage() {
     (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
   ).length;
 
-  const escalatedAccounts = accountList.filter(
-    (item) => item.status === 'Escalated'
-  ).length;
-
-  const paidAccounts = accountList.filter(
-    (item) => item.status === 'Paid'
-  ).length;
-
-  const openAccounts = accountList.filter(
-    (item) => item.status !== 'Paid'
-  ).length;
+  const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
+  const paidAccounts = accountList.filter((item) => item.status === 'Paid').length;
+  const openAccounts = accountList.filter((item) => item.status !== 'Paid').length;
 
   const activeCollectors = new Set(
     accountList.map((item) => item.collector_name).filter(Boolean)
   ).size;
 
   const totalAssignedValue = outstanding + totalCollected;
-  const collectionRate =
-    totalAssignedValue > 0 ? (totalCollected / totalAssignedValue) * 100 : 0;
+  const collectionRate = totalAssignedValue > 0 ? (totalCollected / totalAssignedValue) * 100 : 0;
 
-  const ptpKeptRate =
-    resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
-
+  const ptpKeptRate = resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
   const ptpConversionRate =
     normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
 
@@ -389,12 +408,8 @@ export default async function DashboardPage() {
   );
 
   const collectorPerformance = collectors.map((collector) => {
-    const collectorAccounts = accountList.filter(
-      (account) => account.collector_name === collector
-    );
-    const collectorPayments = payments.filter(
-      (payment) => payment.collector_name === collector
-    );
+    const collectorAccounts = accountList.filter((account) => account.collector_name === collector);
+    const collectorPayments = payments.filter((payment) => payment.collector_name === collector);
     const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
 
     const collectorOpenPtpAccounts = new Set(
@@ -418,10 +433,7 @@ export default async function DashboardPage() {
     return {
       collector,
       assignedAccounts: collectorAccounts.length,
-      totalCollected: collectorPayments.reduce(
-        (sum, item) => sum + Number(item.amount || 0),
-        0
-      ),
+      totalCollected: collectorPayments.reduce((sum, item) => sum + Number(item.amount || 0), 0),
       openPtps: collectorOpenPtpAccounts.size,
       keptPtps: collectorKeptPtps,
       brokenPtps: collectorBrokenPtps,
@@ -429,15 +441,12 @@ export default async function DashboardPage() {
         collectorResolvedPtps > 0
           ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
           : '0.0%',
-      callbacks: collectorAccounts.filter(
-        (account) => account.status === 'Callback Requested'
-      ).length,
+      callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
+        .length,
     };
   });
 
-  const accountProducts = Array.from(
-    new Set(accountList.map((item) => item.product).filter(Boolean))
-  );
+  const accountProducts = Array.from(new Set(accountList.map((item) => item.product).filter(Boolean)));
 
   const accountCoverage = accountProducts.map((product) => {
     const productAccounts = accountList.filter((item) => item.product === product);
@@ -445,10 +454,7 @@ export default async function DashboardPage() {
     return {
       product,
       accounts: productAccounts.length,
-      balance: productAccounts.reduce(
-        (sum, item) => sum + Number(item.balance || 0),
-        0
-      ),
+      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
     };
   });
 
@@ -458,10 +464,7 @@ export default async function DashboardPage() {
     return {
       product,
       paymentsCount: productPayments.length,
-      collected: productPayments.reduce(
-        (sum, item) => sum + Number(item.amount || 0),
-        0
-      ),
+      collected: productPayments.reduce((sum, item) => sum + Number(item.amount || 0), 0),
       hasPayments: productPayments.length > 0,
     };
   });
@@ -489,9 +492,7 @@ export default async function DashboardPage() {
     return diff !== null && diff <= -3;
   });
 
-  const brokenPtpAccounts = normalizedPtps.filter(
-    (ptp) => ptp.effectiveStatus === 'Broken'
-  );
+  const brokenPtpAccounts = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Broken');
 
   const todayWorkQueue = [
     {
@@ -575,7 +576,9 @@ export default async function DashboardPage() {
     {
       label: isAgent ? 'My Open PTP Accounts' : 'Open PTP Accounts',
       href: '/accounts?filter=open-ptps',
-      helper: isAgent ? 'Work all active promise accounts assigned to you' : 'Work all active promise accounts',
+      helper: isAgent
+        ? 'Work all active promise accounts assigned to you'
+        : 'Work all active promise accounts',
     },
     {
       label: isAgent ? 'My PTPs Due Today' : 'PTPs Due Today',
@@ -585,12 +588,16 @@ export default async function DashboardPage() {
     {
       label: isAgent ? 'My Broken PTP Report' : 'Broken PTP Report',
       href: '/ptps?filter=broken',
-      helper: isAgent ? 'Review broken promises in your portfolio' : 'Review all broken promises',
+      helper: isAgent
+        ? 'Review broken promises in your portfolio'
+        : 'Review all broken promises',
     },
     {
       label: isAgent ? 'My Kept PTP Report' : 'Kept PTP Report',
       href: '/ptps?filter=kept',
-      helper: isAgent ? 'Review successful promises kept in your portfolio' : 'Review successful promises kept',
+      helper: isAgent
+        ? 'Review successful promises kept in your portfolio'
+        : 'Review successful promises kept',
     },
     {
       label: isAgent ? 'My Payments Report' : 'Payments Report',
@@ -608,7 +615,10 @@ export default async function DashboardPage() {
     {
       category: 'Accounts',
       rows: [
-        { metric: isAgent ? 'My Accounts' : 'Total Accounts', value: totalAccounts.toLocaleString() },
+        {
+          metric: isAgent ? 'My Accounts' : 'Total Accounts',
+          value: totalAccounts.toLocaleString(),
+        },
         { metric: 'Paid Accounts', value: paidAccounts.toLocaleString() },
         { metric: 'Open Accounts', value: openAccounts.toLocaleString() },
       ],
@@ -634,9 +644,7 @@ export default async function DashboardPage() {
     },
     {
       category: 'Follow-up',
-      rows: [
-        { metric: 'Escalated Accounts', value: escalatedAccounts.toLocaleString() },
-      ],
+      rows: [{ metric: 'Escalated Accounts', value: escalatedAccounts.toLocaleString() }],
     },
   ];
 
@@ -680,7 +688,9 @@ export default async function DashboardPage() {
           <KpiCard
             title={isAgent ? 'My Open PTP Accounts' : 'Open PTP Accounts'}
             value={openPtps}
-            helper={isAgent ? 'Assigned accounts with active promises' : 'Accounts with active promises'}
+            helper={
+              isAgent ? 'Assigned accounts with active promises' : 'Accounts with active promises'
+            }
           />
         </Link>
 
@@ -782,12 +792,8 @@ export default async function DashboardPage() {
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-50">
                   <tr className="border-b border-slate-200">
-                    <th className="px-4 py-3 text-left font-semibold text-slate-700">
-                      Metric
-                    </th>
-                    <th className="px-4 py-3 text-left font-semibold text-slate-700">
-                      Value
-                    </th>
+                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Metric</th>
+                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Value</th>
                   </tr>
                 </thead>
                 <tbody>
