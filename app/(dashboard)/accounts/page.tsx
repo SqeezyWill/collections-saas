@@ -355,8 +355,12 @@ export default function AccountsPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
 
+  const normalizedProfileRole = normalizeRole(profile?.role);
+  const isAgent = normalizedProfileRole === 'agent';
   const canManageUploads =
-    normalizeRole(profile?.role) === 'super_admin' || normalizeRole(profile?.role) === 'admin';
+    normalizedProfileRole === 'super_admin' || normalizedProfileRole === 'admin';
+  const canUseBulkActions =
+    normalizedProfileRole === 'super_admin' || normalizedProfileRole === 'admin';
 
   useEffect(() => {
     let mounted = true;
@@ -395,17 +399,31 @@ export default function AccountsPage() {
         setProfile(profileData as UserProfile);
 
         const companyId = String(profileData.company_id);
+        const profileName = String(profileData.name || '').trim();
+        const profileRole = normalizeRole(profileData.role);
+        const restrictToCollector = profileRole === 'agent' ? profileName : '';
+
         const today = todayDateString();
         const staleThreshold = daysAgoDateString(3);
 
-        const collectorQuery = await supabase
+        let collectorQuery = supabase
           .from('accounts')
           .select('collector_name')
           .eq('company_id', companyId)
           .not('collector_name', 'is', null);
 
+        if (restrictToCollector) {
+          collectorQuery = collectorQuery.eq('collector_name', restrictToCollector);
+        }
+
+        const collectorResult = await collectorQuery;
+
         const collectorList = Array.from(
-          new Set((collectorQuery.data ?? []).map((row: any) => row.collector_name).filter(Boolean))
+          new Set(
+            (collectorResult.data ?? [])
+              .map((row: any) => row.collector_name)
+              .filter(Boolean)
+          )
         ).sort();
 
         if (!mounted) return;
@@ -464,6 +482,10 @@ export default function AccountsPage() {
           .select('*', { count: 'exact' })
           .eq('company_id', companyId)
           .order('created_at', { ascending: false });
+
+        if (restrictToCollector) {
+          query = query.eq('collector_name', restrictToCollector);
+        }
 
         if (matchedAccountIds) {
           query =
@@ -582,7 +604,7 @@ export default function AccountsPage() {
   const totalPages = totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
 
   const headers = [
-    'Select',
+    ...(canUseBulkActions ? ['Select'] : []),
     ...finalColumns.map(
       (key) => AVAILABLE_COLUMNS.find((col) => col.key === key)?.label || key
     ),
@@ -642,6 +664,11 @@ export default function AccountsPage() {
   async function handleBulkAction(action: 'export' | 'mark_review' | 'assign') {
     if (!supabase) {
       setBulkMessage('Supabase is not configured.');
+      return;
+    }
+
+    if (!canUseBulkActions) {
+      setBulkMessage('You do not have permission to use bulk actions.');
       return;
     }
 
@@ -814,6 +841,11 @@ export default function AccountsPage() {
           <p className="mt-1 text-slate-500">
             Search, review and work assigned debtor accounts from one operational workspace.
           </p>
+          {isAgent ? (
+            <p className="mt-2 inline-flex rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
+              Agent view: only your allocated accounts are visible
+            </p>
+          ) : null}
           {filterLabel ? (
             <p className="mt-2 inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">
               Filter: {filterLabel}
@@ -909,102 +941,132 @@ export default function AccountsPage() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-slate-900">Bulk Selection</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Work on selected accounts faster from the current page.
-            </p>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Selected</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-900">{selectedIds.length}</p>
-            </div>
-
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Selected Balance</p>
-              <p className="mt-2 text-base font-semibold text-slate-900">
-                {currency(selectedBalance)}
+        {canUseBulkActions ? (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">Bulk Selection</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Work on selected accounts faster from the current page.
               </p>
             </div>
 
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Page Rows</p>
-              <p className="mt-2 text-2xl font-semibold text-slate-900">{rows.length}</p>
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Selected</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{selectedIds.length}</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Selected Balance</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">
+                  {currency(selectedBalance)}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Page Rows</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{rows.length}</p>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={toggleSelectPage}
+                disabled={actionLoading}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {allCurrentPageSelected ? 'Unselect Page' : 'Select Page'}
+              </button>
+
+              <button
+                type="button"
+                onClick={clearSelection}
+                disabled={actionLoading}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Clear Selection
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleBulkAction('export')}
+                disabled={actionLoading}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Bulk Export
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleBulkAction('mark_review')}
+                disabled={actionLoading}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Mark for Review
+              </button>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <select
+                value={bulkAssignCollector}
+                onChange={(e) => setBulkAssignCollector(e.target.value)}
+                disabled={actionLoading}
+                className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:opacity-50"
+              >
+                <option value="">Select collector to reassign</option>
+                {collectorOptions.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+
+              <button
+                type="button"
+                onClick={() => handleBulkAction('assign')}
+                disabled={actionLoading}
+                className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
+              >
+                {actionLoading ? 'Processing...' : 'Reassign Selected'}
+              </button>
+            </div>
+
+            {bulkMessage ? (
+              <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                {bulkMessage}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">Portfolio Summary</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Your visible portfolio is limited to accounts assigned to you.
+              </p>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Visible Accounts</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{rows.length}</p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Visible Balance</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">
+                  {currency(totalBalance)}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs uppercase tracking-wide text-slate-500">Open Cases</p>
+                <p className="mt-2 text-2xl font-semibold text-slate-900">{openCases}</p>
+              </div>
             </div>
           </div>
-
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button
-              type="button"
-              onClick={toggleSelectPage}
-              disabled={actionLoading}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              {allCurrentPageSelected ? 'Unselect Page' : 'Select Page'}
-            </button>
-
-            <button
-              type="button"
-              onClick={clearSelection}
-              disabled={actionLoading}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Clear Selection
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleBulkAction('export')}
-              disabled={actionLoading}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Bulk Export
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleBulkAction('mark_review')}
-              disabled={actionLoading}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-            >
-              Mark for Review
-            </button>
-          </div>
-
-          <div className="mt-4 flex flex-wrap items-center gap-3">
-            <select
-              value={bulkAssignCollector}
-              onChange={(e) => setBulkAssignCollector(e.target.value)}
-              disabled={actionLoading}
-              className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:opacity-50"
-            >
-              <option value="">Select collector to reassign</option>
-              {collectorOptions.map((item) => (
-                <option key={item} value={item}>
-                  {item}
-                </option>
-              ))}
-            </select>
-
-            <button
-              type="button"
-              onClick={() => handleBulkAction('assign')}
-              disabled={actionLoading}
-              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
-            >
-              {actionLoading ? 'Processing...' : 'Reassign Selected'}
-            </button>
-          </div>
-
-          {bulkMessage ? (
-            <p className="mt-4 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              {bulkMessage}
-            </p>
-          ) : null}
-        </div>
+        )}
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1036,7 +1098,8 @@ export default function AccountsPage() {
             <select
               name="collector"
               defaultValue={collector}
-              className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              disabled={isAgent}
+              className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
               <option value="">All Collectors</option>
               {collectorOptions.map((item) => (
@@ -1161,14 +1224,16 @@ export default function AccountsPage() {
       <DataTable headers={headers}>
         {rows.map((row) => (
           <tr key={row.id}>
-            <td className="px-4 py-3">
-              <input
-                type="checkbox"
-                checked={selectedIds.includes(row.id)}
-                onChange={() => toggleRow(row.id)}
-                className="h-4 w-4 rounded border-slate-300"
-              />
-            </td>
+            {canUseBulkActions ? (
+              <td className="px-4 py-3">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.includes(row.id)}
+                  onChange={() => toggleRow(row.id)}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+              </td>
+            ) : null}
 
             {finalColumns.includes('cfid') ? (
               <td className="px-4 py-3 font-medium">{row.cfid || '-'}</td>
@@ -1223,7 +1288,7 @@ export default function AccountsPage() {
         <form>
           <input type="hidden" name="search" value={search} />
           <input type="hidden" name="searchField" value={searchField} />
-          <input type="hidden" name="collector" value={collector} />
+          <input type="hidden" name="collector" value={isAgent ? '' : collector} />
           <input type="hidden" name="status" value={status} />
           <input type="hidden" name="minBalance" value={minBalance} />
           <input type="hidden" name="maxBalance" value={maxBalance} />
@@ -1261,7 +1326,7 @@ export default function AccountsPage() {
               href={buildPageUrl({
                 search,
                 searchField,
-                collector,
+                collector: isAgent ? '' : collector,
                 status,
                 minBalance,
                 maxBalance,
@@ -1285,7 +1350,7 @@ export default function AccountsPage() {
               href={buildPageUrl({
                 search,
                 searchField,
-                collector,
+                collector: isAgent ? '' : collector,
                 status,
                 minBalance,
                 maxBalance,
@@ -1313,6 +1378,12 @@ export default function AccountsPage() {
           </p>
         )}
       </div>
+
+      {!search && totalAccounts === 0 && isAgent ? (
+        <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">
+          No accounts are assigned to you yet.
+        </div>
+      ) : null}
 
       {search && totalAccounts === 0 ? (
         <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-6 text-sm text-slate-500">

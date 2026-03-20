@@ -8,8 +8,18 @@ import { currency } from '@/lib/utils';
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
 const PAGE_SIZE = 1000;
+
+type UserProfile = {
+  id: string;
+  name?: string | null;
+  role: string | null;
+  company_id: string | null;
+};
+
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
 
 function isCurrentMonth(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -113,8 +123,17 @@ function resolvePtpOutcomeFromPayments(
   };
 }
 
-async function fetchAllRows(table: 'accounts' | 'payments' | 'ptps') {
+async function fetchAllRows(
+  table: 'accounts' | 'payments' | 'ptps',
+  input: {
+    companyId: string;
+    collectorName?: string;
+    restrictToCollector?: boolean;
+  }
+) {
   if (!supabase) return [];
+
+  const { companyId, collectorName, restrictToCollector } = input;
 
   let allRows: any[] = [];
   let from = 0;
@@ -122,12 +141,18 @@ async function fetchAllRows(table: 'accounts' | 'payments' | 'ptps') {
   while (true) {
     const to = from + PAGE_SIZE - 1;
 
-    const { data, error } = await supabase
+    let query = supabase
       .from(table)
       .select('*')
-      .eq('company_id', COMPANY_ID)
+      .eq('company_id', companyId)
       .order('created_at', { ascending: false })
       .range(from, to);
+
+    if (restrictToCollector && collectorName) {
+      query = query.eq('collector_name', collectorName);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       throw error;
@@ -171,15 +196,62 @@ export default async function DashboardPage() {
     );
   }
 
+  const { data: authUser, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !authUser?.user?.id) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">Unable to load user session.</p>
+      </div>
+    );
+  }
+
+  const userId = authUser.user.id;
+
+  const { data: profileData, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('id,name,role,company_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (profileError || !profileData?.company_id) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">
+          {profileError?.message || 'Your user profile has no company_id.'}
+        </p>
+      </div>
+    );
+  }
+
+  const profile = profileData as UserProfile;
+  const normalizedRole = normalizeRole(profile.role);
+  const isAgent = normalizedRole === 'agent';
+  const collectorScope = String(profile.name || '').trim();
+
   let accountList: any[] = [];
   let payments: any[] = [];
   let ptps: any[] = [];
 
   try {
     [accountList, payments, ptps] = await Promise.all([
-      fetchAllRows('accounts'),
-      fetchAllRows('payments'),
-      fetchAllRows('ptps'),
+      fetchAllRows('accounts', {
+        companyId: String(profile.company_id),
+        collectorName: collectorScope,
+        restrictToCollector: isAgent,
+      }),
+      fetchAllRows('payments', {
+        companyId: String(profile.company_id),
+        collectorName: collectorScope,
+        restrictToCollector: isAgent,
+      }),
+      fetchAllRows('ptps', {
+        companyId: String(profile.company_id),
+        collectorName: collectorScope,
+        restrictToCollector: isAgent,
+      }),
     ]);
   } catch (error: any) {
     return (
@@ -423,64 +495,76 @@ export default async function DashboardPage() {
 
   const todayWorkQueue = [
     {
-      title: 'PTPs Due Today',
+      title: isAgent ? 'My PTPs Due Today' : 'PTPs Due Today',
       count: ptpsDueToday,
       href: '/accounts?filter=ptps-due-today',
-      helper: 'Promises requiring follow-up today',
+      helper: isAgent
+        ? 'Promises in your assigned portfolio due today'
+        : 'Promises requiring follow-up today',
     },
     {
-      title: 'Callbacks Due Today',
+      title: isAgent ? 'My Callbacks Due Today' : 'Callbacks Due Today',
       count: callbacksToday.length,
       href: '/accounts?status=Callback%20Requested',
-      helper: 'Accounts awaiting scheduled callbacks',
+      helper: isAgent
+        ? 'Your scheduled callbacks due today'
+        : 'Accounts awaiting scheduled callbacks',
     },
     {
-      title: 'Next Actions Due Today',
+      title: isAgent ? 'My Next Actions Due Today' : 'Next Actions Due Today',
       count: nextActionDueToday.length,
       href: '/accounts',
-      helper: 'Accounts with follow-up dates due today',
+      helper: isAgent
+        ? 'Your follow-up dates due today'
+        : 'Accounts with follow-up dates due today',
     },
     {
-      title: 'Broken PTP Follow-ups',
+      title: isAgent ? 'My Broken PTP Follow-ups' : 'Broken PTP Follow-ups',
       count: brokenPtpAccounts.length,
       href: '/ptps?filter=broken',
-      helper: 'Promises that have broken and need action',
+      helper: isAgent
+        ? 'Broken promises in your assigned accounts'
+        : 'Promises that have broken and need action',
     },
     {
-      title: 'Overdue Callbacks',
+      title: isAgent ? 'My Overdue Callbacks' : 'Overdue Callbacks',
       count: overdueCallbacks.length,
       href: '/accounts?status=Callback%20Requested',
-      helper: 'Callback actions missed and still pending',
+      helper: isAgent
+        ? 'Missed callbacks in your portfolio'
+        : 'Callback actions missed and still pending',
     },
     {
-      title: 'Stale Accounts',
+      title: isAgent ? 'My Stale Accounts' : 'Stale Accounts',
       count: staleAccounts.length,
       href: '/accounts',
-      helper: 'Accounts with no recent action in 3+ days',
+      helper: isAgent
+        ? 'Assigned accounts with no recent action in 3+ days'
+        : 'Accounts with no recent action in 3+ days',
     },
   ];
 
   const alerts = [
     {
-      title: 'Broken PTPs need attention',
+      title: isAgent ? 'Broken PTPs need your attention' : 'Broken PTPs need attention',
       count: brokenPtpAccounts.length,
       tone: brokenPtpAccounts.length > 0 ? 'red' : 'slate',
       href: '/ptps?filter=broken',
     },
     {
-      title: 'Callbacks overdue',
+      title: isAgent ? 'Your callbacks overdue' : 'Callbacks overdue',
       count: overdueCallbacks.length,
       tone: overdueCallbacks.length > 0 ? 'amber' : 'slate',
       href: '/accounts?status=Callback%20Requested',
     },
     {
-      title: 'PTPs due today',
+      title: isAgent ? 'Your PTPs due today' : 'PTPs due today',
       count: ptpsDueToday,
       tone: ptpsDueToday > 0 ? 'blue' : 'slate',
       href: '/accounts?filter=ptps-due-today',
     },
     {
-      title: 'Stale accounts',
+      title: isAgent ? 'Your stale accounts' : 'Stale accounts',
       count: staleAccounts.length,
       tone: staleAccounts.length > 0 ? 'amber' : 'slate',
       href: '/accounts',
@@ -489,34 +573,34 @@ export default async function DashboardPage() {
 
   const quickViews = [
     {
-      label: 'My Open PTP Accounts',
+      label: isAgent ? 'My Open PTP Accounts' : 'Open PTP Accounts',
       href: '/accounts?filter=open-ptps',
-      helper: 'Work all active promise accounts',
+      helper: isAgent ? 'Work all active promise accounts assigned to you' : 'Work all active promise accounts',
     },
     {
-      label: 'PTPs Due Today',
+      label: isAgent ? 'My PTPs Due Today' : 'PTPs Due Today',
       href: '/accounts?filter=ptps-due-today',
-      helper: 'Focus on today’s due promises',
+      helper: isAgent ? 'Focus on your promises due today' : 'Focus on today’s due promises',
     },
     {
-      label: 'Broken PTP Report',
+      label: isAgent ? 'My Broken PTP Report' : 'Broken PTP Report',
       href: '/ptps?filter=broken',
-      helper: 'Review all broken promises',
+      helper: isAgent ? 'Review broken promises in your portfolio' : 'Review all broken promises',
     },
     {
-      label: 'Kept PTP Report',
+      label: isAgent ? 'My Kept PTP Report' : 'Kept PTP Report',
       href: '/ptps?filter=kept',
-      helper: 'Review successful promises kept',
+      helper: isAgent ? 'Review successful promises kept in your portfolio' : 'Review successful promises kept',
     },
     {
-      label: 'Payments Report',
+      label: isAgent ? 'My Payments Report' : 'Payments Report',
       href: '/payments',
-      helper: 'Track payment activity',
+      helper: isAgent ? 'Track payment activity on your accounts' : 'Track payment activity',
     },
     {
-      label: 'Portfolio View',
+      label: isAgent ? 'My Portfolio View' : 'Portfolio View',
       href: '/accounts',
-      helper: 'Open the full collections portfolio',
+      helper: isAgent ? 'Open your assigned accounts portfolio' : 'Open the full collections portfolio',
     },
   ];
 
@@ -524,7 +608,7 @@ export default async function DashboardPage() {
     {
       category: 'Accounts',
       rows: [
-        { metric: 'Total Accounts', value: totalAccounts.toLocaleString() },
+        { metric: isAgent ? 'My Accounts' : 'Total Accounts', value: totalAccounts.toLocaleString() },
         { metric: 'Paid Accounts', value: paidAccounts.toLocaleString() },
         { metric: 'Open Accounts', value: openAccounts.toLocaleString() },
       ],
@@ -561,21 +645,28 @@ export default async function DashboardPage() {
       <div>
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
         <p className="mt-1 text-slate-500">
-          Collections performance overview for your current tenant workspace.
+          {isAgent
+            ? 'Collections performance overview for your assigned portfolio.'
+            : 'Collections performance overview for your current tenant workspace.'}
         </p>
+        {isAgent ? (
+          <p className="mt-2 inline-flex rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
+            Agent view: dashboard is limited to your allocated accounts
+          </p>
+        ) : null}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <KpiCard
-          title="Portfolio Outstanding"
+          title={isAgent ? 'My Portfolio Outstanding' : 'Portfolio Outstanding'}
           value={outstanding}
-          helper="Live total balance"
+          helper={isAgent ? 'Live total balance on your accounts' : 'Live total balance'}
           money
         />
         <KpiCard
           title="Collected to Date"
           value={totalCollected}
-          helper="All payments logged"
+          helper={isAgent ? 'Payments logged on your accounts' : 'All payments logged'}
           money
         />
         <KpiCard
@@ -587,24 +678,24 @@ export default async function DashboardPage() {
 
         <Link href="/accounts?filter=open-ptps" className="block">
           <KpiCard
-            title="Open PTP Accounts"
+            title={isAgent ? 'My Open PTP Accounts' : 'Open PTP Accounts'}
             value={openPtps}
-            helper="Accounts with active promises"
+            helper={isAgent ? 'Assigned accounts with active promises' : 'Accounts with active promises'}
           />
         </Link>
 
         <Link href="/accounts?filter=ptps-due-today" className="block">
           <KpiCard
-            title="PTP Accounts Due Today"
+            title={isAgent ? 'My PTPs Due Today' : 'PTP Accounts Due Today'}
             value={ptpsDueToday}
-            helper="Accounts with promises due today"
+            helper={isAgent ? 'Your promises due today' : 'Accounts with promises due today'}
           />
         </Link>
 
         <KpiCard
-          title="Active Collectors"
-          value={activeCollectors}
-          helper="Collectors with assigned cases"
+          title={isAgent ? 'My Active Allocation' : 'Active Collectors'}
+          value={isAgent ? totalAccounts : activeCollectors}
+          helper={isAgent ? 'Accounts currently assigned to you' : 'Collectors with assigned cases'}
         />
       </div>
 
@@ -614,7 +705,7 @@ export default async function DashboardPage() {
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Today’s Work Queue</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Priority actions that agents and managers should focus on today.
+                Priority actions that should be focused on today.
               </p>
             </div>
           </div>
@@ -724,34 +815,36 @@ export default async function DashboardPage() {
             </div>
           </div>
 
-          <div>
-            <h2 className="section-title mb-3">Collector Scorecard</h2>
-            <DataTable
-              headers={[
-                'Collector',
-                'Assigned',
-                'Total Collected',
-                'Open PTP Accounts',
-                'Kept PTPs',
-                'Broken PTPs',
-                'PTP Kept Rate',
-                'Callbacks',
-              ]}
-            >
-              {collectorPerformance.map((item) => (
-                <tr key={item.collector}>
-                  <td className="px-4 py-3 font-medium">{item.collector}</td>
-                  <td className="px-4 py-3">{item.assignedAccounts}</td>
-                  <td className="px-4 py-3">{currency(item.totalCollected)}</td>
-                  <td className="px-4 py-3">{item.openPtps}</td>
-                  <td className="px-4 py-3">{item.keptPtps}</td>
-                  <td className="px-4 py-3">{item.brokenPtps}</td>
-                  <td className="px-4 py-3">{item.ptpKeptRate}</td>
-                  <td className="px-4 py-3">{item.callbacks}</td>
-                </tr>
-              ))}
-            </DataTable>
-          </div>
+          {!isAgent ? (
+            <div>
+              <h2 className="section-title mb-3">Collector Scorecard</h2>
+              <DataTable
+                headers={[
+                  'Collector',
+                  'Assigned',
+                  'Total Collected',
+                  'Open PTP Accounts',
+                  'Kept PTPs',
+                  'Broken PTPs',
+                  'PTP Kept Rate',
+                  'Callbacks',
+                ]}
+              >
+                {collectorPerformance.map((item) => (
+                  <tr key={item.collector}>
+                    <td className="px-4 py-3 font-medium">{item.collector}</td>
+                    <td className="px-4 py-3">{item.assignedAccounts}</td>
+                    <td className="px-4 py-3">{currency(item.totalCollected)}</td>
+                    <td className="px-4 py-3">{item.openPtps}</td>
+                    <td className="px-4 py-3">{item.keptPtps}</td>
+                    <td className="px-4 py-3">{item.brokenPtps}</td>
+                    <td className="px-4 py-3">{item.ptpKeptRate}</td>
+                    <td className="px-4 py-3">{item.callbacks}</td>
+                  </tr>
+                ))}
+              </DataTable>
+            </div>
+          ) : null}
         </div>
 
         <div className="space-y-6">

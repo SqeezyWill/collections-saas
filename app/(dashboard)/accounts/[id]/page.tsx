@@ -1,11 +1,19 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { currency, formatDate } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { AccountStrategyActions } from '@/components/AccountStrategyActions';
 
 type PageProps = {
   params: Promise<{ id: string }>;
+};
+
+type UserProfile = {
+  id: string;
+  name?: string | null;
+  role: string | null;
+  company_id: string | null;
 };
 
 const ASSIGN_TABLE = 'account_strategies';
@@ -26,6 +34,10 @@ function detailValue(value: unknown) {
 
 function normalize(value: unknown) {
   return String(value ?? '').trim().toLowerCase();
+}
+
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
 }
 
 function parseNumber(value: unknown): number | null {
@@ -180,7 +192,15 @@ function getBucketMeta(dpd: number | null) {
   return {
     key: '121_plus',
     label: '121+',
-    aliases: ['121+', '121 plus', '120+', '120 plus', '121_and_above', '121 and above', 'over 120'],
+    aliases: [
+      '121+',
+      '121 plus',
+      '120+',
+      '120 plus',
+      '121_and_above',
+      '121 and above',
+      'over 120',
+    ],
   };
 }
 
@@ -489,20 +509,49 @@ async function resolveAutoStrategy(accountId: string) {
 export default async function AccountDetailPage({ params }: PageProps) {
   const { id } = await params;
 
-  if (!supabaseAdmin) {
+  if (!supabaseAdmin || !supabase) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Account Workspace</h1>
-        <p className="text-red-600">Supabase admin is not configured.</p>
+        <p className="text-red-600">Supabase is not configured.</p>
       </div>
     );
   }
+
+  const { data: authUser, error: authError } = await supabase.auth.getUser();
+
+  if (authError || !authUser?.user?.id) {
+    notFound();
+  }
+
+  const userId = authUser.user.id;
+
+  const { data: profileData, error: profileError } = await supabase
+    .from('user_profiles')
+    .select('id,name,role,company_id')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (profileError || !profileData?.company_id) {
+    notFound();
+  }
+
+  const profile = profileData as UserProfile;
+  const normalizedRole = normalizeRole(profile.role);
+  const isAgent = normalizedRole === 'agent';
+  const canManageAssignments =
+    normalizedRole === 'super_admin' || normalizedRole === 'admin';
+  const collectorScope = String(profile.name || '').trim();
 
   async function reEvaluateStrategy() {
     'use server';
 
     if (!supabaseAdmin) {
       throw new Error('Supabase admin is not configured.');
+    }
+
+    if (!canManageAssignments) {
+      throw new Error('You do not have permission to re-evaluate strategy.');
     }
 
     const resolved = await resolveAutoStrategy(id);
@@ -549,11 +598,17 @@ export default async function AccountDetailPage({ params }: PageProps) {
     redirect(`/accounts/${id}`);
   }
 
-  const { data: account, error } = await supabaseAdmin
+  let accountQuery = supabaseAdmin
     .from('accounts')
     .select('*')
     .eq('id', id)
-    .single();
+    .eq('company_id', String(profile.company_id));
+
+  if (isAgent) {
+    accountQuery = accountQuery.eq('collector_name', collectorScope);
+  }
+
+  const { data: account, error } = await accountQuery.single();
 
   if (error || !account) {
     notFound();
@@ -586,16 +641,26 @@ export default async function AccountDetailPage({ params }: PageProps) {
     .order('created_at', { ascending: false })
     .limit(10);
 
-  const { data: relatedFacilities } =
-    account.customer_id
-      ? await supabaseAdmin
-          .from('accounts')
-          .select('id,debtor_name,account_no,product,portfolio_category,balance,status,dpd')
-          .eq('customer_id', account.customer_id)
-          .neq('id', id)
-          .order('created_at', { ascending: false })
-          .limit(10)
-      : { data: [] as any[] };
+  let relatedFacilitiesQuery = account.customer_id
+    ? supabaseAdmin
+        .from('accounts')
+        .select('id,debtor_name,account_no,product,portfolio_category,balance,status,dpd,collector_name')
+        .eq('customer_id', account.customer_id)
+        .eq('company_id', String(profile.company_id))
+        .neq('id', id)
+        .order('created_at', { ascending: false })
+        .limit(10)
+    : null;
+
+  if (relatedFacilitiesQuery && isAgent) {
+    relatedFacilitiesQuery = relatedFacilitiesQuery.eq('collector_name', collectorScope);
+  }
+
+  const relatedFacilitiesResult = relatedFacilitiesQuery
+    ? await relatedFacilitiesQuery
+    : { data: [] as any[] };
+
+  const relatedFacilities = relatedFacilitiesResult.data ?? [];
 
   const strategyResp = await fetchAccountStrategy(id);
   const assignedStrategy = strategyResp?.strategy ?? null;
@@ -667,7 +732,9 @@ export default async function AccountDetailPage({ params }: PageProps) {
     { label: 'Stored Due Date', value: formatDate(account.due_date || account.loan_due_date) },
     {
       label: 'Computed Due Date',
-      value: loanTimeline.computedDueDate ? formatDate(loanTimeline.computedDueDate.toISOString()) : '-',
+      value: loanTimeline.computedDueDate
+        ? formatDate(loanTimeline.computedDueDate.toISOString())
+        : '-',
     },
     { label: 'Last Installment Date', value: formatDate(account.last_installment_date) },
     { label: 'Loan Tenure (Days)', value: detailValue(account.duration) },
@@ -753,6 +820,11 @@ export default async function AccountDetailPage({ params }: PageProps) {
             <p className="mt-1 text-slate-500">
               Case hub for account actions, updates and recovery workflow.
             </p>
+            {isAgent ? (
+              <p className="mt-2 inline-flex rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
+                Agent view: only your allocated account details are visible
+              </p>
+            ) : null}
           </div>
 
           <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-medium ${statusClasses}`}>
@@ -799,13 +871,15 @@ export default async function AccountDetailPage({ params }: PageProps) {
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Other Facilities for This Customer</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Other accounts linked to customer ID {account.customer_id}.
+                {isAgent
+                  ? `Other visible accounts in your portfolio linked to customer ID ${account.customer_id}.`
+                  : `Other accounts linked to customer ID ${account.customer_id}.`}
               </p>
             </div>
           </div>
 
           <div className="mt-4">
-            {relatedFacilities && relatedFacilities.length > 0 ? (
+            {relatedFacilities.length > 0 ? (
               <div className="overflow-x-auto rounded-2xl border border-slate-200">
                 <table className="min-w-full text-sm">
                   <thead className="bg-slate-50 text-left text-slate-600">
@@ -882,7 +956,9 @@ export default async function AccountDetailPage({ params }: PageProps) {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs uppercase tracking-wide text-slate-500">Expected Maturity</p>
               <p className="mt-2 text-base font-semibold text-slate-900">
-                {loanTimeline.computedDueDate ? formatDate(loanTimeline.computedDueDate.toISOString()) : '-'}
+                {loanTimeline.computedDueDate
+                  ? formatDate(loanTimeline.computedDueDate.toISOString())
+                  : '-'}
               </p>
             </div>
 
@@ -990,12 +1066,14 @@ export default async function AccountDetailPage({ params }: PageProps) {
             Notes History
           </Link>
 
-          <Link
-            href={`/accounts/${id}/assign`}
-            className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Assign Collector
-          </Link>
+          {canManageAssignments ? (
+            <Link
+              href={`/accounts/${id}/assign`}
+              className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Assign Collector
+            </Link>
+          ) : null}
 
           <Link
             href={`/accounts/${id}/sms/new`}
@@ -1022,7 +1100,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
             </p>
           </div>
 
-          <AccountStrategyActions accountId={id} />
+          {canManageAssignments ? <AccountStrategyActions accountId={id} /> : null}
         </div>
 
         <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -1137,7 +1215,10 @@ export default async function AccountDetailPage({ params }: PageProps) {
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-semibold text-slate-900">Recent PTPs</h2>
-            <Link href={`/accounts/${id}/ptps/new`} className="text-sm font-medium text-slate-600 hover:text-slate-900">
+            <Link
+              href={`/accounts/${id}/ptps/new`}
+              className="text-sm font-medium text-slate-600 hover:text-slate-900"
+            >
               Book PTP
             </Link>
           </div>
