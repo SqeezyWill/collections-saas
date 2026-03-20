@@ -41,14 +41,38 @@ function startOfLocalDay(date: Date) {
 function parseDateLike(value: unknown): Date | null {
   if (!value) return null;
   const raw = String(value).trim();
-  if (!raw) return null;
+  if (!raw || raw === '0') return null;
 
   const isoOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (isoOnly) {
     const year = Number(isoOnly[1]);
     const month = Number(isoOnly[2]);
     const day = Number(isoOnly[3]);
-    return new Date(year, month - 1, day);
+    const parsed = new Date(year, month - 1, day);
+    if (
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return null;
+    }
+    return parsed;
+  }
+
+  const ddmmyyyy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (ddmmyyyy) {
+    const day = Number(ddmmyyyy[1]);
+    const month = Number(ddmmyyyy[2]);
+    const year = Number(ddmmyyyy[3]);
+    const parsed = new Date(year, month - 1, day);
+    if (
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return null;
+    }
+    return parsed;
   }
 
   const parsed = new Date(raw);
@@ -60,6 +84,12 @@ function diffInDays(from: Date, to: Date) {
   const start = startOfLocalDay(from).getTime();
   const end = startOfLocalDay(to).getTime();
   return Math.floor((end - start) / 86400000);
+}
+
+function addDays(date: Date, days: number) {
+  const next = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  next.setDate(next.getDate() + days);
+  return next;
 }
 
 function getDpdAnchorDate(account: any): Date | null {
@@ -232,6 +262,65 @@ function getPriorityMeta(account: any, effectiveDpd: number | null) {
     label: 'Normal follow-up',
     tone: 'bg-slate-100 text-slate-700',
     reason: 'Routine account handling.',
+  };
+}
+
+function getComputedDueDate(account: any): Date | null {
+  const storedDueDate =
+    parseDateLike(account?.due_date) || parseDateLike(account?.loan_due_date);
+
+  if (storedDueDate) return storedDueDate;
+
+  const fundedDate =
+    parseDateLike(account?.funded_date) || parseDateLike(account?.loan_taken_date);
+
+  const duration = parseNumber(account?.duration);
+
+  if (!fundedDate || duration == null) return null;
+
+  return addDays(fundedDate, Math.trunc(duration));
+}
+
+function getDaysSinceFunded(account: any): number | null {
+  const fundedDate =
+    parseDateLike(account?.funded_date) || parseDateLike(account?.loan_taken_date);
+
+  if (!fundedDate) return null;
+
+  return Math.max(0, diffInDays(fundedDate, new Date()));
+}
+
+function getLoanTimelineMeta(account: any) {
+  const fundedDate =
+    parseDateLike(account?.funded_date) || parseDateLike(account?.loan_taken_date);
+  const computedDueDate = getComputedDueDate(account);
+  const duration = parseNumber(account?.duration);
+  const daysSinceFunded = getDaysSinceFunded(account);
+
+  let maturityLabel = 'Timeline unavailable';
+  let maturityTone = 'bg-slate-100 text-slate-700';
+
+  if (computedDueDate) {
+    const delta = diffInDays(new Date(), computedDueDate);
+    if (delta < 0) {
+      maturityLabel = `${Math.abs(delta)} day(s) past expected maturity`;
+      maturityTone = 'bg-rose-100 text-rose-700';
+    } else if (delta === 0) {
+      maturityLabel = 'Expected to mature today';
+      maturityTone = 'bg-amber-100 text-amber-700';
+    } else {
+      maturityLabel = `${delta} day(s) to expected maturity`;
+      maturityTone = 'bg-emerald-100 text-emerald-700';
+    }
+  }
+
+  return {
+    fundedDate,
+    computedDueDate,
+    duration,
+    daysSinceFunded,
+    maturityLabel,
+    maturityTone,
   };
 }
 
@@ -503,6 +592,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
   const stepsCount = Array.isArray(assignedStrategy?.steps) ? assignedStrategy.steps.length : 0;
   const dueMeta = getDueState(account.next_action_date);
   const priorityMeta = getPriorityMeta(account, effectiveDpd);
+  const loanTimeline = getLoanTimelineMeta(account);
 
   const statusClasses =
     account.status === 'PTP'
@@ -522,7 +612,6 @@ export default async function AccountDetailPage({ params }: PageProps) {
     { label: 'Customer ID', value: detailValue(account.customer_id) },
     { label: 'CFID', value: detailValue(account.cfid) },
     { label: 'Collector', value: detailValue(account.collector_name) },
-    { label: 'Region', value: detailValue(account.region) },
     {
       label: 'Phone Number(s)',
       value:
@@ -553,18 +642,33 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
   const debtDetails = [
     { label: 'Product Name', value: detailValue(account.product) },
-    { label: 'Product Category', value: detailValue(account.product_code) },
+    { label: 'Strategy Product Code', value: detailValue(account.product_code) },
     { label: 'Portfolio Category', value: detailValue(account.portfolio_category) },
+    { label: 'Region', value: detailValue(account.region) },
     { label: 'Score', value: detailValue(account.score) },
+    { label: 'Risk Segment', value: detailValue(account.risk_segment) },
     { label: 'Installment Type', value: detailValue(account.installment_type) },
     { label: 'Funded Date', value: formatDate(account.funded_date || account.loan_taken_date) },
-    { label: 'Due Date', value: formatDate(account.due_date || account.loan_due_date) },
+    { label: 'Stored Due Date', value: formatDate(account.due_date || account.loan_due_date) },
+    {
+      label: 'Computed Due Date',
+      value: loanTimeline.computedDueDate ? formatDate(loanTimeline.computedDueDate.toISOString()) : '-',
+    },
     { label: 'Last Installment Date', value: formatDate(account.last_installment_date) },
+    { label: 'Loan Tenure (Days)', value: detailValue(account.duration) },
+    { label: 'Days Since Funded', value: detailValue(loanTimeline.daysSinceFunded) },
+    {
+      label: 'Loan Age / Maturity',
+      value: (
+        <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${loanTimeline.maturityTone}`}>
+          {loanTimeline.maturityLabel}
+        </span>
+      ),
+    },
     {
       label: 'Days Late Last Installment',
       value: detailValue(account.days_late_lastinstallment),
     },
-    { label: 'Duration / Tenure', value: detailValue(account.duration) },
     { label: 'Total Due', value: currency(Number(account.total_due || 0)) },
     { label: 'Balance', value: currency(Number(account.balance || 0)) },
     { label: 'Amount Paid', value: currency(Number(account.amount_paid || 0)) },
@@ -664,9 +768,13 @@ export default async function AccountDetailPage({ params }: PageProps) {
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Current Bucket</p>
-          <p className="mt-2 text-xl font-semibold text-slate-900">{bucketLabel}</p>
-          <p className="mt-1 text-xs text-slate-500">{detailValue(account.product_code)}</p>
+          <p className="text-sm text-slate-500">Days Since Funded</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-900">
+            {detailValue(loanTimeline.daysSinceFunded)}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Funded: {formatDate(account.funded_date || account.loan_taken_date)}
+          </p>
         </div>
       </div>
 
@@ -698,9 +806,9 @@ export default async function AccountDetailPage({ params }: PageProps) {
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-xs uppercase tracking-wide text-slate-500">Last Action Date</p>
+              <p className="text-xs uppercase tracking-wide text-slate-500">Expected Maturity</p>
               <p className="mt-2 text-base font-semibold text-slate-900">
-                {formatDate(account.last_action_date)}
+                {loanTimeline.computedDueDate ? formatDate(loanTimeline.computedDueDate.toISOString()) : '-'}
               </p>
             </div>
 
@@ -754,8 +862,10 @@ export default async function AccountDetailPage({ params }: PageProps) {
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Next Due State</p>
-                <p className="mt-2 text-base font-semibold text-slate-900">{dueMeta.label}</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Loan Age</p>
+                <p className="mt-2 text-base font-semibold text-slate-900">
+                  {detailValue(loanTimeline.daysSinceFunded)}
+                </p>
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -766,8 +876,10 @@ export default async function AccountDetailPage({ params }: PageProps) {
               </div>
 
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs uppercase tracking-wide text-slate-500">Current DPD</p>
-                <p className="mt-2 text-base font-semibold text-slate-900">{detailValue(effectiveDpd)}</p>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Expected Maturity</p>
+                <p className={`mt-2 inline-flex rounded-full px-3 py-1 text-xs font-medium ${loanTimeline.maturityTone}`}>
+                  {loanTimeline.maturityLabel}
+                </p>
               </div>
             </div>
           </div>
