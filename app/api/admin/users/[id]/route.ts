@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { getServerAuthContext } from '@/lib/server-auth';
+import { requireAdminRole } from '@/lib/server-auth';
 
 const PROFILE_TABLE = 'user_profiles';
 const COMPANIES_TABLE = 'companies';
@@ -28,7 +28,9 @@ async function resolveCompanyId(rawCompanyInput: unknown) {
   const match =
     (companies || []).find((company: any) => String(company.id || '').toLowerCase() === lowered) ||
     (companies || []).find((company: any) => String(company.code || '').toLowerCase() === lowered) ||
-    (companies || []).find((company: any) => String(company.name || '').trim().toLowerCase() === lowered);
+    (companies || []).find(
+      (company: any) => String(company.name || '').trim().toLowerCase() === lowered
+    );
 
   if (!match?.id) {
     throw new Error('Selected company could not be resolved.');
@@ -46,13 +48,12 @@ export async function PATCH(
       return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
     }
 
-    const auth = await getServerAuthContext(req);
-    if (!auth.authorized) {
-      return NextResponse.json({ error: auth.error || 'Unauthorized' }, { status: auth.status || 401 });
-    }
-
-    if (auth.user.role !== 'super_admin' && auth.user.role !== 'admin') {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    const auth = await requireAdminRole(req);
+    if ('error' in auth) {
+      return NextResponse.json(
+        { error: auth.error || 'Unauthorized' },
+        { status: auth.status || 401 }
+      );
     }
 
     const { id } = await context.params;
