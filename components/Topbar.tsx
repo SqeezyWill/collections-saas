@@ -67,7 +67,7 @@ const QUICK_VIEWS = [
 
 const TOGGLE_EVENT = 'app:toggle-sidebar';
 const FIXED_COMPANY_NAME = 'Pezesha';
-const FIXED_COMPANY_LOGO_URL = '/pezesha-logo.png';
+const FIXED_COMPANY_LOGO_URL = '/logos/pezesha-logo.png';
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
@@ -410,7 +410,7 @@ export function Topbar() {
 
         <div className="flex items-center gap-3">
           {companyLogoUrl ? (
-            <div className="relative h-10 w-10 overflow-hidden rounded-xl border border-slate-200 bg-white">
+            <div className="relative h-12 w-12 overflow-hidden rounded-xl border border-slate-200 bg-white">
               <Image
                 src={companyLogoUrl}
                 alt={companyDisplayName}

@@ -5,6 +5,7 @@ import { requireSuperAdminRole } from '@/lib/server-auth';
 const PROFILE_TABLE = 'user_profiles';
 const COMPANIES_TABLE = 'companies';
 const FIXED_COMPANY_NAME = 'Pezesha';
+const FIXED_COMPANY_LOGO_URL = '/logos/pezesha-logo.png';
 
 async function resolveFixedCompanyId() {
   if (!supabaseAdmin) {
@@ -53,7 +54,7 @@ async function getCompanyBranding(companyId: string) {
 
   return {
     company_name: (data as any)?.name ?? FIXED_COMPANY_NAME,
-    company_logo_url: (data as any)?.logo_url || null,
+    company_logo_url: FIXED_COMPANY_LOGO_URL,
   };
 }
 
@@ -75,7 +76,7 @@ export async function GET(req: NextRequest) {
 
     const { data, error } = await supabaseAdmin
       .from(PROFILE_TABLE)
-      .select('id,name,email,role,company_id,company_name,company_logo_url')
+      .select('id,name,email,role,company_id')
       .eq('company_id', companyId)
       .order('name', { ascending: true });
 
@@ -89,8 +90,8 @@ export async function GET(req: NextRequest) {
       email: row.email,
       role: row.role,
       companyId: row.company_id,
-      companyName: row.company_name ?? FIXED_COMPANY_NAME,
-      companyLogoUrl: row.company_logo_url ?? null,
+      companyName: FIXED_COMPANY_NAME,
+      companyLogoUrl: FIXED_COMPANY_LOGO_URL,
     }));
 
     return NextResponse.json({ users });
@@ -162,8 +163,6 @@ export async function POST(req: NextRequest) {
         email,
         role,
         company_id: companyId,
-        company_name: branding.company_name,
-        company_logo_url: branding.company_logo_url,
       },
       { onConflict: 'id' }
     );
@@ -179,8 +178,8 @@ export async function POST(req: NextRequest) {
         email,
         role,
         companyId,
-        companyName: branding.company_name,
-        companyLogoUrl: branding.company_logo_url,
+        companyName: FIXED_COMPANY_NAME,
+        companyLogoUrl: FIXED_COMPANY_LOGO_URL,
       },
     });
   } catch (error: any) {
