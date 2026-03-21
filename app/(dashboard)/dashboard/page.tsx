@@ -336,13 +336,13 @@ useEffect(() => {
       }
 
       try {
-  if (accountList.length === 0 && payments.length === 0 && ptps.length === 0) {
-    setLoadingData(true);
-  } else {
-    setIsRefreshing(true);
-  }
+  if (accountList.length === 0 && ptps.length === 0) {
+  setLoadingData(true);
+} else {
+  setIsRefreshing(true);
+}
 
-  setDataError(null);
+setDataError(null);
 
         const normalizedRole = normalizeRole(profile.role);
         const isAgent = normalizedRole === 'agent';
@@ -409,23 +409,24 @@ useEffect(() => {
   }
 }, [dashboardCacheKey, profile, accountList, payments, ptps, cacheHydrated]);
 
-  if ((loadingProfile || loadingData) && accountList.length === 0 && payments.length === 0 && ptps.length === 0) {
+  if ((loadingProfile || loadingData) && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
-  <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-  {isRefreshing ? (
-    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-      Refreshing…
-    </span>
-  ) : null}
-</div>
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        {isRefreshing ? (
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+            Refreshing…
+          </span>
+        ) : null}
+      </div>
 
-{restoredFromCache ? (
-  <p className="text-sm text-slate-500">
-    Restored your last dashboard view while the latest data loads.
-  </p>
-) : null}
+      {restoredFromCache ? (
+        <p className="text-sm text-slate-500">
+          Restored your last dashboard view while the latest data loads.
+        </p>
+      ) : null}
+
       <p className="text-slate-500">Loading dashboard...</p>
     </div>
   );
@@ -548,8 +549,8 @@ const collectedThisMonth =
   ).length;
 
   const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
-  const paidAccounts = accountList.filter((item) => item.status === 'Paid').length;
-  const openAccounts = accountList.filter((item) => item.status !== 'Paid').length;
+  const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
+  const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
 
   const activeCollectors = new Set(
     accountList.map((item) => item.collector_name).filter(Boolean)
@@ -611,29 +612,46 @@ const collectedThisMonth =
   };
 });
   const accountProducts = Array.from(
-    new Set(accountList.map((item) => item.product).filter(Boolean))
-  );
+  new Set(
+    accountList
+      .map((item) => String(item.product || item.product_name || '').trim())
+      .filter(Boolean)
+  )
+);
 
   const accountCoverage = accountProducts.map((product) => {
-    const productAccounts = accountList.filter((item) => item.product === product);
-
-    return {
-      product,
-      accounts: productAccounts.length,
-      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-    };
+  const productAccounts = accountList.filter((item) => {
+    const productName = String(item.product || item.product_name || '').trim();
+    return productName === product;
   });
+
+  return {
+    product,
+    accounts: productAccounts.length,
+    balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+  };
+});
 
   const paymentCoverage = accountProducts.map((product) => {
-    const productPayments = payments.filter((item) => item.product === product);
-
-    return {
-      product,
-      paymentsCount: productPayments.length,
-      collected: productPayments.reduce((sum, item) => sum + Number(item.amount || 0), 0),
-      hasPayments: productPayments.length > 0,
-    };
+  const productAccounts = accountList.filter((item) => {
+    const productName = String(item.product || item.product_name || '').trim();
+    return productName === product;
   });
+
+  const paidProductAccounts = productAccounts.filter(
+    (item) => Number(item.amount_paid || 0) > 0
+  );
+
+  return {
+    product,
+    paymentsCount: paidProductAccounts.length,
+    collected: paidProductAccounts.reduce(
+      (sum, item) => sum + Number(item.amount_paid || 0),
+      0
+    ),
+    hasPayments: paidProductAccounts.length > 0,
+  };
+});
 
   const callbacksToday = accountList.filter(
     (item) =>
@@ -816,19 +834,26 @@ const collectedThisMonth =
   return (
     <div className="space-y-6">
       <div>
-        <div className="flex items-center gap-3">
-  <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-  {isRefreshing ? (
-    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-      Refreshing…
-    </span>
+  <div className="flex items-center gap-3">
+    <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+    {isRefreshing ? (
+      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+        Refreshing…
+      </span>
+    ) : null}
+  </div>
+
+  {restoredFromCache ? (
+    <p className="mt-2 text-sm text-slate-500">
+      Restored your last dashboard view while the latest data loads.
+    </p>
   ) : null}
-</div>
-        <p className="mt-1 text-slate-500">
-          {isAgent
-            ? 'Collections performance overview for your assigned portfolio.'
-            : 'Collections performance overview for your current tenant workspace.'}
-        </p>
+
+  <p className="mt-1 text-slate-500">
+    {isAgent
+      ? 'Collections performance overview for your assigned portfolio.'
+      : 'Collections performance overview for your current tenant workspace.'}
+  </p>
         {isAgent ? (
           <p className="mt-2 inline-flex rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
             Agent view: dashboard is limited to your allocated accounts
