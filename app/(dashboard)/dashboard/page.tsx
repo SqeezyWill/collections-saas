@@ -1,8 +1,9 @@
 import { unstable_noStore as noStore } from 'next/cache';
 import Link from 'next/link';
+import { cookies } from 'next/headers';
+import { createClient } from '@supabase/supabase-js';
 import { KpiCard } from '@/components/KpiCard';
 import { DataTable } from '@/components/DataTable';
-import { getRequestUserProfile } from '@/lib/server-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { currency } from '@/lib/utils';
 
@@ -17,6 +18,93 @@ type UserProfile = {
   role: string | null;
   company_id: string | null;
 };
+
+function extractTokenFromCookieValue(raw: string | undefined | null) {
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+
+    if (typeof parsed === 'string') {
+      return parsed || null;
+    }
+
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (typeof item === 'string' && item.trim()) return item.trim();
+        if (item && typeof item === 'object' && 'access_token' in item) {
+          const token = String((item as any).access_token || '').trim();
+          if (token) return token;
+        }
+      }
+    }
+
+    if (parsed && typeof parsed === 'object' && 'access_token' in parsed) {
+      const token = String((parsed as any).access_token || '').trim();
+      if (token) return token;
+    }
+  } catch {
+    const trimmed = String(raw).trim();
+    if (trimmed) return trimmed;
+  }
+
+  return null;
+}
+
+async function getServerAccessToken() {
+  const store = await cookies();
+  const all = store.getAll();
+
+  const authCookies = all.filter((cookie) =>
+    /^sb-.*-auth-token(?:\.\d+)?$/.test(cookie.name)
+  );
+
+  if (!authCookies.length) {
+    return null;
+  }
+
+  const baseNames = Array.from(
+    new Set(authCookies.map((cookie) => cookie.name.replace(/\.\d+$/, '')))
+  );
+
+  for (const baseName of baseNames) {
+    const matching = authCookies
+      .filter((cookie) => cookie.name === baseName || cookie.name.startsWith(`${baseName}.`))
+      .sort((a, b) => {
+        const aMatch = a.name.match(/\.(\d+)$/);
+        const bMatch = b.name.match(/\.(\d+)$/);
+        const aIndex = aMatch ? Number(aMatch[1]) : 0;
+        const bIndex = bMatch ? Number(bMatch[1]) : 0;
+        return aIndex - bIndex;
+      });
+
+    const combined = matching.map((cookie) => cookie.value).join('');
+    const token = extractTokenFromCookieValue(combined);
+
+    if (token) return token;
+  }
+
+  return null;
+}
+
+async function resolveFixedCompanyId() {
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin is not configured.');
+  }
+
+  const { data: company, error } = await supabaseAdmin
+    .from('companies')
+    .select('id,name,code')
+    .or('name.eq.Pezesha,code.eq.Pezesha')
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !company?.id) {
+    throw new Error('Unable to resolve fixed Pezesha company.');
+  }
+
+  return String(company.id);
+}
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
@@ -199,43 +287,73 @@ export default async function DashboardPage() {
 
   let profile: UserProfile | null = null;
 
-  try {
-    const requestProfile = await getRequestUserProfile();
+try {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-    if (!requestProfile?.id || !requestProfile?.company_id) {
-      return (
-        <div className="space-y-4">
-          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-          <p className="text-red-600">Unable to load user session.</p>
-        </div>
-      );
-    }
+  if (!url || !anonKey) {
+    throw new Error('Supabase client env is not configured.');
+  }
 
-    profile = {
-      id: requestProfile.id,
-      name: requestProfile.name ?? null,
-      role: requestProfile.role ?? null,
-      company_id: requestProfile.company_id ?? null,
-    };
-  } catch (error: any) {
+  const token = await getServerAccessToken();
+
+  if (!token) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">
-          {error?.message || 'Unable to load user session.'}
-        </p>
+        <p className="text-red-600">Unable to load user session.</p>
       </div>
     );
   }
 
-  if (!profile?.company_id) {
+  const authClient = createClient(url, anonKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  const { data: authData, error: authError } = await authClient.auth.getUser(token);
+
+  if (authError || !authData.user) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Your user profile has no company_id.</p>
+        <p className="text-red-600">Unable to load user session.</p>
       </div>
     );
   }
+
+  const { data: profileData, error: profileError } = await supabaseAdmin
+    .from('user_profiles')
+    .select('id,name,role,company_id')
+    .eq('id', authData.user.id)
+    .maybeSingle();
+
+  if (profileError || !profileData?.id) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">Unable to load user session.</p>
+      </div>
+    );
+  }
+
+  const resolvedCompanyId = String(profileData.company_id || '').trim() || (await resolveFixedCompanyId());
+
+  profile = {
+    id: String(profileData.id),
+    name: profileData.name ?? null,
+    role: profileData.role ?? null,
+    company_id: resolvedCompanyId,
+  };
+} catch (error: any) {
+  return (
+    <div className="space-y-4">
+      <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+      <p className="text-red-600">
+        {error?.message || 'Unable to load user session.'}
+      </p>
+    </div>
+  );
+}
 
   const normalizedRole = normalizeRole(profile.role);
   const isAgent = normalizedRole === 'agent';
