@@ -518,13 +518,17 @@ export default async function AccountDetailPage({ params }: PageProps) {
     );
   }
 
-  const { data: authUser, error: authError } = await supabase.auth.getUser();
+    const { data: authSession, error: authSessionError } = await supabase.auth.getSession();
+  const userId = authSession?.session?.user?.id;
 
-  if (authError || !authUser?.user?.id) {
-    notFound();
+  if (authSessionError || !userId) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Account Workspace</h1>
+        <p className="text-red-600">Unable to load user session.</p>
+      </div>
+    );
   }
-
-  const userId = authUser.user.id;
 
     const { data: profileData, error: profileError } = await supabase
     .from('user_profiles')
@@ -532,8 +536,13 @@ export default async function AccountDetailPage({ params }: PageProps) {
     .eq('id', userId)
     .maybeSingle();
 
-  if (profileError || !profileData?.id) {
-    notFound();
+    if (profileError || !profileData?.id) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Account Workspace</h1>
+        <p className="text-red-600">Unable to load user profile.</p>
+      </div>
+    );
   }
 
   let resolvedCompanyId = String(profileData.company_id || '').trim();
@@ -546,8 +555,13 @@ export default async function AccountDetailPage({ params }: PageProps) {
       .limit(1)
       .maybeSingle();
 
-    if (fixedCompanyError || !fixedCompany?.id) {
-      notFound();
+        if (fixedCompanyError || !fixedCompany?.id) {
+      return (
+        <div className="space-y-4">
+          <h1 className="text-3xl font-semibold">Account Workspace</h1>
+          <p className="text-red-600">Unable to resolve Pezesha company.</p>
+        </div>
+      );
     }
 
     resolvedCompanyId = String(fixedCompany.id);
