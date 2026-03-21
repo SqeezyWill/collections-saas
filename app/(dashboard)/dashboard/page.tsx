@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase';
 import { currency } from '@/lib/utils';
 
 const PAGE_SIZE = 1000;
+const DASHBOARD_CACHE_PREFIX = 'dashboard-cache:v1:';
 
 type UserProfile = {
   id: string;
@@ -184,14 +185,56 @@ function alertClasses(tone: string) {
 }
 
 export default function DashboardPage() {
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [sessionError, setSessionError] = useState<string | null>(null);
-  const [loadingProfile, setLoadingProfile] = useState(true);
-  const [accountList, setAccountList] = useState<any[]>([]);
-  const [payments, setPayments] = useState<any[]>([]);
-  const [ptps, setPtps] = useState<any[]>([]);
-  const [dataError, setDataError] = useState<string | null>(null);
-  const [loadingData, setLoadingData] = useState(true);
+const [profile, setProfile] = useState<UserProfile | null>(null);
+const [sessionError, setSessionError] = useState<string | null>(null);
+const [loadingProfile, setLoadingProfile] = useState(true);
+const [accountList, setAccountList] = useState<any[]>([]);
+const [payments, setPayments] = useState<any[]>([]);
+const [ptps, setPtps] = useState<any[]>([]);
+const [dataError, setDataError] = useState<string | null>(null);
+const [loadingData, setLoadingData] = useState(true);
+const [cacheHydrated, setCacheHydrated] = useState(false);
+const [isRefreshing, setIsRefreshing] = useState(false);
+const [restoredFromCache, setRestoredFromCache] = useState(false);
+
+const dashboardCacheKey = useMemo(() => {
+  const companyId = String(profile?.company_id || '').trim() || 'pending-company';
+  const role = normalizeRole(profile?.role);
+  const name = String(profile?.name || '').trim() || 'unknown-user';
+  return `${DASHBOARD_CACHE_PREFIX}${companyId}:${role}:${name}`;
+}, [profile?.company_id, profile?.role, profile?.name]);
+
+useEffect(() => {
+  try {
+    const raw = sessionStorage.getItem(dashboardCacheKey);
+
+    if (!raw) {
+      setCacheHydrated(true);
+      return;
+    }
+
+    const parsed = JSON.parse(raw);
+
+    if (parsed?.profile) setProfile(parsed.profile);
+    if (Array.isArray(parsed?.accountList)) setAccountList(parsed.accountList);
+    if (Array.isArray(parsed?.payments)) setPayments(parsed.payments);
+    if (Array.isArray(parsed?.ptps)) setPtps(parsed.ptps);
+
+    if (
+      parsed?.profile ||
+      Array.isArray(parsed?.accountList) ||
+      Array.isArray(parsed?.payments) ||
+      Array.isArray(parsed?.ptps)
+    ) {
+      setRestoredFromCache(true);
+      setLoadingData(false);
+    }
+  } catch {
+    // ignore cache errors
+  } finally {
+    setCacheHydrated(true);
+  }
+}, [dashboardCacheKey]);
 
   useEffect(() => {
     let mounted = true;
@@ -283,7 +326,7 @@ export default function DashboardPage() {
     let mounted = true;
 
     async function loadDashboardData() {
-      if (loadingProfile) return;
+      if (loadingProfile || !cacheHydrated) return;
 
       if (!profile?.company_id) {
         if (mounted) {
@@ -293,8 +336,13 @@ export default function DashboardPage() {
       }
 
       try {
-        setLoadingData(true);
-        setDataError(null);
+  if (accountList.length === 0 && payments.length === 0 && ptps.length === 0) {
+    setLoadingData(true);
+  } else {
+    setIsRefreshing(true);
+  }
+
+  setDataError(null);
 
         const normalizedRole = normalizeRole(profile.role);
         const isAgent = normalizedRole === 'agent';
@@ -319,16 +367,19 @@ export default function DashboardPage() {
         ]);
 
         if (mounted) {
-          setAccountList(accountsRows);
-          setPayments(paymentsRows);
-          setPtps(ptpRows);
-          setLoadingData(false);
-        }
+  setAccountList(accountsRows);
+  setPayments(paymentsRows);
+  setPtps(ptpRows);
+  setLoadingData(false);
+  setIsRefreshing(false);
+  setRestoredFromCache(false);
+}
       } catch (error: any) {
         if (mounted) {
-          setDataError(error?.message || 'Unknown error');
-          setLoadingData(false);
-        }
+  setDataError(error?.message || 'Unknown error');
+  setLoadingData(false);
+  setIsRefreshing(false);
+}
       }
     }
 
@@ -337,16 +388,48 @@ export default function DashboardPage() {
     return () => {
       mounted = false;
     };
-  }, [loadingProfile, profile]);
+  }, [loadingProfile, profile, cacheHydrated]);
 
-  if (loadingProfile || loadingData) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-slate-500">Loading dashboard...</p>
-      </div>
+  useEffect(() => {
+  if (!cacheHydrated) return;
+
+  try {
+    sessionStorage.setItem(
+      dashboardCacheKey,
+      JSON.stringify({
+        profile,
+        accountList,
+        payments,
+        ptps,
+        savedAt: Date.now(),
+      })
     );
+  } catch {
+    // ignore storage errors
   }
+}, [dashboardCacheKey, profile, accountList, payments, ptps, cacheHydrated]);
+
+  if ((loadingProfile || loadingData) && accountList.length === 0 && payments.length === 0 && ptps.length === 0) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+  <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+  {isRefreshing ? (
+    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+      Refreshing…
+    </span>
+  ) : null}
+</div>
+
+{restoredFromCache ? (
+  <p className="text-sm text-slate-500">
+    Restored your last dashboard view while the latest data loads.
+  </p>
+) : null}
+      <p className="text-slate-500">Loading dashboard...</p>
+    </div>
+  );
+}
 
   if (sessionError || !profile?.company_id) {
     return (
@@ -424,11 +507,18 @@ export default function DashboardPage() {
 
   const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
 
-  const totalCollected = payments.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const totalCollected = accountList.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
-  const collectedThisMonth = payments
-    .filter((item) => isCurrentMonth(item.paid_on))
-    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const collectedThisMonthFromPayments = payments
+  .filter((item) => isCurrentMonth(item.paid_on))
+  .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+
+const collectedThisMonth =
+  collectedThisMonthFromPayments > 0
+    ? collectedThisMonthFromPayments
+    : accountList
+        .filter((item) => isCurrentMonth(item.last_action_date))
+        .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const openPtpAccountIds = new Set(
     normalizedPtps
@@ -477,44 +567,49 @@ export default function DashboardPage() {
   );
 
   const collectorPerformance = collectors.map((collector) => {
-    const collectorAccounts = accountList.filter((account) => account.collector_name === collector);
-    const collectorPayments = payments.filter((payment) => payment.collector_name === collector);
-    const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
+  const collectorAccounts = accountList.filter((item) => item.collector_name === collector);
 
-    const collectorOpenPtpAccounts = new Set(
-      collectorPtps
-        .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
-        .map((ptp) => ptp.account_id)
-    );
+  const collectorCollected = collectorAccounts.reduce(
+    (sum, item) => sum + Number(item.amount_paid || 0),
+    0
+  );
 
-    const collectorKeptPtps = collectorPtps.filter(
-      (ptp) => ptp.effectiveStatus === 'Kept'
-    ).length;
+  const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
 
-    const collectorBrokenPtps = collectorPtps.filter(
-      (ptp) => ptp.effectiveStatus === 'Broken'
-    ).length;
+  const collectorOpenPtpAccounts = new Set(
+    collectorPtps
+      .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
+      .map((ptp) => ptp.account_id)
+  );
 
-    const collectorResolvedPtps = collectorPtps.filter(
-      (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
-    ).length;
+  const collectorKeptPtps = collectorPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Kept'
+  ).length;
 
-    return {
-      collector,
-      assignedAccounts: collectorAccounts.length,
-      totalCollected: collectorPayments.reduce((sum, item) => sum + Number(item.amount || 0), 0),
-      openPtps: collectorOpenPtpAccounts.size,
-      keptPtps: collectorKeptPtps,
-      brokenPtps: collectorBrokenPtps,
-      ptpKeptRate:
-        collectorResolvedPtps > 0
-          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-          : '0.0%',
-      callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
-        .length,
-    };
-  });
+  const collectorBrokenPtps = collectorPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Broken'
+  ).length;
 
+  const collectorResolvedPtps = collectorPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
+  ).length;
+
+  return {
+    collector,
+    assignedAccounts: collectorAccounts.length,
+    totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+    totalCollected: collectorCollected,
+    openPtps: collectorOpenPtpAccounts.size,
+    keptPtps: collectorKeptPtps,
+    brokenPtps: collectorBrokenPtps,
+    ptpKeptRate:
+      collectorResolvedPtps > 0
+        ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+        : '0.0%',
+    callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
+      .length,
+  };
+});
   const accountProducts = Array.from(
     new Set(accountList.map((item) => item.product).filter(Boolean))
   );
@@ -721,7 +816,14 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <div className="flex items-center gap-3">
+  <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+  {isRefreshing ? (
+    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+      Refreshing…
+    </span>
+  ) : null}
+</div>
         <p className="mt-1 text-slate-500">
           {isAgent
             ? 'Collections performance overview for your assigned portfolio.'
