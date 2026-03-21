@@ -1,7 +1,6 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
+import { requireAdminRole } from '@/lib/server-auth';
 
 function monthsAgoDate(months: number) {
   const d = new Date();
@@ -32,9 +31,22 @@ function csvEscape(value: unknown) {
   return text;
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   if (!supabaseAdmin) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
+  }
+
+  const auth = await requireAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json(
+      { error: auth.error || 'Unauthorized' },
+      { status: auth.status || 401 }
+    );
+  }
+
+  const companyId = auth.user.companyId;
+  if (!companyId) {
+    return NextResponse.json({ error: 'User has no company scope.' }, { status: 400 });
   }
 
   const sixMonthsAgo = monthsAgoDate(6);
@@ -42,7 +54,7 @@ export async function GET() {
   const { data: rows, error } = await supabaseAdmin
     .from('ptps')
     .select('*')
-    .eq('company_id', COMPANY_ID)
+    .eq('company_id', companyId)
     .gte('created_at', sixMonthsAgo)
     .order('created_at', { ascending: false });
 

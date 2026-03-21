@@ -1,13 +1,24 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency } from '@/lib/utils';
 
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
 const PAGE_SIZE = 1000;
 const COLLECTOR_PAGE_SIZE = 15;
+
+type AuthProfile = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  company_id: string | null;
+  role: string | null;
+};
+
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
 
 function isCurrentMonth(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -68,21 +79,35 @@ function downloadCsv(filename: string, rows: Record<string, any>[]) {
   URL.revokeObjectURL(url);
 }
 
-async function fetchAllRows(table: 'accounts' | 'payments' | 'ptps') {
+async function fetchAllRows(
+  table: 'accounts' | 'payments' | 'ptps',
+  input: {
+    companyId: string;
+    collectorName?: string;
+    restrictToCollector?: boolean;
+  }
+) {
   if (!supabase) return [];
 
+  const { companyId, collectorName, restrictToCollector } = input;
   const allRows: any[] = [];
   let from = 0;
 
   while (true) {
     const to = from + PAGE_SIZE - 1;
 
-    const { data, error } = await supabase
+    let query = supabase
       .from(table)
       .select('*')
-      .eq('company_id', COMPANY_ID)
+      .eq('company_id', companyId)
       .order('created_at', { ascending: false })
       .range(from, to);
+
+    if (restrictToCollector && collectorName) {
+      query = query.eq('collector_name', collectorName);
+    }
+
+    const { data, error } = await query;
 
     if (error) {
       throw error;
@@ -120,9 +145,10 @@ function ReportsPageClient() {
     error: null,
   });
 
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [collectorPage, setCollectorPage] = useState(1);
 
-  useMemo(() => {
+  useEffect(() => {
     if (reportData.loaded || reportData.error) return;
 
     (async () => {
@@ -138,10 +164,61 @@ function ReportsPageClient() {
       }
 
       try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        const userId = session?.user?.id;
+        if (!userId) {
+          setReportData({
+            accounts: [],
+            payments: [],
+            ptps: [],
+            loaded: true,
+            error: 'Unable to load user session.',
+          });
+          return;
+        }
+
+        const { data: userProfile, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('id,name,email,company_id,role')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (profileError || !userProfile?.company_id) {
+          setReportData({
+            accounts: [],
+            payments: [],
+            ptps: [],
+            loaded: true,
+            error: profileError?.message || 'Your user profile has no company_id.',
+          });
+          return;
+        }
+
+        setProfile(userProfile as AuthProfile);
+
+        const normalizedRole = normalizeRole((userProfile as any).role);
+        const isAgent = normalizedRole === 'agent';
+        const collectorScope = String((userProfile as any).name || '').trim();
+
         const [accounts, payments, ptps] = await Promise.all([
-          fetchAllRows('accounts'),
-          fetchAllRows('payments'),
-          fetchAllRows('ptps'),
+          fetchAllRows('accounts', {
+            companyId: String((userProfile as any).company_id),
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+          fetchAllRows('payments', {
+            companyId: String((userProfile as any).company_id),
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+          fetchAllRows('ptps', {
+            companyId: String((userProfile as any).company_id),
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
         ]);
 
         setReportData({

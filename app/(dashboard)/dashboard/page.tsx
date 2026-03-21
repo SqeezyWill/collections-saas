@@ -1,9 +1,8 @@
 import { unstable_noStore as noStore } from 'next/cache';
-import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { createClient } from '@supabase/supabase-js';
 import { KpiCard } from '@/components/KpiCard';
 import { DataTable } from '@/components/DataTable';
+import { getRequestUserProfile } from '@/lib/server-auth';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { currency } from '@/lib/utils';
 
@@ -198,71 +197,46 @@ export default async function DashboardPage() {
     );
   }
 
-  const cookieStore = await cookies();
-  const accessToken =
-    cookieStore.get('sb-access-token')?.value ||
-    cookieStore.get('supabase-access-token')?.value ||
-    '';
+  let profile: UserProfile | null = null;
 
-  if (!accessToken) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Unable to load user session.</p>
-      </div>
-    );
-  }
+  try {
+    const requestProfile = await getRequestUserProfile();
 
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+    if (!requestProfile?.id || !requestProfile?.company_id) {
+      return (
+        <div className="space-y-4">
+          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+          <p className="text-red-600">Unable to load user session.</p>
+        </div>
+      );
+    }
 
-  if (!supabaseUrl || !supabaseAnonKey) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Supabase client env is not configured.</p>
-      </div>
-    );
-  }
-
-  const authClient = createClient(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-  });
-
-  const { data: authUser, error: authError } = await authClient.auth.getUser(accessToken);
-
-  if (authError || !authUser?.user?.id) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Unable to load user session.</p>
-      </div>
-    );
-  }
-
-  const userId = authUser.user.id;
-
-  const { data: profileData, error: profileError } = await supabaseAdmin
-    .from('user_profiles')
-    .select('id,name,role,company_id')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (profileError || !profileData?.company_id) {
+    profile = {
+      id: requestProfile.id,
+      name: requestProfile.name ?? null,
+      role: requestProfile.role ?? null,
+      company_id: requestProfile.company_id ?? null,
+    };
+  } catch (error: any) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
         <p className="text-red-600">
-          {profileError?.message || 'Your user profile has no company_id.'}
+          {error?.message || 'Unable to load user session.'}
         </p>
       </div>
     );
   }
 
-  const profile = profileData as UserProfile;
+  if (!profile?.company_id) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">Your user profile has no company_id.</p>
+      </div>
+    );
+  }
+
   const normalizedRole = normalizeRole(profile.role);
   const isAgent = normalizedRole === 'agent';
   const collectorScope = String(profile.name || '').trim();

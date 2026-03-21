@@ -1,3 +1,4 @@
+import { cookies } from 'next/headers';
 import { NextRequest } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '@/lib/supabase-admin';
@@ -10,13 +11,82 @@ function normalizeRole(value: unknown): Role | '' {
   return '';
 }
 
-function getBearerToken(req: NextRequest) {
+function getBearerToken(req?: NextRequest) {
+  if (!req) return null;
   const authHeader = req.headers.get('authorization') || '';
   if (!authHeader.toLowerCase().startsWith('bearer ')) return null;
   return authHeader.slice(7).trim() || null;
 }
 
-export async function getRequestUserProfile(req: NextRequest) {
+function extractTokenFromCookieValue(raw: string | undefined | null) {
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw);
+
+    if (typeof parsed === 'string') {
+      return parsed || null;
+    }
+
+    if (Array.isArray(parsed)) {
+      for (const item of parsed) {
+        if (typeof item === 'string' && item.trim()) return item.trim();
+        if (item && typeof item === 'object' && 'access_token' in item) {
+          const token = String((item as any).access_token || '').trim();
+          if (token) return token;
+        }
+      }
+    }
+
+    if (parsed && typeof parsed === 'object' && 'access_token' in parsed) {
+      const token = String((parsed as any).access_token || '').trim();
+      if (token) return token;
+    }
+  } catch {
+    const trimmed = String(raw).trim();
+    if (trimmed) return trimmed;
+  }
+
+  return null;
+}
+
+async function getCookieToken() {
+  const store = await cookies();
+  const all = store.getAll();
+
+  const authCookies = all.filter((cookie) =>
+    /^sb-.*-auth-token(?:\.\d+)?$/.test(cookie.name)
+  );
+
+  if (!authCookies.length) {
+    return null;
+  }
+
+  const baseNames = Array.from(
+    new Set(authCookies.map((cookie) => cookie.name.replace(/\.\d+$/, '')))
+  );
+
+  for (const baseName of baseNames) {
+    const matching = authCookies
+      .filter((cookie) => cookie.name === baseName || cookie.name.startsWith(`${baseName}.`))
+      .sort((a, b) => {
+        const aMatch = a.name.match(/\.(\d+)$/);
+        const bMatch = b.name.match(/\.(\d+)$/);
+        const aIndex = aMatch ? Number(aMatch[1]) : 0;
+        const bIndex = bMatch ? Number(bMatch[1]) : 0;
+        return aIndex - bIndex;
+      });
+
+    const combined = matching.map((cookie) => cookie.value).join('');
+    const token = extractTokenFromCookieValue(combined);
+
+    if (token) return token;
+  }
+
+  return null;
+}
+
+export async function getRequestUserProfile(req?: NextRequest) {
   if (!supabaseAdmin) {
     return { error: 'Supabase admin not configured.', status: 500 as const };
   }
@@ -28,7 +98,10 @@ export async function getRequestUserProfile(req: NextRequest) {
     return { error: 'Supabase client env is not configured.', status: 500 as const };
   }
 
-  const token = getBearerToken(req);
+  const bearerToken = getBearerToken(req);
+  const cookieToken = bearerToken ? null : await getCookieToken();
+  const token = bearerToken || cookieToken;
+
   if (!token) {
     return { error: 'Unauthorized', status: 401 as const };
   }
@@ -60,14 +133,21 @@ export async function getRequestUserProfile(req: NextRequest) {
     return { error: 'Forbidden', status: 403 as const };
   }
 
+  const user = {
+    id: String(profile.id),
+    name: profile.name ?? null,
+    email: profile.email ?? null,
+    role,
+    companyId: profile.company_id ?? null,
+  };
+
   return {
-    user: {
-      id: String(profile.id),
-      name: profile.name ?? null,
-      email: profile.email ?? null,
-      role,
-      companyId: profile.company_id ?? null,
-    },
+    user,
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    company_id: user.companyId,
   };
 }
 

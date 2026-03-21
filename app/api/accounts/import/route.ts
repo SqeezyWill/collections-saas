@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
+import { requireAdminRole } from '@/lib/server-auth';
 
 const ASSIGN_TABLE = 'account_strategies';
 const ACCOUNTS_TABLE = 'accounts';
@@ -178,7 +177,10 @@ function buildImportedNote(row: ParsedRow) {
   return lines.join('\n').trim();
 }
 
-async function getMaxExistingCfid(admin: NonNullable<typeof supabaseAdmin>) {
+async function getMaxExistingCfid(
+  admin: NonNullable<typeof supabaseAdmin>,
+  companyId: string
+) {
   let from = 0;
   const pageSize = 1000;
   let maxCfid = 0;
@@ -189,6 +191,7 @@ async function getMaxExistingCfid(admin: NonNullable<typeof supabaseAdmin>) {
     const { data, error } = await admin
       .from(ACCOUNTS_TABLE)
       .select('cfid')
+      .eq('company_id', companyId)
       .not('cfid', 'is', null)
       .range(from, to);
 
@@ -392,6 +395,19 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
   }
 
+  const auth = await requireAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json(
+      { error: auth.error || 'Unauthorized' },
+      { status: auth.status || 401 }
+    );
+  }
+
+  const companyId = auth.user.companyId;
+  if (!companyId) {
+    return NextResponse.json({ error: 'User has no company scope.' }, { status: 400 });
+  }
+
   const admin = supabaseAdmin;
 
   let body: { rows?: ParsedRow[] } = {};
@@ -431,14 +447,14 @@ export async function POST(req: NextRequest) {
         ? admin
             .from(ACCOUNTS_TABLE)
             .select('id,account_no,customer_id,debtor_name,cfid')
-            .eq('company_id', COMPANY_ID)
+            .eq('company_id', companyId)
             .in('account_no', loanIds)
         : Promise.resolve({ data: [], error: null } as any),
       customerIds.length > 0
         ? admin
             .from(ACCOUNTS_TABLE)
             .select('id,account_no,customer_id,debtor_name,cfid')
-            .eq('company_id', COMPANY_ID)
+            .eq('company_id', companyId)
             .in('customer_id', customerIds)
         : Promise.resolve({ data: [], error: null } as any),
     ]);
@@ -454,7 +470,7 @@ export async function POST(req: NextRequest) {
   let maxExistingCfid = 0;
 
   try {
-    maxExistingCfid = await getMaxExistingCfid(admin);
+    maxExistingCfid = await getMaxExistingCfid(admin, companyId);
   } catch (error: any) {
     return NextResponse.json(
       { error: error?.message || 'Failed to read existing CFIDs.' },
@@ -532,7 +548,7 @@ export async function POST(req: NextRequest) {
     const productCode = normalizeStrategyProductCode();
 
     const payload = {
-      company_id: COMPANY_ID,
+      company_id: companyId,
       cfid,
       account_no: cleanText(row['loan_id']),
       customer_id: cleanText(row['customer_id']),
@@ -641,7 +657,7 @@ export async function POST(req: NextRequest) {
       if (!body) return null;
 
       return {
-        company_id: COMPANY_ID,
+        company_id: companyId,
         account_id: account.id,
         author_id: '11111111-1111-1111-1111-111111111111',
         created_by_name: 'System User',

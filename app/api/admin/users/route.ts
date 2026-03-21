@@ -39,6 +39,27 @@ async function resolveCompanyId(rawCompanyInput: unknown) {
   return String(match.id);
 }
 
+async function getCompanyBranding(companyId: string) {
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin is not configured.');
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from(COMPANIES_TABLE)
+    .select('id,name,logo_url,logoUrl')
+    .eq('id', companyId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    company_name: (data as any)?.name ?? null,
+    company_logo_url: (data as any)?.logo_url || (data as any)?.logoUrl || null,
+  };
+}
+
 export async function GET(req: NextRequest) {
   try {
     if (!supabaseAdmin) {
@@ -53,7 +74,9 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    let q = supabaseAdmin.from(PROFILE_TABLE).select('id,name,email,role,company_id');
+    let q = supabaseAdmin
+      .from(PROFILE_TABLE)
+      .select('id,name,email,role,company_id,company_name,company_logo_url');
 
     const companyIdParam = req.nextUrl.searchParams.get('companyId')?.trim();
 
@@ -76,6 +99,8 @@ export async function GET(req: NextRequest) {
       email: row.email,
       role: row.role,
       companyId: row.company_id,
+      companyName: row.company_name ?? null,
+      companyLogoUrl: row.company_logo_url ?? null,
     }));
 
     return NextResponse.json({ users });
@@ -124,6 +149,8 @@ export async function POST(req: NextRequest) {
       companyId = auth.user.companyId;
     }
 
+    const branding = await getCompanyBranding(companyId);
+
     const { data: createdUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
@@ -132,6 +159,8 @@ export async function POST(req: NextRequest) {
         name,
         role,
         company_id: companyId,
+        company_name: branding.company_name,
+        company_logo_url: branding.company_logo_url,
       },
     });
 
@@ -151,6 +180,8 @@ export async function POST(req: NextRequest) {
         email,
         role,
         company_id: companyId,
+        company_name: branding.company_name,
+        company_logo_url: branding.company_logo_url,
       },
       { onConflict: 'id' }
     );
@@ -166,6 +197,8 @@ export async function POST(req: NextRequest) {
         email,
         role,
         companyId,
+        companyName: branding.company_name,
+        companyLogoUrl: branding.company_logo_url,
       },
     });
   } catch (error: any) {

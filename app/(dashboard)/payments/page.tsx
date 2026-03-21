@@ -1,12 +1,15 @@
 import { unstable_noStore as noStore } from 'next/cache';
 import { DataTable } from '@/components/DataTable';
-import { supabase } from '@/lib/supabase';
+import { getRequestUserProfile } from '@/lib/server-auth';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { currency, formatDate } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
 
 function isCurrentMonth(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -23,20 +26,54 @@ function isCurrentMonth(dateValue: string | null | undefined) {
 export default async function PaymentsPage() {
   noStore();
 
-  if (!supabase) {
+  if (!supabaseAdmin) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Payments</h1>
-        <p className="text-red-600">Supabase is not configured.</p>
+        <p className="text-red-600">Supabase admin is not configured.</p>
       </div>
     );
   }
 
-  const { data: rows, error } = await supabase
+  let profile: Awaited<ReturnType<typeof getRequestUserProfile>> | null = null;
+
+  try {
+    profile = await getRequestUserProfile();
+  } catch (error: any) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Payments</h1>
+        <p className="text-red-600">
+          {error?.message || 'Unable to load user session.'}
+        </p>
+      </div>
+    );
+  }
+
+  if (!profile?.company_id) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Payments</h1>
+        <p className="text-red-600">Your user profile has no company_id.</p>
+      </div>
+    );
+  }
+
+  const normalizedRole = normalizeRole(profile.role);
+  const isAgent = normalizedRole === 'agent';
+  const collectorScope = String(profile.name || '').trim();
+
+  let query = supabaseAdmin
     .from('payments')
     .select('*')
-    .eq('company_id', COMPANY_ID)
+    .eq('company_id', profile.company_id)
     .order('created_at', { ascending: false });
+
+  if (isAgent && collectorScope) {
+    query = query.eq('collector_name', collectorScope);
+  }
+
+  const { data: rows, error } = await query;
 
   if (error) {
     return (

@@ -172,18 +172,10 @@ export function Topbar() {
 
     const client = supabase;
 
-    async function loadProfile() {
-      const { data: sessionData } = await client.auth.getSession();
-      const userId = sessionData.session?.user?.id;
-
-      if (!userId) {
-        setProfile(null);
-        return;
-      }
-
+    async function buildProfile(userId: string) {
       const { data: userProfile, error: profileError } = await client
         .from('user_profiles')
-        .select('id,name,email,company_id,role')
+        .select('id,name,email,company_id,role,company_name,company_logo_url')
         .eq('id', userId)
         .maybeSingle();
 
@@ -193,10 +185,12 @@ export function Topbar() {
         return;
       }
 
-      let companyName: string | null = null;
-      let companyLogoUrl: string | null = null;
+      let companyName = (userProfile as any).company_name ?? null;
+      let companyLogoUrl = (userProfile as any).company_logo_url ?? null;
 
-      if (userProfile.company_id) {
+      const needsCompanyFallback = !companyName || !companyLogoUrl;
+
+      if (needsCompanyFallback && userProfile.company_id) {
         const { data: companyData, error: companyError } = await client
           .from('companies')
           .select('id,name,code,logo_url,logoUrl')
@@ -207,8 +201,8 @@ export function Topbar() {
           console.error('Failed to load company in Topbar:', companyError);
         } else if (companyData) {
           const company = companyData as CompanyRow;
-          companyName = company.name ?? null;
-          companyLogoUrl = company.logo_url || company.logoUrl || null;
+          if (!companyName) companyName = company.name ?? null;
+          if (!companyLogoUrl) companyLogoUrl = company.logo_url || company.logoUrl || null;
         }
       }
 
@@ -217,6 +211,18 @@ export function Topbar() {
         company_name: companyName,
         company_logo_url: companyLogoUrl,
       });
+    }
+
+    async function loadProfile() {
+      const { data: sessionData } = await client.auth.getSession();
+      const userId = sessionData.session?.user?.id;
+
+      if (!userId) {
+        setProfile(null);
+        return;
+      }
+
+      await buildProfile(userId);
     }
 
     loadProfile();
@@ -231,42 +237,7 @@ export function Topbar() {
         return;
       }
 
-      const { data: userProfile, error: profileError } = await client
-        .from('user_profiles')
-        .select('id,name,email,company_id,role')
-        .eq('id', userId)
-        .maybeSingle();
-
-      if (profileError || !userProfile) {
-        console.error('Failed to refresh profile in Topbar:', profileError);
-        setProfile(null);
-        return;
-      }
-
-      let companyName: string | null = null;
-      let companyLogoUrl: string | null = null;
-
-      if (userProfile.company_id) {
-        const { data: companyData, error: companyError } = await client
-          .from('companies')
-          .select('id,name,code,logo_url,logoUrl')
-          .eq('id', userProfile.company_id)
-          .maybeSingle();
-
-        if (companyError) {
-          console.error('Failed to refresh company in Topbar:', companyError);
-        } else if (companyData) {
-          const company = companyData as CompanyRow;
-          companyName = company.name ?? null;
-          companyLogoUrl = company.logo_url || company.logoUrl || null;
-        }
-      }
-
-      setProfile({
-        ...(userProfile as any),
-        company_name: companyName,
-        company_logo_url: companyLogoUrl,
-      });
+      await buildProfile(userId);
     });
 
     return () => {

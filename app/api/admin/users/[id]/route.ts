@@ -39,6 +39,27 @@ async function resolveCompanyId(rawCompanyInput: unknown) {
   return String(match.id);
 }
 
+async function getCompanyBranding(companyId: string) {
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin is not configured.');
+  }
+
+  const { data, error } = await supabaseAdmin
+    .from(COMPANIES_TABLE)
+    .select('id,name,logo_url,logoUrl')
+    .eq('id', companyId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  return {
+    company_name: (data as any)?.name ?? null,
+    company_logo_url: (data as any)?.logo_url || (data as any)?.logoUrl || null,
+  };
+}
+
 export async function PATCH(
   req: NextRequest,
   context: { params: Promise<{ id: string }> }
@@ -78,6 +99,8 @@ export async function PATCH(
       companyId = auth.user.companyId;
     }
 
+    const branding = await getCompanyBranding(companyId);
+
     const { data: existingProfile, error: existingError } = await supabaseAdmin
       .from(PROFILE_TABLE)
       .select('id,email,company_id')
@@ -104,13 +127,15 @@ export async function PATCH(
       name,
       role,
       company_id: companyId,
+      company_name: branding.company_name,
+      company_logo_url: branding.company_logo_url,
     };
 
     const { data, error } = await supabaseAdmin
       .from(PROFILE_TABLE)
       .update(update)
       .eq('id', id)
-      .select('id,name,email,role,company_id')
+      .select('id,name,email,role,company_id,company_name,company_logo_url')
       .maybeSingle();
 
     if (error) {
@@ -122,6 +147,8 @@ export async function PATCH(
         name,
         role,
         company_id: companyId,
+        company_name: branding.company_name,
+        company_logo_url: branding.company_logo_url,
       },
     });
 
@@ -132,6 +159,8 @@ export async function PATCH(
         email: data?.email,
         role: data?.role,
         companyId: data?.company_id,
+        companyName: data?.company_name ?? branding.company_name,
+        companyLogoUrl: data?.company_logo_url ?? branding.company_logo_url,
       },
     });
   } catch (error: any) {

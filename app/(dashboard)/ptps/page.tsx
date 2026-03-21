@@ -1,10 +1,15 @@
+import { unstable_noStore as noStore } from 'next/cache';
 import Link from 'next/link';
 import { DataTable } from '@/components/DataTable';
-import { supabase } from '@/lib/supabase';
+import { getRequestUserProfile } from '@/lib/server-auth';
+import { supabaseAdmin } from '@/lib/supabase-admin';
 import { currency, formatDate } from '@/lib/utils';
 
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
 const TOP_TABLE_LIMIT = 15;
+
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
 
 function isToday(dateValue: string | null | undefined) {
   if (!dateValue) return false;
@@ -113,23 +118,59 @@ export default async function PtpsPage({
 }: {
   searchParams?: Promise<{ filter?: string }>;
 }) {
+  noStore();
+
   const resolved = searchParams ? await searchParams : {};
   const filter = typeof resolved?.filter === 'string' ? resolved.filter.trim() : '';
 
-  if (!supabase) {
+  if (!supabaseAdmin) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">PTPs</h1>
-        <p className="text-red-600">Supabase is not configured.</p>
+        <p className="text-red-600">Supabase admin is not configured.</p>
       </div>
     );
   }
 
-  const { data: initialRows, error: initialError } = await supabase
+  let profile: Awaited<ReturnType<typeof getRequestUserProfile>> | null = null;
+
+  try {
+    profile = await getRequestUserProfile();
+  } catch (error: any) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">PTPs</h1>
+        <p className="text-red-600">
+          {error?.message || 'Unable to load user session.'}
+        </p>
+      </div>
+    );
+  }
+
+  if (!profile?.company_id) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">PTPs</h1>
+        <p className="text-red-600">Your user profile has no company_id.</p>
+      </div>
+    );
+  }
+
+  const normalizedRole = normalizeRole(profile.role);
+  const isAgent = normalizedRole === 'agent';
+  const collectorScope = String(profile.name || '').trim();
+
+  let initialQuery = supabaseAdmin
     .from('ptps')
     .select('*')
-    .eq('company_id', COMPANY_ID)
+    .eq('company_id', profile.company_id)
     .order('created_at', { ascending: false });
+
+  if (isAgent && collectorScope) {
+    initialQuery = initialQuery.eq('collector_name', collectorScope);
+  }
+
+  const { data: initialRows, error: initialError } = await initialQuery;
 
   if (initialError) {
     return (
@@ -148,7 +189,7 @@ export default async function PtpsPage({
     const bookedOn = toDateOnly(ptp.created_at);
     const promisedDate = toDateOnly(ptp.promised_date);
 
-    const { data: paymentRows, error: paymentError } = await supabase
+    const { data: paymentRows, error: paymentError } = await supabaseAdmin
       .from('payments')
       .select('amount, paid_on')
       .eq('account_id', ptp.account_id);
@@ -171,7 +212,7 @@ export default async function PtpsPage({
     const keptAmount = nextStatus === 'Kept' ? paidWithinWindow : 0;
     const nowIso = new Date().toISOString();
 
-    await supabase
+    await supabaseAdmin
       .from('ptps')
       .update({
         status: nextStatus,
@@ -182,7 +223,7 @@ export default async function PtpsPage({
       .eq('id', ptp.id)
       .eq('status', 'Promise To Pay');
 
-    await supabase
+    await supabaseAdmin
       .from('accounts')
       .update({
         status: nextStatus,
@@ -191,11 +232,17 @@ export default async function PtpsPage({
       .eq('id', ptp.account_id);
   }
 
-  const { data: rows, error } = await supabase
+  let rowsQuery = supabaseAdmin
     .from('ptps')
     .select('*')
-    .eq('company_id', COMPANY_ID)
+    .eq('company_id', profile.company_id)
     .order('created_at', { ascending: false });
+
+  if (isAgent && collectorScope) {
+    rowsQuery = rowsQuery.eq('collector_name', collectorScope);
+  }
+
+  const { data: rows, error } = await rowsQuery;
 
   if (error) {
     return (
@@ -221,15 +268,26 @@ export default async function PtpsPage({
   >();
 
   if (accountIds.length > 0) {
+    let accountsQuery = supabaseAdmin
+      .from('accounts')
+      .select('id, cfid, debtor_name, status, company_id, collector_name')
+      .in('id', accountIds)
+      .eq('company_id', profile.company_id);
+
+    let paymentsQuery = supabaseAdmin
+      .from('payments')
+      .select('account_id, amount, paid_on, company_id, collector_name')
+      .in('account_id', accountIds)
+      .eq('company_id', profile.company_id);
+
+    if (isAgent && collectorScope) {
+      accountsQuery = accountsQuery.eq('collector_name', collectorScope);
+      paymentsQuery = paymentsQuery.eq('collector_name', collectorScope);
+    }
+
     const [{ data: accounts }, { data: payments }] = await Promise.all([
-      supabase
-        .from('accounts')
-        .select('id, cfid, debtor_name, status')
-        .in('id', accountIds),
-      supabase
-        .from('payments')
-        .select('account_id, amount, paid_on')
-        .in('account_id', accountIds),
+      accountsQuery,
+      paymentsQuery,
     ]);
 
     for (const account of accounts ?? []) {
