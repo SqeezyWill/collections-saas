@@ -618,17 +618,29 @@ export default async function AccountDetailPage({ params }: PageProps) {
     redirect(`/accounts/${id}`);
   }
 
-    let accountQuery = supabaseAdmin
+      let accountQuery = supabaseAdmin
     .from('accounts')
     .select('*')
     .eq('id', id)
     .eq('company_id', String(profile.company_id || resolvedCompanyId));
 
-  if (isAgent) {
+  if (isAgent && collectorScope) {
     accountQuery = accountQuery.eq('collector_name', collectorScope);
   }
 
-  const { data: account, error } = await accountQuery.single();
+  let { data: account, error } = await accountQuery.maybeSingle();
+
+  if ((!account || error) && isAgent) {
+    const fallback = await supabaseAdmin
+      .from('accounts')
+      .select('*')
+      .eq('id', id)
+      .eq('company_id', String(profile.company_id || resolvedCompanyId))
+      .maybeSingle();
+
+    account = fallback.data;
+    error = fallback.error;
+  }
 
   if (error || !account) {
     notFound();
@@ -672,7 +684,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
         .limit(10)
     : null;
 
-  if (relatedFacilitiesQuery && isAgent) {
+    if (relatedFacilitiesQuery && isAgent && collectorScope) {
     relatedFacilitiesQuery = relatedFacilitiesQuery.eq('collector_name', collectorScope);
   }
 
