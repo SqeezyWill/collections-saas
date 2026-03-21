@@ -526,17 +526,37 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
   const userId = authUser.user.id;
 
-  const { data: profileData, error: profileError } = await supabase
+    const { data: profileData, error: profileError } = await supabase
     .from('user_profiles')
     .select('id,name,role,company_id')
     .eq('id', userId)
     .maybeSingle();
 
-  if (profileError || !profileData?.company_id) {
+  if (profileError || !profileData?.id) {
     notFound();
   }
 
-  const profile = profileData as UserProfile;
+  let resolvedCompanyId = String(profileData.company_id || '').trim();
+
+  if (!resolvedCompanyId) {
+    const { data: fixedCompany, error: fixedCompanyError } = await supabase
+      .from('companies')
+      .select('id,name,code')
+      .or('name.eq.Pezesha,code.eq.Pezesha')
+      .limit(1)
+      .maybeSingle();
+
+    if (fixedCompanyError || !fixedCompany?.id) {
+      notFound();
+    }
+
+    resolvedCompanyId = String(fixedCompany.id);
+  }
+
+  const profile = {
+    ...(profileData as UserProfile),
+    company_id: resolvedCompanyId,
+  } as UserProfile;
   const normalizedRole = normalizeRole(profile.role);
   const isAgent = normalizedRole === 'agent';
   const canManageAssignments =
@@ -598,11 +618,11 @@ export default async function AccountDetailPage({ params }: PageProps) {
     redirect(`/accounts/${id}`);
   }
 
-  let accountQuery = supabaseAdmin
+    let accountQuery = supabaseAdmin
     .from('accounts')
     .select('*')
     .eq('id', id)
-    .eq('company_id', String(profile.company_id));
+    .eq('company_id', String(profile.company_id || resolvedCompanyId));
 
   if (isAgent) {
     accountQuery = accountQuery.eq('collector_name', collectorScope);
@@ -641,12 +661,12 @@ export default async function AccountDetailPage({ params }: PageProps) {
     .order('created_at', { ascending: false })
     .limit(10);
 
-  let relatedFacilitiesQuery = account.customer_id
+    let relatedFacilitiesQuery = account.customer_id
     ? supabaseAdmin
         .from('accounts')
         .select('id,debtor_name,account_no,product,portfolio_category,balance,status,dpd,collector_name')
         .eq('customer_id', account.customer_id)
-        .eq('company_id', String(profile.company_id))
+        .eq('company_id', String(profile.company_id || resolvedCompanyId))
         .neq('id', id)
         .order('created_at', { ascending: false })
         .limit(10)
