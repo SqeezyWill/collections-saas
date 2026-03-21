@@ -8,13 +8,19 @@ const STRATEGIES_TABLE = 'strategies';
 const MAP_TABLE = 'strategy_products';
 const PRODUCTS_TABLE = 'products';
 const NOTES_TABLE = 'notes';
+const COMPANIES_TABLE = 'companies';
+const PEZESHA_FALLBACK_NAME = 'Pezesha';
 
 type ParsedRow = Record<string, string>;
 
 type PreparedInsertRow = {
   row: ParsedRow;
   payload: Record<string, any>;
-  duplicateStatus: 'new' | 'duplicate_exact' | 'conflict_same_loan_diff_customer' | 'same_customer_other_facility';
+  duplicateStatus:
+    | 'new'
+    | 'duplicate_exact'
+    | 'conflict_same_loan_diff_customer'
+    | 'same_customer_other_facility';
   duplicateMessage: string | null;
   existingAccountId: string | null;
 };
@@ -175,6 +181,26 @@ function buildImportedNote(row: ParsedRow) {
   lines.push(`Upload Update Date: ${today}`);
 
   return lines.join('\n').trim();
+}
+
+async function resolveFallbackCompanyId(admin: NonNullable<typeof supabaseAdmin>) {
+  const { data, error } = await admin
+    .from(COMPANIES_TABLE)
+    .select('id,name')
+    .ilike('name', PEZESHA_FALLBACK_NAME)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message || 'Unable to resolve Pezesha company.');
+  }
+
+  const companyId = String(data?.id || '').trim() || null;
+  if (!companyId) {
+    throw new Error('Pezesha company record was not found.');
+  }
+
+  return companyId;
 }
 
 async function getMaxExistingCfid(
@@ -367,15 +393,13 @@ async function assignStrategyToAccount(
     `match=${resolved.meta.matchedBy}`,
   ].join(' ');
 
-  const { error: insErr } = await admin
-    .from(ASSIGN_TABLE)
-    .insert({
-      account_id: input.accountId,
-      strategy_id: resolved.strategyId,
-      source: 'auto',
-      notes,
-      is_active: true,
-    });
+  const { error: insErr } = await admin.from(ASSIGN_TABLE).insert({
+    account_id: input.accountId,
+    strategy_id: resolved.strategyId,
+    source: 'auto',
+    notes,
+    is_active: true,
+  });
 
   if (insErr) {
     return { ok: false as const, error: insErr.message };
@@ -395,6 +419,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
   }
 
+  const admin = supabaseAdmin;
+
   const auth = await requireAdminRole(req);
   if ('error' in auth) {
     return NextResponse.json(
@@ -403,14 +429,12 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const companyId = auth.user.companyId;
-  if (!companyId) {
-    return NextResponse.json({ error: 'User has no company scope.' }, { status: 400 });
-  }
+  let body: {
+    rows?: ParsedRow[];
+    companyId?: string | null;
+    companyName?: string | null;
+  } = {};
 
-  const admin = supabaseAdmin;
-
-  let body: { rows?: ParsedRow[] } = {};
   try {
     body = await req.json();
   } catch {
@@ -418,6 +442,7 @@ export async function POST(req: NextRequest) {
   }
 
   const rows = Array.isArray(body.rows) ? body.rows : [];
+  const requestedCompanyId = String(body.companyId || '').trim() || null;
 
   if (!rows.length) {
     return NextResponse.json({ error: 'rows array is required.' }, { status: 400 });
@@ -433,6 +458,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'No valid rows found to import.' }, { status: 400 });
   }
 
+  let companyId = String(auth.user.companyId || '').trim() || null;
+
+  if (!companyId && requestedCompanyId) {
+    companyId = requestedCompanyId;
+  }
+
+  if (!companyId) {
+    try {
+      companyId = await resolveFallbackCompanyId(admin);
+    } catch (error: any) {
+      return NextResponse.json(
+        { error: error?.message || 'User has no company scope.' },
+        { status: 400 }
+      );
+    }
+  }
+
   const loanIds = Array.from(
     new Set(filteredRows.map((row) => String(row['loan_id'] || '').trim()).filter(Boolean))
   );
@@ -441,23 +483,25 @@ export async function POST(req: NextRequest) {
     new Set(filteredRows.map((row) => String(row['customer_id'] || '').trim()).filter(Boolean))
   );
 
-  const [{ data: existingByLoan, error: existingLoanError }, { data: existingByCustomer, error: existingCustomerError }] =
-    await Promise.all([
-      loanIds.length > 0
-        ? admin
-            .from(ACCOUNTS_TABLE)
-            .select('id,account_no,customer_id,debtor_name,cfid')
-            .eq('company_id', companyId)
-            .in('account_no', loanIds)
-        : Promise.resolve({ data: [], error: null } as any),
-      customerIds.length > 0
-        ? admin
-            .from(ACCOUNTS_TABLE)
-            .select('id,account_no,customer_id,debtor_name,cfid')
-            .eq('company_id', companyId)
-            .in('customer_id', customerIds)
-        : Promise.resolve({ data: [], error: null } as any),
-    ]);
+  const [
+    { data: existingByLoan, error: existingLoanError },
+    { data: existingByCustomer, error: existingCustomerError },
+  ] = await Promise.all([
+    loanIds.length > 0
+      ? admin
+          .from(ACCOUNTS_TABLE)
+          .select('id,account_no,customer_id,debtor_name,cfid')
+          .eq('company_id', companyId)
+          .in('account_no', loanIds)
+      : Promise.resolve({ data: [], error: null } as any),
+    customerIds.length > 0
+      ? admin
+          .from(ACCOUNTS_TABLE)
+          .select('id,account_no,customer_id,debtor_name,cfid')
+          .eq('company_id', companyId)
+          .in('customer_id', customerIds)
+      : Promise.resolve({ data: [], error: null } as any),
+  ]);
 
   if (existingLoanError) {
     return NextResponse.json({ error: existingLoanError.message }, { status: 500 });
@@ -608,7 +652,8 @@ export async function POST(req: NextRequest) {
   }
 
   const rowsToInsert = preparedRows.filter(
-    (item) => item.duplicateStatus === 'new' || item.duplicateStatus === 'same_customer_other_facility'
+    (item) =>
+      item.duplicateStatus === 'new' || item.duplicateStatus === 'same_customer_other_facility'
   );
 
   const duplicateExactCount = preparedRows.filter(
