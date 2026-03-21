@@ -518,53 +518,49 @@ export default async function AccountDetailPage({ params }: PageProps) {
     );
   }
 
-    const { data: authSession, error: authSessionError } = await supabase.auth.getSession();
-  const userId = authSession?.session?.user?.id;
-
-  if (authSessionError || !userId) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Account Workspace</h1>
-        <p className="text-red-600">Unable to load user session.</p>
-      </div>
-    );
-  }
-
-    const { data: profileData, error: profileError } = await supabase
-    .from('user_profiles')
-    .select('id,name,role,company_id')
-    .eq('id', userId)
+        const { data: accountOnly, error: accountOnlyError } = await supabaseAdmin
+    .from('accounts')
+    .select('*')
+    .eq('id', id)
     .maybeSingle();
 
-    if (profileError || !profileData?.id) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Account Workspace</h1>
-        <p className="text-red-600">Unable to load user profile.</p>
-      </div>
-    );
+  if (accountOnlyError || !accountOnly) {
+    notFound();
   }
 
-  let resolvedCompanyId = String(profileData.company_id || '').trim();
+  const userId = 'single-company-bypass';
 
-  if (!resolvedCompanyId) {
-    const { data: fixedCompany, error: fixedCompanyError } = await supabase
-      .from('companies')
-      .select('id,name,code')
-      .or('name.eq.Pezesha,code.eq.Pezesha')
-      .limit(1)
-      .maybeSingle();
+      let profileData: UserProfile | null = {
+    id: userId,
+    name: null,
+    role: 'super_admin',
+    company_id: String(accountOnly.company_id || '').trim() || null,
+  };
 
-        if (fixedCompanyError || !fixedCompany?.id) {
-      return (
-        <div className="space-y-4">
-          <h1 className="text-3xl font-semibold">Account Workspace</h1>
-          <p className="text-red-600">Unable to resolve Pezesha company.</p>
-        </div>
-      );
+  let resolvedCompanyId = String(profileData?.company_id || '').trim();
+
+    if (!resolvedCompanyId) {
+    resolvedCompanyId = String(accountOnly.company_id || '').trim();
+
+    if (!resolvedCompanyId) {
+      const { data: fixedCompany, error: fixedCompanyError } = await supabaseAdmin
+        .from('companies')
+        .select('id,name,code')
+        .or('name.eq.Pezesha,code.eq.Pezesha')
+        .limit(1)
+        .maybeSingle();
+
+      if (fixedCompanyError || !fixedCompany?.id) {
+        return (
+          <div className="space-y-4">
+            <h1 className="text-3xl font-semibold">Account Workspace</h1>
+            <p className="text-red-600">Unable to resolve Pezesha company.</p>
+          </div>
+        );
+      }
+
+      resolvedCompanyId = String(fixedCompany.id);
     }
-
-    resolvedCompanyId = String(fixedCompany.id);
   }
 
   const profile = {
