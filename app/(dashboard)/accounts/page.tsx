@@ -8,6 +8,8 @@ import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
 const EMPTY_UUID = '00000000-0000-0000-0000-000000000000';
+const PORTFOLIO_CACHE_PREFIX = 'portfolio-cache:v1:';
+const PORTFOLIO_SCROLL_PREFIX = 'portfolio-scroll:v1:';
 
 const AVAILABLE_COLUMNS = [
   { key: 'cfid', label: 'CFID' },
@@ -334,6 +336,9 @@ export default function AccountsPage() {
   const showingAll = normalizedLimit === 'all';
   const pageSize = showingAll ? 500 : Number(normalizedLimit);
   const effectivePage = showingAll ? 1 : currentPage;
+  const currentQueryString = searchParams.toString();
+  const portfolioCacheKey = `${PORTFOLIO_CACHE_PREFIX}${currentQueryString}`;
+  const portfolioScrollKey = `${PORTFOLIO_SCROLL_PREFIX}${currentQueryString}`;
 
   const selectedColumns = columnsParam
     .split(',')
@@ -354,6 +359,10 @@ export default function AccountsPage() {
   const [bulkAssignCollector, setBulkAssignCollector] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [resolvedCompanyId, setResolvedCompanyId] = useState('');
+  const [companyResolved, setCompanyResolved] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
 
   const normalizedProfileRole = normalizeRole(profile?.role);
   const isAgent = normalizedProfileRole === 'agent';
@@ -362,16 +371,119 @@ export default function AccountsPage() {
   const canUseBulkActions =
     normalizedProfileRole === 'super_admin' || normalizedProfileRole === 'admin';
 
+    useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(portfolioCacheKey);
+
+      if (!raw) {
+        setCacheHydrated(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw);
+
+      if (Array.isArray(parsed?.rows)) setRows(parsed.rows);
+      if (typeof parsed?.totalAccounts === 'number') setTotalAccounts(parsed.totalAccounts);
+      if (Array.isArray(parsed?.collectorOptions)) setCollectorOptions(parsed.collectorOptions);
+      if (parsed?.profile) setProfile(parsed.profile);
+
+      if (typeof parsed?.resolvedCompanyId === 'string' && parsed.resolvedCompanyId.trim()) {
+        setResolvedCompanyId(parsed.resolvedCompanyId);
+        setCompanyResolved(true);
+      }
+
+      setLoading(false);
+    } catch {
+      // ignore cache errors
+    } finally {
+      setCacheHydrated(true);
+    }
+  }, [portfolioCacheKey]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadCompanyContext() {
+      try {
+        if (!supabase) return;
+
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (mounted) {
+            setErrorMsg('No active session found.');
+            setCompanyResolved(true);
+          }
+          return;
+        }
+
+        const { data: profileData } = await supabase
+          .from('user_profiles')
+          .select('company_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        let companyId = String(profileData?.company_id || '').trim();
+
+        if (!companyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .limit(1)
+            .maybeSingle();
+
+          if (fixedCompanyError || !fixedCompany?.id) {
+            throw new Error('Unable to resolve fixed Pezesha company.');
+          }
+
+          companyId = String(fixedCompany.id);
+        }
+
+        if (mounted) {
+          setResolvedCompanyId(companyId);
+          setCompanyResolved(true);
+        }
+      } catch (error: any) {
+        if (mounted) {
+          setErrorMsg(error?.message || 'Unable to resolve company context.');
+          setCompanyResolved(true);
+        }
+      }
+    }
+
+    loadCompanyContext();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   useEffect(() => {
     let mounted = true;
 
     async function loadPage() {
       try {
-        setLoading(true);
+                if (rows.length === 0) {
+          setLoading(true);
+        } else {
+          setIsRefreshing(true);
+        }
         setErrorMsg(null);
 
         if (!supabase) {
           throw new Error('Supabase is not configured.');
+        }
+
+        if (!cacheHydrated || !companyResolved) {
+          return;
+        }
+
+        if (!resolvedCompanyId) {
+          throw new Error('Unable to resolve company context.');
         }
 
         const { data: sessionData } = await supabase.auth.getSession();
@@ -391,29 +503,12 @@ export default function AccountsPage() {
           throw new Error(profileError.message);
         }
 
-        let resolvedCompanyId = String(profileData?.company_id || '').trim();
+        setProfile({
+          ...(profileData as UserProfile),
+          company_id: resolvedCompanyId,
+        });
 
-if (!resolvedCompanyId) {
-  const { data: fixedCompany, error: fixedCompanyError } = await supabase
-    .from('companies')
-    .select('id,name,code')
-    .or('name.eq.Pezesha,code.eq.Pezesha')
-    .limit(1)
-    .maybeSingle();
-
-  if (fixedCompanyError || !fixedCompany?.id) {
-    throw new Error('Unable to resolve fixed Pezesha company.');
-  }
-
-  resolvedCompanyId = String(fixedCompany.id);
-}
-
-setProfile({
-  ...(profileData as UserProfile),
-  company_id: resolvedCompanyId,
-});
-
-const companyId = resolvedCompanyId;
+        const companyId = resolvedCompanyId;
         const profileName = String(profileData?.name || '').trim();
         const profileRole = normalizeRole(profileData?.role);
         const restrictToCollector = profileRole === 'agent' ? profileName : '';
@@ -425,7 +520,8 @@ const companyId = resolvedCompanyId;
           .from('accounts')
           .select('collector_name')
           .eq('company_id', companyId)
-          .not('collector_name', 'is', null);
+          .not('collector_name', 'is', null)
+          .limit(300);
 
         if (restrictToCollector) {
           collectorQuery = collectorQuery.eq('collector_name', restrictToCollector);
@@ -453,11 +549,19 @@ const companyId = resolvedCompanyId;
         ) {
           let ptpQuery = supabase
             .from('ptps')
-            .select('*')
+            .select('account_id,status,promised_date')
             .eq('company_id', companyId);
 
           if (restrictToCollector) {
             ptpQuery = ptpQuery.eq('collector_name', restrictToCollector);
+          }
+
+          if (filter === 'open-ptps') {
+            ptpQuery = ptpQuery.eq('status', 'Promise To Pay');
+          }
+
+          if (filter === 'ptps-due-today') {
+            ptpQuery = ptpQuery.eq('status', 'Promise To Pay').eq('promised_date', today);
           }
 
           const { data: ptpRows, error: ptpError } = await ptpQuery;
@@ -466,28 +570,16 @@ const companyId = resolvedCompanyId;
             throw new Error(`Failed to load PTP filter data: ${ptpError.message}`);
           }
 
-          const filteredPtps = (ptpRows ?? []).filter((ptp: any) => {
-            const isOpenPtp = ptp.status === 'Promise To Pay';
-            const isBrokenPtp =
-              ptp.status === 'Broken' ||
-              (ptp.status === 'Promise To Pay' &&
-                ptp.promised_date &&
-                toDateOnly(ptp.promised_date) < today);
-
-            if (filter === 'open-ptps') {
-              return isOpenPtp;
-            }
-
-            if (filter === 'ptps-due-today') {
-              return isOpenPtp && isToday(ptp.promised_date);
-            }
-
-            if (filter === 'broken-ptps') {
-              return isBrokenPtp;
-            }
-
-            return true;
-          });
+          const filteredPtps =
+            filter === 'broken-ptps'
+              ? (ptpRows ?? []).filter(
+                  (ptp: any) =>
+                    ptp.status === 'Broken' ||
+                    (ptp.status === 'Promise To Pay' &&
+                      ptp.promised_date &&
+                      toDateOnly(ptp.promised_date) < today)
+                )
+              : ptpRows ?? [];
 
           matchedAccountIds = Array.from(
             new Set(
@@ -558,13 +650,11 @@ const companyId = resolvedCompanyId;
         setTotalAccounts(count ?? 0);
       } catch (e: any) {
         if (!mounted) return;
-        setRows([]);
-        setTotalAccounts(0);
-        setCollectorOptions([]);
-        setErrorMsg(e?.message || 'Failed to load accounts.');
+                setErrorMsg(e?.message || 'Failed to load accounts.');
       } finally {
-        if (mounted) {
+                if (mounted) {
           setLoading(false);
+          setIsRefreshing(false);
         }
       }
     }
@@ -574,7 +664,7 @@ const companyId = resolvedCompanyId;
     return () => {
       mounted = false;
     };
-  }, [
+    }, [
     search,
     searchField,
     collector,
@@ -583,11 +673,70 @@ const companyId = resolvedCompanyId;
     maxBalance,
     lastActionFrom,
     lastActionTo,
-    normalizedLimit,
-    effectivePage,
     filter,
+    effectivePage,
+    pageSize,
     reloadKey,
+    companyResolved,
+    resolvedCompanyId,
+    cacheHydrated,
   ]);
+
+    useEffect(() => {
+    if (!cacheHydrated) return;
+
+    try {
+      sessionStorage.setItem(
+        portfolioCacheKey,
+        JSON.stringify({
+          rows,
+          totalAccounts,
+          collectorOptions,
+          profile,
+          resolvedCompanyId,
+          savedAt: Date.now(),
+        })
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [
+    portfolioCacheKey,
+    rows,
+    totalAccounts,
+    collectorOptions,
+    profile,
+    resolvedCompanyId,
+    cacheHydrated,
+  ]);
+
+    useEffect(() => {
+    function saveScroll() {
+      try {
+        sessionStorage.setItem(portfolioScrollKey, String(window.scrollY));
+      } catch {
+        // ignore
+      }
+    }
+
+    window.addEventListener('scroll', saveScroll, { passive: true });
+    return () => window.removeEventListener('scroll', saveScroll);
+  }, [portfolioScrollKey]);
+
+    useEffect(() => {
+    if (!cacheHydrated) return;
+
+    try {
+      const savedScroll = sessionStorage.getItem(portfolioScrollKey);
+      if (!savedScroll) return;
+
+      requestAnimationFrame(() => {
+        window.scrollTo(0, Number(savedScroll || '0'));
+      });
+    } catch {
+      // ignore
+    }
+  }, [portfolioScrollKey, cacheHydrated]);
 
   useEffect(() => {
     setSelectedIds([]);
@@ -836,7 +985,7 @@ const companyId = resolvedCompanyId;
     );
   }
 
-  if (loading) {
+  if (loading && rows.length === 0) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Portfolio</h1>
@@ -858,7 +1007,14 @@ const companyId = resolvedCompanyId;
     <div className="space-y-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold">Portfolio</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-semibold">Portfolio</h1>
+            {isRefreshing ? (
+              <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                Refreshing…
+              </span>
+            ) : null}
+          </div>
           <p className="mt-1 text-slate-500">
             Search, review and work assigned debtor accounts from one operational workspace.
           </p>

@@ -1,8 +1,9 @@
-import { unstable_noStore as noStore } from 'next/cache';
+'use client';
+
 import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
-import { getRequestUserProfile } from '@/lib/server-auth';
-import { supabaseAdmin } from '@/lib/supabase-admin';
+import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
 const TOP_TABLE_LIMIT = 15;
@@ -113,365 +114,499 @@ type MonthlySummaryRow = {
   keptRatePct: number;
 };
 
-export default async function PtpsPage({
+type AuthProfile = {
+  id: string;
+  name: string | null;
+  role: string | null;
+  company_id: string | null;
+};
+
+export default function PtpsPage({
   searchParams,
 }: {
   searchParams?: Promise<{ filter?: string }>;
 }) {
-  noStore();
+  const [filter, setFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
+  const [rows, setRows] = useState<any[]>([]);
+  const [allRows, setAllRows] = useState<any[]>([]);
 
-  const resolved = searchParams ? await searchParams : {};
-  const filter = typeof resolved?.filter === 'string' ? resolved.filter.trim() : '';
+  useEffect(() => {
+    let mounted = true;
 
-  if (!supabaseAdmin) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">PTPs</h1>
-        <p className="text-red-600">Supabase admin is not configured.</p>
-      </div>
-    );
-  }
-
-  let profile: Awaited<ReturnType<typeof getRequestUserProfile>> | null = null;
-
-  try {
-    profile = await getRequestUserProfile();
-  } catch (error: any) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">PTPs</h1>
-        <p className="text-red-600">
-          {error?.message || 'Unable to load user session.'}
-        </p>
-      </div>
-    );
-  }
-
-  if (!profile?.company_id) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">PTPs</h1>
-        <p className="text-red-600">Your user profile has no company_id.</p>
-      </div>
-    );
-  }
-
-  const normalizedRole = normalizeRole(profile.role);
-  const isAgent = normalizedRole === 'agent';
-  const collectorScope = String(profile.name || '').trim();
-
-  let initialQuery = supabaseAdmin
-    .from('ptps')
-    .select('*')
-    .eq('company_id', profile.company_id)
-    .order('created_at', { ascending: false });
-
-  if (isAgent && collectorScope) {
-    initialQuery = initialQuery.eq('collector_name', collectorScope);
-  }
-
-  const { data: initialRows, error: initialError } = await initialQuery;
-
-  if (initialError) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">PTPs</h1>
-        <p className="text-red-600">Failed to load PTPs: {initialError.message}</p>
-      </div>
-    );
-  }
-
-  const overdueOpenPtps = (initialRows ?? []).filter(
-    (row) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
-  );
-
-  for (const ptp of overdueOpenPtps) {
-    const bookedOn = toDateOnly(ptp.created_at);
-    const promisedDate = toDateOnly(ptp.promised_date);
-
-    const { data: paymentRows, error: paymentError } = await supabaseAdmin
-      .from('payments')
-      .select('amount, paid_on')
-      .eq('account_id', ptp.account_id);
-
-    if (paymentError) continue;
-
-    const paymentsWithinWindow = (paymentRows ?? []).filter((payment) => {
-      const paidOn = toDateOnly(payment.paid_on);
-      if (!paidOn) return false;
-      return paidOn >= bookedOn && paidOn <= promisedDate;
-    });
-
-    const paidWithinWindow = paymentsWithinWindow.reduce(
-      (sum, payment) => sum + Number(payment.amount || 0),
-      0
-    );
-
-    const promisedAmount = Number(ptp.promised_amount || 0);
-    const nextStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
-    const keptAmount = nextStatus === 'Kept' ? paidWithinWindow : 0;
-    const nowIso = new Date().toISOString();
-
-    await supabaseAdmin
-      .from('ptps')
-      .update({
-        status: nextStatus,
-        resolved_at: nowIso,
-        kept_amount: keptAmount,
-        resolution_source: 'auto',
-      })
-      .eq('id', ptp.id)
-      .eq('status', 'Promise To Pay');
-
-    await supabaseAdmin
-      .from('accounts')
-      .update({
-        status: nextStatus,
-        last_action_date: promisedDate || toDateOnly(nowIso),
-      })
-      .eq('id', ptp.account_id);
-  }
-
-  let rowsQuery = supabaseAdmin
-    .from('ptps')
-    .select('*')
-    .eq('company_id', profile.company_id)
-    .order('created_at', { ascending: false });
-
-  if (isAgent && collectorScope) {
-    rowsQuery = rowsQuery.eq('collector_name', collectorScope);
-  }
-
-  const { data: rows, error } = await rowsQuery;
-
-  if (error) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">PTPs</h1>
-        <p className="text-red-600">Failed to load PTPs: {error.message}</p>
-      </div>
-    );
-  }
-
-  const accountIds = Array.from(
-    new Set((rows ?? []).map((row) => row.account_id).filter(Boolean))
-  );
-
-  const accountsById = new Map<
-    string,
-    { cfid: string | null; debtor_name: string | null; status: string | null }
-  >();
-
-  const paymentsByAccountId = new Map<
-    string,
-    Array<{ amount: number | null; paid_on: string | null }>
-  >();
-
-  if (accountIds.length > 0) {
-    let accountsQuery = supabaseAdmin
-      .from('accounts')
-      .select('id, cfid, debtor_name, status, company_id, collector_name')
-      .in('id', accountIds)
-      .eq('company_id', profile.company_id);
-
-    let paymentsQuery = supabaseAdmin
-      .from('payments')
-      .select('account_id, amount, paid_on, company_id, collector_name')
-      .in('account_id', accountIds)
-      .eq('company_id', profile.company_id);
-
-    if (isAgent && collectorScope) {
-      accountsQuery = accountsQuery.eq('collector_name', collectorScope);
-      paymentsQuery = paymentsQuery.eq('collector_name', collectorScope);
-    }
-
-    const [{ data: accounts }, { data: payments }] = await Promise.all([
-      accountsQuery,
-      paymentsQuery,
-    ]);
-
-    for (const account of accounts ?? []) {
-      accountsById.set(String(account.id), {
-        cfid: account.cfid ?? null,
-        debtor_name: account.debtor_name ?? null,
-        status: account.status ?? null,
-      });
-    }
-
-    for (const payment of payments ?? []) {
-      const key = String(payment.account_id || '');
-      if (!key) continue;
-      const current = paymentsByAccountId.get(key) || [];
-      current.push({
-        amount: payment.amount ?? null,
-        paid_on: payment.paid_on ?? null,
-      });
-      paymentsByAccountId.set(key, current);
-    }
-  }
-
-  const allRows = (rows ?? []).map((row) => {
-    const account = row.account_id ? accountsById.get(String(row.account_id)) : null;
-    const payments = row.account_id ? paymentsByAccountId.get(String(row.account_id)) || [] : [];
-
-    let effectiveStatus = row.status || '-';
-    let effectiveKeptAmount = Number(row.kept_amount || 0);
-
-    const needsDerivedOutcome =
-      row.status === 'Promise To Pay' && isPastDue(row.promised_date);
-
-    const needsDerivedKeptAmount =
-      row.status === 'Kept' && Number(row.kept_amount || 0) <= 0;
-
-    if (needsDerivedOutcome || needsDerivedKeptAmount) {
-      const derived = resolvePtpOutcomeFromPayments(row, payments);
-
-      if (needsDerivedOutcome) {
-        effectiveStatus = derived.effectiveStatus;
-      }
-
-      if (row.status === 'Kept' || derived.effectiveStatus === 'Kept') {
-        effectiveKeptAmount = derived.effectiveKeptAmount;
+    async function loadFilter() {
+      const resolved = searchParams ? await searchParams : {};
+      const nextFilter = typeof resolved?.filter === 'string' ? resolved.filter.trim() : '';
+      if (mounted) {
+        setFilter(nextFilter);
       }
     }
 
-    return {
-      ...row,
-      accountMeta: account ?? null,
-      effectiveStatus,
-      effectiveKeptAmount,
+    loadFilter();
+
+    return () => {
+      mounted = false;
     };
-  });
+  }, [searchParams]);
 
-  const openPtps = allRows.filter((row) => row.effectiveStatus === 'Promise To Pay').length;
-  const keptPtps = allRows.filter((row) => row.effectiveStatus === 'Kept').length;
-  const brokenPtps = allRows.filter((row) => row.effectiveStatus === 'Broken').length;
+  useEffect(() => {
+    let mounted = true;
 
-  const dueToday = allRows.filter(
-    (row) => row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date)
-  ).length;
+    async function loadPtps() {
+      try {
+        if (!supabase) {
+          if (mounted) {
+            setErrorMessage('Supabase is not configured.');
+            setLoading(false);
+          }
+          return;
+        }
 
-  const filteredRows = allRows.filter((row) => {
-    if (!filter) return true;
-    if (filter === 'open') return row.effectiveStatus === 'Promise To Pay';
-    if (filter === 'due-today') return row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date);
-    if (filter === 'kept') return row.effectiveStatus === 'Kept';
-    if (filter === 'broken') return row.effectiveStatus === 'Broken';
-    return true;
-  });
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
 
-  const topRows = filteredRows.slice(0, TOP_TABLE_LIMIT);
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (mounted) {
+            setErrorMessage('Unable to load user session.');
+            setLoading(false);
+          }
+          return;
+        }
+
+        const { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('id,name,role,company_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (profileError || !profileData?.id) {
+          if (mounted) {
+            setErrorMessage('Unable to load user profile.');
+            setLoading(false);
+          }
+          return;
+        }
+
+        let resolvedCompanyId = String(profileData.company_id || '').trim();
+
+        if (!resolvedCompanyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .limit(1)
+            .maybeSingle();
+
+          if (fixedCompanyError || !fixedCompany?.id) {
+            if (mounted) {
+              setErrorMessage('Unable to resolve Pezesha company.');
+              setLoading(false);
+            }
+            return;
+          }
+
+          resolvedCompanyId = String(fixedCompany.id);
+        }
+
+        const normalizedRole = normalizeRole(profileData.role);
+        const isAgent = normalizedRole === 'agent';
+        const collectorScope = String(profileData.name || '').trim();
+
+        let initialQuery = supabase
+          .from('ptps')
+          .select('*')
+          .eq('company_id', resolvedCompanyId)
+          .order('created_at', { ascending: false });
+
+        if (isAgent && collectorScope) {
+          initialQuery = initialQuery.eq('collector_name', collectorScope);
+        }
+
+        const { data: initialRows, error: initialError } = await initialQuery;
+
+        if (initialError) {
+          if (mounted) {
+            setErrorMessage(`Failed to load PTPs: ${initialError.message}`);
+            setLoading(false);
+          }
+          return;
+        }
+
+        const overdueOpenPtps = (initialRows ?? []).filter(
+          (row: any) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
+        );
+
+        for (const ptp of overdueOpenPtps) {
+          const bookedOn = toDateOnly(ptp.created_at);
+          const promisedDate = toDateOnly(ptp.promised_date);
+
+          const { data: paymentRows, error: paymentError } = await supabase
+            .from('payments')
+            .select('amount, paid_on')
+            .eq('account_id', ptp.account_id);
+
+          if (paymentError) continue;
+
+          const paymentsWithinWindow = (paymentRows ?? []).filter((payment: any) => {
+            const paidOn = toDateOnly(payment.paid_on);
+            if (!paidOn) return false;
+            return paidOn >= bookedOn && paidOn <= promisedDate;
+          });
+
+          const paidWithinWindow = paymentsWithinWindow.reduce(
+            (sum: number, payment: any) => sum + Number(payment.amount || 0),
+            0
+          );
+
+          const promisedAmount = Number(ptp.promised_amount || 0);
+          const nextStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
+          const keptAmount = nextStatus === 'Kept' ? paidWithinWindow : 0;
+          const nowIso = new Date().toISOString();
+
+          await supabase
+            .from('ptps')
+            .update({
+              status: nextStatus,
+              resolved_at: nowIso,
+              kept_amount: keptAmount,
+              resolution_source: 'auto',
+            })
+            .eq('id', ptp.id)
+            .eq('status', 'Promise To Pay');
+
+          await supabase
+            .from('accounts')
+            .update({
+              status: nextStatus,
+              last_action_date: promisedDate || toDateOnly(nowIso),
+            })
+            .eq('id', ptp.account_id);
+        }
+
+        let rowsQuery = supabase
+          .from('ptps')
+          .select('*')
+          .eq('company_id', resolvedCompanyId)
+          .order('created_at', { ascending: false });
+
+        if (isAgent && collectorScope) {
+          rowsQuery = rowsQuery.eq('collector_name', collectorScope);
+        }
+
+        const { data: ptpRows, error } = await rowsQuery;
+
+        if (error) {
+          if (mounted) {
+            setErrorMessage(`Failed to load PTPs: ${error.message}`);
+            setLoading(false);
+          }
+          return;
+        }
+
+        const accountIds = Array.from(
+          new Set((ptpRows ?? []).map((row: any) => row.account_id).filter(Boolean))
+        );
+
+        const accountsById = new Map<
+          string,
+          { cfid: string | null; debtor_name: string | null; status: string | null }
+        >();
+
+        const paymentsByAccountId = new Map<
+          string,
+          Array<{ amount: number | null; paid_on: string | null }>
+        >();
+
+        if (accountIds.length > 0) {
+          let accountsQuery = supabase
+            .from('accounts')
+            .select('id, cfid, debtor_name, status, company_id, collector_name')
+            .in('id', accountIds)
+            .eq('company_id', resolvedCompanyId);
+
+          let paymentsQuery = supabase
+            .from('payments')
+            .select('account_id, amount, paid_on, company_id, collector_name')
+            .in('account_id', accountIds)
+            .eq('company_id', resolvedCompanyId);
+
+          if (isAgent && collectorScope) {
+            accountsQuery = accountsQuery.eq('collector_name', collectorScope);
+            paymentsQuery = paymentsQuery.eq('collector_name', collectorScope);
+          }
+
+          const [{ data: accounts }, { data: payments }] = await Promise.all([
+            accountsQuery,
+            paymentsQuery,
+          ]);
+
+          for (const account of accounts ?? []) {
+            accountsById.set(String(account.id), {
+              cfid: account.cfid ?? null,
+              debtor_name: account.debtor_name ?? null,
+              status: account.status ?? null,
+            });
+          }
+
+          for (const payment of payments ?? []) {
+            const key = String(payment.account_id || '');
+            if (!key) continue;
+            const current = paymentsByAccountId.get(key) || [];
+            current.push({
+              amount: payment.amount ?? null,
+              paid_on: payment.paid_on ?? null,
+            });
+            paymentsByAccountId.set(key, current);
+          }
+        }
+
+        const normalizedRows = (ptpRows ?? []).map((row: any) => {
+          const account = row.account_id ? accountsById.get(String(row.account_id)) : null;
+          const payments = row.account_id
+            ? paymentsByAccountId.get(String(row.account_id)) || []
+            : [];
+
+          let effectiveStatus = row.status || '-';
+          let effectiveKeptAmount = Number(row.kept_amount || 0);
+
+          const needsDerivedOutcome =
+            row.status === 'Promise To Pay' && isPastDue(row.promised_date);
+
+          const needsDerivedKeptAmount =
+            row.status === 'Kept' && Number(row.kept_amount || 0) <= 0;
+
+          if (needsDerivedOutcome || needsDerivedKeptAmount) {
+            const derived = resolvePtpOutcomeFromPayments(row, payments);
+
+            if (needsDerivedOutcome) {
+              effectiveStatus = derived.effectiveStatus;
+            }
+
+            if (row.status === 'Kept' || derived.effectiveStatus === 'Kept') {
+              effectiveKeptAmount = derived.effectiveKeptAmount;
+            }
+          }
+
+          return {
+            ...row,
+            accountMeta: account ?? null,
+            effectiveStatus,
+            effectiveKeptAmount,
+          };
+        });
+
+        if (mounted) {
+          setProfile({
+            id: String(profileData.id),
+            name: profileData.name ?? null,
+            role: profileData.role ?? null,
+            company_id: resolvedCompanyId,
+          });
+          setAllRows(normalizedRows);
+          setRows(normalizedRows);
+          setLoading(false);
+        }
+      } catch (error: any) {
+        if (mounted) {
+          setErrorMessage(error?.message || 'Failed to load PTPs.');
+          setLoading(false);
+        }
+      }
+    }
+
+    loadPtps();
+
+    return () => {
+      mounted = false;
+    };
+  }, [searchParams]);
+
+  const filteredRows = useMemo(() => {
+    return allRows.filter((row) => {
+      if (!filter) return true;
+      if (filter === 'open') return row.effectiveStatus === 'Promise To Pay';
+      if (filter === 'due-today') {
+        return row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date);
+      }
+      if (filter === 'kept') return row.effectiveStatus === 'Kept';
+      if (filter === 'broken') return row.effectiveStatus === 'Broken';
+      return true;
+    });
+  }, [allRows, filter]);
+
+  const topRows = useMemo(() => filteredRows.slice(0, TOP_TABLE_LIMIT), [filteredRows]);
+
+  const openPtps = useMemo(
+    () => allRows.filter((row) => row.effectiveStatus === 'Promise To Pay').length,
+    [allRows]
+  );
+
+  const keptPtps = useMemo(
+    () => allRows.filter((row) => row.effectiveStatus === 'Kept').length,
+    [allRows]
+  );
+
+  const brokenPtps = useMemo(
+    () => allRows.filter((row) => row.effectiveStatus === 'Broken').length,
+    [allRows]
+  );
+
+  const dueToday = useMemo(
+    () =>
+      allRows.filter(
+        (row) => row.effectiveStatus === 'Promise To Pay' && isToday(row.promised_date)
+      ).length,
+    [allRows]
+  );
 
   const filterLabel =
     filter === 'open'
       ? 'Open PTPs'
       : filter === 'due-today'
-        ? 'Due Today'
-        : filter === 'kept'
-          ? 'Kept PTPs'
-          : filter === 'broken'
-            ? 'Broken PTPs'
-            : '';
+      ? 'Due Today'
+      : filter === 'kept'
+      ? 'Kept PTPs'
+      : filter === 'broken'
+      ? 'Broken PTPs'
+      : '';
 
-  const sixMonthsAgo = monthsAgoDate(6);
-  const reportRows = allRows.filter((row) => {
-    const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
-    return createdAt >= new Date(sixMonthsAgo).getTime();
-  });
+  const reportRows = useMemo(() => {
+    const sixMonthsAgo = monthsAgoDate(6);
+    return allRows.filter((row) => {
+      const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+      return createdAt >= new Date(sixMonthsAgo).getTime();
+    });
+  }, [allRows]);
 
-  const agentMap = new Map<string, AgentSummaryRow>();
+  const agentSummaries = useMemo(() => {
+    const agentMap = new Map<string, AgentSummaryRow>();
 
-  for (const row of reportRows) {
-    const collectorName = String(row.collector_name || 'Unassigned').trim() || 'Unassigned';
-    const current = agentMap.get(collectorName) || {
-      collectorName,
-      totalBooked: 0,
-      openPtps: 0,
-      keptPtps: 0,
-      brokenPtps: 0,
-      rebookedPtps: 0,
-      totalPromisedAmount: 0,
-      totalKeptAmount: 0,
-      keptRatePct: 0,
+    for (const row of reportRows) {
+      const collectorName = String(row.collector_name || 'Unassigned').trim() || 'Unassigned';
+      const current = agentMap.get(collectorName) || {
+        collectorName,
+        totalBooked: 0,
+        openPtps: 0,
+        keptPtps: 0,
+        brokenPtps: 0,
+        rebookedPtps: 0,
+        totalPromisedAmount: 0,
+        totalKeptAmount: 0,
+        keptRatePct: 0,
+      };
+
+      current.totalBooked += 1;
+      current.totalPromisedAmount += Number(row.promised_amount || 0);
+      current.totalKeptAmount += Number(row.effectiveKeptAmount || 0);
+
+      if (row.effectiveStatus === 'Promise To Pay') current.openPtps += 1;
+      if (row.effectiveStatus === 'Kept') current.keptPtps += 1;
+      if (row.effectiveStatus === 'Broken') current.brokenPtps += 1;
+      if (row.is_rebooked === true) current.rebookedPtps += 1;
+
+      agentMap.set(collectorName, current);
+    }
+
+    return Array.from(agentMap.values())
+      .map((row) => {
+        const resolved = row.keptPtps + row.brokenPtps;
+        return {
+          ...row,
+          keptRatePct: resolved > 0 ? Number(((row.keptPtps / resolved) * 100).toFixed(2)) : 0,
+        };
+      })
+      .sort((a, b) => a.collectorName.localeCompare(b.collectorName));
+  }, [reportRows]);
+
+  const teamSummary = useMemo(() => {
+    const teamKeptPtps = reportRows.filter((row) => row.effectiveStatus === 'Kept').length;
+    const teamBrokenPtps = reportRows.filter((row) => row.effectiveStatus === 'Broken').length;
+    const teamResolved = teamKeptPtps + teamBrokenPtps;
+
+    return {
+      totalBooked: reportRows.length,
+      openPtps: reportRows.filter((row) => row.effectiveStatus === 'Promise To Pay').length,
+      keptPtps: teamKeptPtps,
+      brokenPtps: teamBrokenPtps,
+      rebookedPtps: reportRows.filter((row) => row.is_rebooked === true).length,
+      totalPromisedAmount: reportRows.reduce(
+        (sum, row) => sum + Number(row.promised_amount || 0),
+        0
+      ),
+      totalKeptAmount: reportRows.reduce(
+        (sum, row) => sum + Number(row.effectiveKeptAmount || 0),
+        0
+      ),
+      keptRatePct: teamResolved > 0 ? Number(((teamKeptPtps / teamResolved) * 100).toFixed(2)) : 0,
     };
+  }, [reportRows]);
 
-    current.totalBooked += 1;
-    current.totalPromisedAmount += Number(row.promised_amount || 0);
-    current.totalKeptAmount += Number(row.effectiveKeptAmount || 0);
+  const monthlySummaries = useMemo(() => {
+    const monthlyMap = new Map<string, MonthlySummaryRow>();
 
-    if (row.effectiveStatus === 'Promise To Pay') current.openPtps += 1;
-    if (row.effectiveStatus === 'Kept') current.keptPtps += 1;
-    if (row.effectiveStatus === 'Broken') current.brokenPtps += 1;
-    if (row.is_rebooked === true) current.rebookedPtps += 1;
+    for (const row of reportRows) {
+      const key = monthKeyFromDate(row.created_at);
+      if (!key) continue;
 
-    agentMap.set(collectorName, current);
+      const current = monthlyMap.get(key) || {
+        monthKey: key,
+        monthLabel: monthLabelFromKey(key),
+        totalBooked: 0,
+        openPtps: 0,
+        keptPtps: 0,
+        brokenPtps: 0,
+        rebookedPtps: 0,
+        totalPromisedAmount: 0,
+        totalKeptAmount: 0,
+        keptRatePct: 0,
+      };
+
+      current.totalBooked += 1;
+      current.totalPromisedAmount += Number(row.promised_amount || 0);
+      current.totalKeptAmount += Number(row.effectiveKeptAmount || 0);
+
+      if (row.effectiveStatus === 'Promise To Pay') current.openPtps += 1;
+      if (row.effectiveStatus === 'Kept') current.keptPtps += 1;
+      if (row.effectiveStatus === 'Broken') current.brokenPtps += 1;
+      if (row.is_rebooked === true) current.rebookedPtps += 1;
+
+      monthlyMap.set(key, current);
+    }
+
+    return Array.from(monthlyMap.values())
+      .map((row) => {
+        const resolved = row.keptPtps + row.brokenPtps;
+        return {
+          ...row,
+          keptRatePct: resolved > 0 ? Number(((row.keptPtps / resolved) * 100).toFixed(2)) : 0,
+        };
+      })
+      .sort((a, b) => b.monthKey.localeCompare(a.monthKey));
+  }, [reportRows]);
+
+  const isAgent = normalizeRole(profile?.role) === 'agent';
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">PTPs</h1>
+        <p className="text-slate-500">Loading PTPs...</p>
+      </div>
+    );
   }
 
-  const agentSummaries = Array.from(agentMap.values())
-    .map((row) => {
-      const resolved = row.keptPtps + row.brokenPtps;
-      return {
-        ...row,
-        keptRatePct: resolved > 0 ? Number(((row.keptPtps / resolved) * 100).toFixed(2)) : 0,
-      };
-    })
-    .sort((a, b) => a.collectorName.localeCompare(b.collectorName));
-
-  const teamKeptPtps = reportRows.filter((row) => row.effectiveStatus === 'Kept').length;
-  const teamBrokenPtps = reportRows.filter((row) => row.effectiveStatus === 'Broken').length;
-  const teamResolved = teamKeptPtps + teamBrokenPtps;
-
-  const teamSummary = {
-    totalBooked: reportRows.length,
-    openPtps: reportRows.filter((row) => row.effectiveStatus === 'Promise To Pay').length,
-    keptPtps: teamKeptPtps,
-    brokenPtps: teamBrokenPtps,
-    rebookedPtps: reportRows.filter((row) => row.is_rebooked === true).length,
-    totalPromisedAmount: reportRows.reduce((sum, row) => sum + Number(row.promised_amount || 0), 0),
-    totalKeptAmount: reportRows.reduce((sum, row) => sum + Number(row.effectiveKeptAmount || 0), 0),
-    keptRatePct: teamResolved > 0 ? Number(((teamKeptPtps / teamResolved) * 100).toFixed(2)) : 0,
-  };
-
-  const monthlyMap = new Map<string, MonthlySummaryRow>();
-
-  for (const row of reportRows) {
-    const key = monthKeyFromDate(row.created_at);
-    if (!key) continue;
-
-    const current = monthlyMap.get(key) || {
-      monthKey: key,
-      monthLabel: monthLabelFromKey(key),
-      totalBooked: 0,
-      openPtps: 0,
-      keptPtps: 0,
-      brokenPtps: 0,
-      rebookedPtps: 0,
-      totalPromisedAmount: 0,
-      totalKeptAmount: 0,
-      keptRatePct: 0,
-    };
-
-    current.totalBooked += 1;
-    current.totalPromisedAmount += Number(row.promised_amount || 0);
-    current.totalKeptAmount += Number(row.effectiveKeptAmount || 0);
-
-    if (row.effectiveStatus === 'Promise To Pay') current.openPtps += 1;
-    if (row.effectiveStatus === 'Kept') current.keptPtps += 1;
-    if (row.effectiveStatus === 'Broken') current.brokenPtps += 1;
-    if (row.is_rebooked === true) current.rebookedPtps += 1;
-
-    monthlyMap.set(key, current);
+  if (errorMessage) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">PTPs</h1>
+        <p className="text-red-600">{errorMessage}</p>
+      </div>
+    );
   }
-
-  const monthlySummaries = Array.from(monthlyMap.values())
-    .map((row) => {
-      const resolved = row.keptPtps + row.brokenPtps;
-      return {
-        ...row,
-        keptRatePct: resolved > 0 ? Number(((row.keptPtps / resolved) * 100).toFixed(2)) : 0,
-      };
-    })
-    .sort((a, b) => b.monthKey.localeCompare(a.monthKey));
 
   return (
     <div className="space-y-6">
@@ -479,7 +614,9 @@ export default async function PtpsPage({
         <div>
           <h1 className="text-3xl font-semibold">PTPs</h1>
           <p className="mt-1 text-slate-500">
-            Live promise-to-pay activity linked to account workspaces.
+            {isAgent
+              ? 'Live promise-to-pay activity for your assigned portfolio.'
+              : 'Live promise-to-pay activity linked to account workspaces.'}
           </p>
           {filterLabel ? (
             <p className="mt-2 inline-flex rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700">
@@ -639,7 +776,9 @@ export default async function PtpsPage({
 
       <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">PTP Performance Report — Last 6 Months</h2>
+          <h2 className="text-lg font-semibold text-slate-900">
+            PTP Performance Report — Last 6 Months
+          </h2>
           <p className="mt-1 text-sm text-slate-500">
             Historical promise-to-pay performance for the whole team and by agent.
           </p>
@@ -680,7 +819,9 @@ export default async function PtpsPage({
           </div>
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-xs text-slate-500">Kept Rate</p>
-            <p className="mt-2 text-xl font-semibold text-slate-900">{teamSummary.keptRatePct}%</p>
+            <p className="mt-2 text-xl font-semibold text-slate-900">
+              {teamSummary.keptRatePct}%
+            </p>
           </div>
         </div>
 
@@ -719,7 +860,9 @@ export default async function PtpsPage({
         ) : null}
 
         <div className="pt-2">
-          <h3 className="text-base font-semibold text-slate-900">Monthly Trend — Last 6 Months</h3>
+          <h3 className="text-base font-semibold text-slate-900">
+            Monthly Trend — Last 6 Months
+          </h3>
           <p className="mt-1 text-sm text-slate-500">
             Monthly PTP performance trend for the whole team.
           </p>
