@@ -1,12 +1,9 @@
-import { unstable_noStore as noStore } from 'next/cache';
-import { DataTable } from '@/components/DataTable';
-import { getRequestUserProfile } from '@/lib/server-auth';
-import { supabase } from '@/lib/supabase';
-import { supabaseAdmin } from '@/lib/supabase-admin';
-import { currency, formatDate } from '@/lib/utils';
+'use client';
 
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+import { useEffect, useMemo, useState } from 'react';
+import { DataTable } from '@/components/DataTable';
+import { supabase } from '@/lib/supabase';
+import { currency, formatDate } from '@/lib/utils';
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
@@ -24,120 +21,194 @@ function isCurrentMonth(dateValue: string | null | undefined) {
   );
 }
 
-async function resolveFixedCompanyId() {
-  if (!supabase) {
-    throw new Error('Supabase client is not configured.');
-  }
+export default function PaymentsPage() {
+  const [loading, setLoading] = useState(true);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [rows, setRows] = useState<any[]>([]);
+  const [profile, setProfile] = useState<{
+    id: string;
+    name: string | null;
+    role: string | null;
+    company_id: string | null;
+  } | null>(null);
 
-  const { data: fixedCompany, error: fixedCompanyError } = await supabase
-    .from('companies')
-    .select('id,name,code')
-    .or('name.eq.Pezesha,code.eq.Pezesha')
-    .limit(1)
-    .maybeSingle();
+  useEffect(() => {
+    let mounted = true;
 
-  if (fixedCompanyError || !fixedCompany?.id) {
-    throw new Error('Unable to resolve fixed Pezesha company.');
-  }
+    async function loadPayments() {
+      try {
+        if (!supabase) {
+          if (mounted) {
+            setErrorMessage('Supabase is not configured.');
+            setLoading(false);
+          }
+          return;
+        }
 
-  return String(fixedCompany.id);
-}
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
 
-export default async function PaymentsPage() {
-  noStore();
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (mounted) {
+            setErrorMessage('Unable to load user session.');
+            setLoading(false);
+          }
+          return;
+        }
 
-  if (!supabaseAdmin) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Payments</h1>
-        <p className="text-red-600">Supabase admin is not configured.</p>
-      </div>
-    );
-  }
+        let { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('id,name,role,company_id')
+          .eq('id', userId)
+          .maybeSingle();
 
-    let profile: Awaited<ReturnType<typeof getRequestUserProfile>> | null = null;
-  let resolvedCompanyId = '';
+        if (profileError || !profileData?.id) {
+          if (mounted) {
+            setErrorMessage('Unable to load user profile.');
+            setLoading(false);
+          }
+          return;
+        }
 
-  try {
-    profile = await getRequestUserProfile();
+        let resolvedCompanyId = String(profileData.company_id || '').trim();
 
-    if ('error' in (profile as any)) {
-      throw new Error((profile as any).error || 'Unable to load user session.');
+        if (!resolvedCompanyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .limit(1)
+            .maybeSingle();
+
+          if (fixedCompanyError || !fixedCompany?.id) {
+            if (mounted) {
+              setErrorMessage('Unable to resolve Pezesha company.');
+              setLoading(false);
+            }
+            return;
+          }
+
+          resolvedCompanyId = String(fixedCompany.id);
+        }
+
+        const normalizedRole = normalizeRole(profileData.role);
+        const isAgent = normalizedRole === 'agent';
+        const collectorScope = String(profileData.name || '').trim();
+
+        let query = supabase
+          .from('payments')
+          .select('*')
+          .eq('company_id', resolvedCompanyId)
+          .order('created_at', { ascending: false });
+
+        if (isAgent && collectorScope) {
+          query = query.eq('collector_name', collectorScope);
+        }
+
+        const { data: paymentRows, error } = await query;
+
+        if (error) {
+          if (mounted) {
+            setErrorMessage(`Failed to load payments: ${error.message}`);
+            setLoading(false);
+          }
+          return;
+        }
+
+        if (mounted) {
+          setProfile({
+            id: String(profileData.id),
+            name: profileData.name ?? null,
+            role: profileData.role ?? null,
+            company_id: resolvedCompanyId,
+          });
+          setRows(paymentRows ?? []);
+          setLoading(false);
+        }
+      } catch (error: any) {
+        if (mounted) {
+          setErrorMessage(error?.message || 'Failed to load payments.');
+          setLoading(false);
+        }
+      }
     }
 
-    resolvedCompanyId =
-      String((profile as any)?.company_id || '').trim() || (await resolveFixedCompanyId());
-  } catch (error: any) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Payments</h1>
-        <p className="text-red-600">
-          {error?.message || 'Unable to load user session.'}
-        </p>
-      </div>
-    );
-  }
+    loadPayments();
 
-  const normalizedRole = normalizeRole((profile as any)?.role);
-  const isAgent = normalizedRole === 'agent';
-  const collectorScope = String((profile as any)?.name || '').trim();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
-  let query = supabaseAdmin
-    .from('payments')
-    .select('*')
-    .eq('company_id', resolvedCompanyId)
-    .order('created_at', { ascending: false });
-
-  if (isAgent && collectorScope) {
-    query = query.eq('collector_name', collectorScope);
-  }
-
-  const { data: rows, error } = await query;
-
-  if (error) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Payments</h1>
-        <p className="text-red-600">Failed to load payments: {error.message}</p>
-      </div>
-    );
-  }
-
-  const allTimeCollected = (rows ?? []).reduce(
-    (sum, row) => sum + Number(row.amount || 0),
-    0
+  const allTimeCollected = useMemo(
+    () =>
+      (rows ?? []).reduce(
+        (sum, row) => sum + Number(row.amount || 0),
+        0
+      ),
+    [rows]
   );
 
-  const collectedThisMonth = (rows ?? [])
-    .filter((row) => isCurrentMonth(row.paid_on))
-    .reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const collectedThisMonth = useMemo(
+    () =>
+      (rows ?? [])
+        .filter((row) => isCurrentMonth(row.paid_on))
+        .reduce((sum, row) => sum + Number(row.amount || 0), 0),
+    [rows]
+  );
 
   const latestPayment = rows?.[0] ?? null;
 
-  const productSummary = Array.from(
-    new Set((rows ?? []).map((item) => item.product).filter(Boolean))
-  ).map((product) => {
-    const productPayments = (rows ?? []).filter((item) => item.product === product);
+  const productSummary = useMemo(
+    () =>
+      Array.from(new Set((rows ?? []).map((item) => item.product).filter(Boolean))).map((product) => {
+        const productPayments = (rows ?? []).filter((item) => item.product === product);
 
-    return {
-      product,
-      total: productPayments.reduce(
-        (sum, item) => sum + Number(item.amount || 0),
-        0
-      ),
-      monthly: productPayments
-        .filter((item) => isCurrentMonth(item.paid_on))
-        .reduce((sum, item) => sum + Number(item.amount || 0), 0),
-      count: productPayments.length,
-    };
-  });
+        return {
+          product,
+          total: productPayments.reduce(
+            (sum, item) => sum + Number(item.amount || 0),
+            0
+          ),
+          monthly: productPayments
+            .filter((item) => isCurrentMonth(item.paid_on))
+            .reduce((sum, item) => sum + Number(item.amount || 0), 0),
+          count: productPayments.length,
+        };
+      }),
+    [rows]
+  );
+
+  const isAgent = normalizeRole(profile?.role) === 'agent';
+
+  if (loading) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Payments</h1>
+        <p className="text-slate-500">Loading payments...</p>
+      </div>
+    );
+  }
+
+  if (errorMessage) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Payments</h1>
+        <p className="text-red-600">{errorMessage}</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-3xl font-semibold">Payments</h1>
         <p className="mt-1 text-slate-500">
-          Live payment log with payment-made date and system posted date visibility.
+          {isAgent
+            ? 'Live payment log for your assigned portfolio.'
+            : 'Live payment log with payment-made date and system posted date visibility.'}
         </p>
       </div>
 
