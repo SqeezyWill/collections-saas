@@ -6,6 +6,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { Topbar } from '@/components/Topbar';
 import { supabase } from '@/lib/supabase';
+const FIXED_COMPANY_NAME = 'Pezesha';
 
 type UserProfile = {
   id: string;
@@ -13,6 +14,7 @@ type UserProfile = {
   email: string | null;
   role: string | null;
   company_id: string | null;
+  company_name?: string | null;
 };
 
 type AttentionCounts = {
@@ -231,7 +233,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           return;
         }
 
-        const userProfile = profileData as UserProfile;
+        const userProfile = {
+  ...(profileData as UserProfile),
+  company_name: FIXED_COMPANY_NAME,
+};
         const role = normalizeRole(userProfile.role);
 
         if (!isAllowedRoute(role, pathname)) {
@@ -243,13 +248,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         }
 
         if (isMounted) {
-          setProfile(userProfile);
-          setCheckingAuth(false);
-        }
+  setProfile(userProfile);
+  setCheckingAuth(false);
+}
 
-        if (userProfile.company_id) {
-          await loadAttention(userProfile);
-        }
+if (userProfile.company_id) {
+  await loadAttention(userProfile);
+} else {
+  setAttention({
+    dueTodayPtps: 0,
+    brokenPtps: 0,
+    overdueCallbacks: 0,
+    staleAccounts: 0,
+  });
+}
       } catch (err) {
         console.error('Dashboard layout unexpected auth error:', err);
         if (isMounted) {
@@ -344,7 +356,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
 
-        {profile?.company_id ? (
+        {profile ? (
           <div className="border-b border-slate-200 bg-white px-6 py-3">
             <div className="flex flex-wrap items-center gap-3">
               <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">

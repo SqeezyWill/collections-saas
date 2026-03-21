@@ -391,16 +391,31 @@ export default function AccountsPage() {
           throw new Error(profileError.message);
         }
 
-        if (!profileData?.company_id) {
-          throw new Error('Your user profile has no company_id.');
-        }
+        let resolvedCompanyId = String(profileData?.company_id || '').trim();
 
-        if (!mounted) return;
-        setProfile(profileData as UserProfile);
+if (!resolvedCompanyId) {
+  const { data: fixedCompany, error: fixedCompanyError } = await supabase
+    .from('companies')
+    .select('id,name,code')
+    .or('name.eq.Pezesha,code.eq.Pezesha')
+    .limit(1)
+    .maybeSingle();
 
-        const companyId = String(profileData.company_id);
-        const profileName = String(profileData.name || '').trim();
-        const profileRole = normalizeRole(profileData.role);
+  if (fixedCompanyError || !fixedCompany?.id) {
+    throw new Error('Unable to resolve fixed Pezesha company.');
+  }
+
+  resolvedCompanyId = String(fixedCompany.id);
+}
+
+setProfile({
+  ...(profileData as UserProfile),
+  company_id: resolvedCompanyId,
+});
+
+const companyId = resolvedCompanyId;
+        const profileName = String(profileData?.name || '').trim();
+        const profileRole = normalizeRole(profileData?.role);
         const restrictToCollector = profileRole === 'agent' ? profileName : '';
 
         const today = todayDateString();

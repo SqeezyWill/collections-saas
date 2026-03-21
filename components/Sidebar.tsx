@@ -22,6 +22,7 @@ import { supabase } from '@/lib/supabase';
 type UserProfile = {
   id: string;
   role: string | null;
+  company_id?: string | null;
 };
 
 type NavLink = {
@@ -110,14 +111,20 @@ export function Sidebar() {
       if (!supabase) return;
 
       const { data: sessionData } = await supabase.auth.getSession();
-      const userId = sessionData.session?.user?.id;
+      const sessionUser = sessionData.session?.user;
 
-      if (!userId) return;
+      if (!sessionUser?.id) return;
+
+      const metadataRole = String(sessionUser.user_metadata?.role || '').trim();
+      if (metadataRole) {
+        setRole(metadataRole);
+        return;
+      }
 
       const { data } = await supabase
         .from('user_profiles')
         .select('id,role')
-        .eq('id', userId)
+        .eq('id', sessionUser.id)
         .maybeSingle();
 
       const profile = data as UserProfile | null;

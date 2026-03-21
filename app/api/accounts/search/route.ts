@@ -10,6 +10,8 @@ const ALLOWED_FIELDS = new Set([
   'customer_id',
 ]);
 
+const FIXED_COMPANY_NAME = 'Pezesha';
+
 function buildSearchClause(field: string, safeSearch: string) {
   switch (field) {
     case 'cfid':
@@ -32,6 +34,36 @@ function buildSearchClause(field: string, safeSearch: string) {
     default:
       return `cfid.ilike.%${safeSearch}%`;
   }
+}
+
+async function resolveFixedCompanyId() {
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin not configured.');
+  }
+
+  const lowered = FIXED_COMPANY_NAME.toLowerCase();
+
+  const { data: companies, error } = await supabaseAdmin
+    .from('companies')
+    .select('id,name,code');
+
+  if (error) {
+    throw new Error(error.message);
+  }
+
+  const match =
+    (companies || []).find(
+      (company: any) => String(company.name || '').trim().toLowerCase() === lowered
+    ) ||
+    (companies || []).find(
+      (company: any) => String(company.code || '').trim().toLowerCase() === lowered
+    );
+
+  if (!match?.id) {
+    throw new Error(`Fixed company "${FIXED_COMPANY_NAME}" could not be resolved.`);
+  }
+
+  return String(match.id);
 }
 
 export async function GET(req: NextRequest) {
@@ -61,9 +93,11 @@ export async function GET(req: NextRequest) {
     .eq('id', user.id)
     .maybeSingle();
 
-  if (profileError || !profile?.company_id) {
-    return NextResponse.json({ error: 'User profile or company not found.' }, { status: 403 });
+  if (profileError || !profile) {
+    return NextResponse.json({ error: 'User profile not found.' }, { status: 403 });
   }
+
+  const companyId = profile.company_id || (await resolveFixedCompanyId());
 
   const { searchParams } = new URL(req.url);
   const q = (searchParams.get('q') || '').trim();
@@ -80,12 +114,21 @@ export async function GET(req: NextRequest) {
   const safeSearch = q.replace(/,/g, '').replace(/[%_]/g, '');
   const orClause = buildSearchClause(field, safeSearch);
 
-  const { data, error } = await supabaseAdmin
+  let query = supabaseAdmin
     .from('accounts')
     .select('id, cfid, debtor_name, account_no, primary_phone, contacts')
-    .eq('company_id', profile.company_id)
+    .eq('company_id', companyId)
     .or(orClause)
     .limit(8);
+
+  const role = String(profile.role || '').trim().toLowerCase();
+  const collectorScope = String(user.user_metadata?.name || '').trim();
+
+  if (role === 'agent' && collectorScope) {
+    query = query.eq('collector_name', collectorScope);
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
