@@ -1,6 +1,7 @@
 import { unstable_noStore as noStore } from 'next/cache';
 import { DataTable } from '@/components/DataTable';
 import { getRequestUserProfile } from '@/lib/server-auth';
+import { supabase } from '@/lib/supabase';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { currency, formatDate } from '@/lib/utils';
 
@@ -23,6 +24,25 @@ function isCurrentMonth(dateValue: string | null | undefined) {
   );
 }
 
+async function resolveFixedCompanyId() {
+  if (!supabase) {
+    throw new Error('Supabase client is not configured.');
+  }
+
+  const { data: fixedCompany, error: fixedCompanyError } = await supabase
+    .from('companies')
+    .select('id,name,code')
+    .or('name.eq.Pezesha,code.eq.Pezesha')
+    .limit(1)
+    .maybeSingle();
+
+  if (fixedCompanyError || !fixedCompany?.id) {
+    throw new Error('Unable to resolve fixed Pezesha company.');
+  }
+
+  return String(fixedCompany.id);
+}
+
 export default async function PaymentsPage() {
   noStore();
 
@@ -35,10 +55,18 @@ export default async function PaymentsPage() {
     );
   }
 
-  let profile: Awaited<ReturnType<typeof getRequestUserProfile>> | null = null;
+    let profile: Awaited<ReturnType<typeof getRequestUserProfile>> | null = null;
+  let resolvedCompanyId = '';
 
   try {
     profile = await getRequestUserProfile();
+
+    if ('error' in (profile as any)) {
+      throw new Error((profile as any).error || 'Unable to load user session.');
+    }
+
+    resolvedCompanyId =
+      String((profile as any)?.company_id || '').trim() || (await resolveFixedCompanyId());
   } catch (error: any) {
     return (
       <div className="space-y-4">
@@ -50,23 +78,14 @@ export default async function PaymentsPage() {
     );
   }
 
-  if (!profile?.company_id) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Payments</h1>
-        <p className="text-red-600">Your user profile has no company_id.</p>
-      </div>
-    );
-  }
-
-  const normalizedRole = normalizeRole(profile.role);
+  const normalizedRole = normalizeRole((profile as any)?.role);
   const isAgent = normalizedRole === 'agent';
-  const collectorScope = String(profile.name || '').trim();
+  const collectorScope = String((profile as any)?.name || '').trim();
 
   let query = supabaseAdmin
     .from('payments')
     .select('*')
-    .eq('company_id', profile.company_id)
+    .eq('company_id', resolvedCompanyId)
     .order('created_at', { ascending: false });
 
   if (isAgent && collectorScope) {

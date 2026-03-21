@@ -2,12 +2,12 @@
 
 import Link from 'next/link';
 import Papa from 'papaparse';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
 type ParsedRow = Record<string, string>;
 
-const COMPANY_ID = 'b4f07164-1706-4904-a304-b38efb88ebf3';
+const FIXED_COMPANY_NAME = 'Pezesha';
 
 const EXPECTED_HEADERS = [
   'CFID',
@@ -37,6 +37,80 @@ export default function UploadPaymentsPage() {
   const [errorMessage, setErrorMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [companyId, setCompanyId] = useState('');
+  const [profileLoading, setProfileLoading] = useState(true);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadCompanyContext() {
+      try {
+        if (!supabase) {
+          if (mounted) {
+            setErrorMessage('Supabase is not configured.');
+            setProfileLoading(false);
+          }
+          return;
+        }
+
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (mounted) {
+            setErrorMessage('Unable to load user session.');
+            setProfileLoading(false);
+          }
+          return;
+        }
+
+        const { data: profileData } = await supabase
+          .from('user_profiles')
+          .select('id,company_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        let resolvedCompanyId = String(profileData?.company_id || '').trim();
+
+        if (!resolvedCompanyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or(`name.eq.${FIXED_COMPANY_NAME},code.eq.${FIXED_COMPANY_NAME}`)
+            .limit(1)
+            .maybeSingle();
+
+          if (fixedCompanyError || !fixedCompany?.id) {
+            if (mounted) {
+              setErrorMessage('Unable to resolve Pezesha company.');
+              setProfileLoading(false);
+            }
+            return;
+          }
+
+          resolvedCompanyId = String(fixedCompany.id);
+        }
+
+        if (mounted) {
+          setCompanyId(resolvedCompanyId);
+          setProfileLoading(false);
+        }
+      } catch (error: any) {
+        if (mounted) {
+          setErrorMessage(error?.message || 'Unable to load company context.');
+          setProfileLoading(false);
+        }
+      }
+    }
+
+    loadCompanyContext();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   async function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -94,6 +168,11 @@ export default function UploadPaymentsPage() {
       return;
     }
 
+    if (!companyId) {
+      setErrorMessage('Unable to resolve company context.');
+      return;
+    }
+
     setImporting(true);
 
     const cfids = Array.from(
@@ -109,14 +188,14 @@ export default function UploadPaymentsPage() {
         ? supabase
             .from('accounts')
             .select('id, cfid, account_no')
-            .eq('company_id', COMPANY_ID)
+            .eq('company_id', companyId)
             .in('cfid', cfids)
         : Promise.resolve({ data: [], error: null }),
       accountNos.length
         ? supabase
             .from('accounts')
             .select('id, cfid, account_no')
-            .eq('company_id', COMPANY_ID)
+            .eq('company_id', companyId)
             .in('account_no', accountNos)
         : Promise.resolve({ data: [], error: null }),
     ]);
@@ -140,7 +219,7 @@ export default function UploadPaymentsPage() {
       const accountNo = String(row['ACCOUNT NO.'] || '').trim();
 
       return {
-        company_id: COMPANY_ID,
+        company_id: companyId,
         account_id: accountMapByCfid.get(cfid) || accountMapByAccountNo.get(accountNo) || null,
         cfid: cfid || null,
         account_no_ref: accountNo || null,
@@ -201,6 +280,7 @@ export default function UploadPaymentsPage() {
         </div>
 
         {loading ? <p className="text-sm text-slate-500">Preparing preview...</p> : null}
+        {profileLoading ? <p className="text-sm text-slate-500">Loading company context...</p> : null}
         {errorMessage ? <p className="text-sm text-red-600">{errorMessage}</p> : null}
         {message ? <p className="text-sm text-emerald-700">{message}</p> : null}
 
