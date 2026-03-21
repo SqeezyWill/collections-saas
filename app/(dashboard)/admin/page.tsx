@@ -54,6 +54,16 @@ type EditCompanyState = {
   mode: 'edit' | 'branding';
 };
 
+type AuthProfile = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  company_id: string | null;
+  role: string | null;
+};
+
+const SINGLE_COMPANY_NAME = 'Pezesha';
+
 function roleBadgeClass(role: string) {
   const normalized = String(role || '').toLowerCase();
   if (normalized.includes('super')) return 'bg-purple-100 text-purple-700';
@@ -78,6 +88,10 @@ const BRAND_PRESET_COLORS = [
   '#111827',
 ];
 
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
+
 export default function AdminPage() {
   const usersTableRef = useRef<HTMLDivElement | null>(null);
 
@@ -92,6 +106,8 @@ export default function AdminPage() {
   const [dbUsers, setDbUsers] = useState<any[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(true);
   const [usersError, setUsersError] = useState<string | null>(null);
+
+  const [currentProfile, setCurrentProfile] = useState<AuthProfile | null>(null);
 
   const [isAddCompanyOpen, setIsAddCompanyOpen] = useState(false);
   const [addCompanySaving, setAddCompanySaving] = useState(false);
@@ -197,9 +213,20 @@ export default function AdminPage() {
     return false;
   }
 
+  function getSingleCompany() {
+    return (
+      dbCompanies.find((c) => String(c.name || '').trim().toLowerCase() === SINGLE_COMPANY_NAME.toLowerCase()) ||
+      dbCompanies.find((c) => String(c.code || '').trim().toLowerCase() === SINGLE_COMPANY_NAME.toLowerCase()) ||
+      dbCompanies[0] ||
+      null
+    );
+  }
+
   function getCompanyName(companyId: string) {
+    const fixedCompany = getSingleCompany();
+    if (fixedCompany) return fixedCompany.name;
     const company = dbCompanies.find((c) => matchesCompany(companyId, c));
-    return company?.name || companyId || '-';
+    return company?.name || SINGLE_COMPANY_NAME;
   }
 
   async function readJsonSafe(res: Response) {
@@ -242,15 +269,23 @@ export default function AdminPage() {
 
       setDbCompanies(list);
 
+      const singleCompany = (
+        list.find((c) => String(c.name || '').trim().toLowerCase() === SINGLE_COMPANY_NAME.toLowerCase()) ||
+        list[0] ||
+        null
+      );
+
       setAddUserForm((prev) => ({
         ...prev,
-        companyId: prev.companyId || list[0]?.id || '',
+        companyId: singleCompany?.id || '',
       }));
 
       setEditState((prev) => ({
         ...prev,
-        companyId: prev.companyId || list[0]?.id || '',
+        companyId: singleCompany?.id || '',
       }));
+
+      setCompanyFilter('');
     } catch (e: any) {
       setCompaniesError(e?.message || 'Failed to load companies');
     } finally {
@@ -285,10 +320,44 @@ export default function AdminPage() {
     }
   }
 
+  async function refreshCurrentProfile() {
+    if (!supabase) return;
+
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      const userId = session?.user?.id;
+      if (!userId) {
+        setCurrentProfile(null);
+        return;
+      }
+
+      const { data, error } = await supabase
+        .from('user_profiles')
+        .select('id,name,email,company_id,role')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (error || !data) {
+        setCurrentProfile(null);
+        return;
+      }
+
+      setCurrentProfile(data as AuthProfile);
+    } catch {
+      setCurrentProfile(null);
+    }
+  }
+
   useEffect(() => {
     refreshCompanies();
     refreshUsers();
+    refreshCurrentProfile();
   }, []);
+
+  const canCreateUsers = normalizeRole(currentProfile?.role) === 'super_admin';
 
   const companyRows = useMemo(() => {
     return dbCompanies.map((company) => {
@@ -312,24 +381,6 @@ export default function AdminPage() {
 
   const filteredUsers = useMemo(() => {
     return dbUsers.filter((user) => {
-      const userCompanyId = String(user.companyId || '');
-
-      const matchesCompanyFilter =
-        !companyFilter ||
-        userCompanyId.toLowerCase() === String(companyFilter).toLowerCase() ||
-        Boolean(
-          dbCompanies.find(
-            (c) => String(c.id) === String(companyFilter) && matchesCompany(user.companyId, c)
-          )
-        ) ||
-        Boolean(
-          dbCompanies.find(
-            (c) =>
-              String(c.code || '').toLowerCase() === String(companyFilter).toLowerCase() &&
-              matchesCompany(user.companyId, c)
-          )
-        );
-
       const matchesRole =
         !roleFilter || String(user.role).toLowerCase() === String(roleFilter).toLowerCase();
 
@@ -339,13 +390,13 @@ export default function AdminPage() {
         String(user.name || '').toLowerCase().includes(safeSearch) ||
         String(user.email || '').toLowerCase().includes(safeSearch) ||
         String(user.role || '').toLowerCase().includes(safeSearch) ||
-        String(getCompanyName(user.companyId) || '').toLowerCase().includes(safeSearch);
+        SINGLE_COMPANY_NAME.toLowerCase().includes(safeSearch);
 
-      return matchesCompanyFilter && matchesRole && matchesSearch;
+      return matchesRole && matchesSearch;
     });
-  }, [companyFilter, roleFilter, search, dbUsers, dbCompanies]);
+  }, [roleFilter, search, dbUsers]);
 
-  const totalCompanies = companyRows.length;
+  const totalCompanies = 1;
   const totalUsers = dbUsers.length;
   const totalAdmins = dbUsers.filter((u) => String(u.role).toLowerCase().includes('admin')).length;
   const totalAgents = dbUsers.filter((u) => String(u.role).toLowerCase().includes('agent')).length;
@@ -497,7 +548,7 @@ export default function AdminPage() {
 
     setSearch('');
     setRoleFilter('');
-    setCompanyFilter(id);
+    setCompanyFilter('');
 
     requestAnimationFrame(() => {
       usersTableRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -508,10 +559,12 @@ export default function AdminPage() {
   }
 
   function openAddUser() {
+    if (!canCreateUsers) return;
+
     setAddUserSuccess(null);
     setAddUserError(null);
 
-    const firstCompanyId = dbCompanies[0]?.id || '';
+    const singleCompanyId = getSingleCompany()?.id || '';
 
     setAddUserForm((prev) => ({
       ...prev,
@@ -519,7 +572,7 @@ export default function AdminPage() {
       email: '',
       password: defaultUserPassword(),
       role: prev.role || 'agent',
-      companyId: prev.companyId || firstCompanyId,
+      companyId: singleCompanyId,
     }));
 
     setIsAddUserOpen(true);
@@ -535,16 +588,23 @@ export default function AdminPage() {
     setAddUserError(null);
     setAddUserSuccess(null);
 
+    const singleCompanyId = getSingleCompany()?.id || addUserForm.companyId;
+
     const payload = {
       name: addUserForm.name.trim(),
       email: addUserForm.email.trim().toLowerCase(),
       role: addUserForm.role,
-      companyId: addUserForm.companyId,
+      companyId: singleCompanyId,
       password: addUserForm.password,
     };
 
+    if (!canCreateUsers) {
+      setAddUserError('Only super_admin can create users.');
+      return;
+    }
+
     if (!payload.name || !payload.email || !payload.role || !payload.companyId || !payload.password) {
-      setAddUserError('Please fill name, email, role, company, and a temporary password.');
+      setAddUserError('Please fill name, email, role, and a temporary password.');
       return;
     }
 
@@ -643,15 +703,14 @@ export default function AdminPage() {
     setEditSuccess(null);
     setEditError(null);
 
-    const matchedCompany =
-      dbCompanies.find((company) => matchesCompany(user.companyId, company)) || null;
+    const singleCompanyId = getSingleCompany()?.id || '';
 
     setEditState({
       userId: String(user.id || ''),
       name: String(user.name || ''),
       email: String(user.email || ''),
       role: String(user.role || 'agent'),
-      companyId: String(matchedCompany?.id || user.companyId || dbCompanies[0]?.id || ''),
+      companyId: String(singleCompanyId || user.companyId || ''),
     });
 
     setIsEditOpen(true);
@@ -670,11 +729,11 @@ export default function AdminPage() {
     const payload = {
       name: editState.name.trim(),
       role: editState.role,
-      companyId: editState.companyId,
+      companyId: getSingleCompany()?.id || editState.companyId,
     };
 
     if (!editState.userId || !payload.name || !payload.role || !payload.companyId) {
-      setEditError('Please fill name, role, and company.');
+      setEditError('Please fill name and role.');
       return;
     }
 
@@ -994,7 +1053,7 @@ export default function AdminPage() {
                   />
                 </div>
 
-                <div>
+                <div className="md:col-span-2">
                   <label className="mb-1 block text-sm font-medium text-slate-700">Role</label>
                   <select
                     value={editState.role}
@@ -1004,21 +1063,6 @@ export default function AdminPage() {
                     <option value="agent">agent</option>
                     <option value="admin">admin</option>
                     <option value="super_admin">super_admin</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-sm font-medium text-slate-700">Company</label>
-                  <select
-                    value={editState.companyId}
-                    onChange={(e) => setEditState((p) => ({ ...p, companyId: e.target.value }))}
-                    className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                  >
-                    {dbCompanies.map((company) => (
-                      <option key={company.id} value={company.id}>
-                        {company.name} ({company.code})
-                      </option>
-                    ))}
                   </select>
                 </div>
               </div>
@@ -1203,7 +1247,7 @@ export default function AdminPage() {
                   />
                 </div>
 
-                <div>
+                <div className="md:col-span-2">
                   <label className="mb-1 block text-sm font-medium text-slate-700">Role</label>
                   <select
                     value={addUserForm.role}
@@ -1216,19 +1260,13 @@ export default function AdminPage() {
                   </select>
                 </div>
 
-                <div>
+                <div className="md:col-span-2">
                   <label className="mb-1 block text-sm font-medium text-slate-700">Company</label>
-                  <select
-                    value={addUserForm.companyId}
-                    onChange={(e) => setAddUserForm((p) => ({ ...p, companyId: e.target.value }))}
-                    className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                  >
-                    {dbCompanies.map((company) => (
-                      <option key={company.id} value={company.id}>
-                        {company.name} ({company.code})
-                      </option>
-                    ))}
-                  </select>
+                  <input
+                    value={SINGLE_COMPANY_NAME}
+                    readOnly
+                    className="w-full cursor-not-allowed rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 outline-none"
+                  />
                 </div>
 
                 <div className="md:col-span-2">
@@ -1278,25 +1316,20 @@ export default function AdminPage() {
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold">Admin & Tenant Setup</h1>
-          <p className="mt-1 text-slate-500">Control tenants, branding, users, and role setup from one workspace.</p>
+          <h1 className="text-3xl font-semibold">Admin Setup</h1>
+          <p className="mt-1 text-slate-500">Manage users and roles for the Pezesha workspace.</p>
         </div>
 
         <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            onClick={openAddCompany}
-            className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Add Company
-          </button>
-          <button
-            type="button"
-            onClick={openAddUser}
-            className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-          >
-            Add User
-          </button>
+          {canCreateUsers ? (
+            <button
+              type="button"
+              onClick={openAddUser}
+              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Add User
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -1322,8 +1355,8 @@ export default function AdminPage() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-sm text-slate-500">Total Companies</p>
-          <p className="mt-2 text-3xl font-semibold text-slate-900">{totalCompanies}</p>
+          <p className="text-sm text-slate-500">Active Company</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-900">{SINGLE_COMPANY_NAME}</p>
         </div>
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <p className="text-sm text-slate-500">Total Users</p>
@@ -1339,119 +1372,21 @@ export default function AdminPage() {
         </div>
       </div>
 
-      <div>
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <h2 className="section-title">Companies</h2>
-          <p className="text-sm text-slate-500">Tenant overview and setup status</p>
-        </div>
-
-        {loadingCompanies ? <p className="mb-3 text-sm text-slate-500">Loading companies…</p> : null}
-
-        <div className="grid gap-4 xl:grid-cols-2">
-          {companyRows.map((company) => (
-            <div key={company.id} className="relative rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <h3 className="text-lg font-semibold text-slate-900">{company.name}</h3>
-                  <p className="mt-1 text-sm text-slate-500">Code: {company.code}</p>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span
-                    className="inline-block h-5 w-5 rounded-full border border-slate-200"
-                    style={{ backgroundColor: company.themeColor }}
-                    aria-label={`Theme color ${company.themeColor}`}
-                    title={company.themeColor}
-                  />
-                  <span className="text-sm font-medium text-slate-600">{company.themeColor}</span>
-                </div>
-              </div>
-
-              <div className="mt-5 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Users</p>
-                  <p className="mt-1 text-lg font-semibold text-slate-900">{(company as any).usersCount}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Super Admins</p>
-                  <p className="mt-1 text-lg font-semibold text-slate-900">{(company as any).superAdmins}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Admins</p>
-                  <p className="mt-1 text-lg font-semibold text-slate-900">{(company as any).admins}</p>
-                </div>
-                <div>
-                  <p className="text-xs uppercase tracking-wide text-slate-400">Agents</p>
-                  <p className="mt-1 text-lg font-semibold text-slate-900">{(company as any).agents}</p>
-                </div>
-              </div>
-
-              <div className="relative z-20 mt-5 flex flex-wrap gap-3">
-                <button
-                  type="button"
-                  onClick={() => openEditCompany(company, 'edit')}
-                  className="pointer-events-auto rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Edit Tenant
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => openEditCompany(company, 'branding')}
-                  className="pointer-events-auto rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Branding Setup
-                </button>
-
-                <button
-                  type="button"
-                  className="pointer-events-auto relative z-30 rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                  onPointerDown={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    manageUsersForCompany(company);
-                  }}
-                  onClickCapture={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                  }}
-                >
-                  Manage Users
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
       <div ref={usersTableRef} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <h2 className="section-title">Users & Roles</h2>
-            <p className="mt-1 text-sm text-slate-500">Search and review role assignments across tenants.</p>
+            <p className="mt-1 text-sm text-slate-500">Search and review role assignments for Pezesha.</p>
           </div>
 
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-2">
             <input
               type="text"
               value={search}
               onChange={(event) => setSearch(event.target.value)}
-              placeholder="Search name, email, role, company..."
+              placeholder="Search name, email, role..."
               className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
             />
-
-            <select
-              value={companyFilter}
-              onChange={(event) => setCompanyFilter(event.target.value)}
-              className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-            >
-              <option value="">All Companies</option>
-              {dbCompanies.map((company) => (
-                <option key={company.id} value={company.id}>
-                  {company.name}
-                </option>
-              ))}
-            </select>
 
             <select
               value={roleFilter}
@@ -1483,7 +1418,7 @@ export default function AdminPage() {
                   {user.role}
                 </span>
               </td>
-              <td className="px-4 py-3 text-slate-700">{getCompanyName(user.companyId)}</td>
+              <td className="px-4 py-3 text-slate-700">{SINGLE_COMPANY_NAME}</td>
               <td className="px-4 py-3">
                 <div className="flex flex-wrap gap-2">
                   <button

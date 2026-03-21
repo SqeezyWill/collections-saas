@@ -1,21 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdminRole } from '@/lib/server-auth';
+import { requireSuperAdminRole } from '@/lib/server-auth';
 
 const PROFILE_TABLE = 'user_profiles';
 const COMPANIES_TABLE = 'companies';
+const FIXED_COMPANY_NAME = 'Pezesha';
 
-async function resolveCompanyId(rawCompanyInput: unknown) {
-  const input = String(rawCompanyInput || '').trim();
-  if (!input) {
-    throw new Error('Company is required.');
-  }
-
+async function resolveFixedCompanyId() {
   if (!supabaseAdmin) {
     throw new Error('Supabase admin is not configured.');
   }
 
-  const lowered = input.toLowerCase();
+  const lowered = FIXED_COMPANY_NAME.toLowerCase();
 
   const { data: companies, error } = await supabaseAdmin
     .from(COMPANIES_TABLE)
@@ -26,14 +22,15 @@ async function resolveCompanyId(rawCompanyInput: unknown) {
   }
 
   const match =
-    (companies || []).find((company: any) => String(company.id || '').toLowerCase() === lowered) ||
-    (companies || []).find((company: any) => String(company.code || '').toLowerCase() === lowered) ||
     (companies || []).find(
       (company: any) => String(company.name || '').trim().toLowerCase() === lowered
+    ) ||
+    (companies || []).find(
+      (company: any) => String(company.code || '').trim().toLowerCase() === lowered
     );
 
   if (!match?.id) {
-    throw new Error('Selected company could not be resolved.');
+    throw new Error(`Fixed company "${FIXED_COMPANY_NAME}" could not be resolved.`);
   }
 
   return String(match.id);
@@ -55,7 +52,7 @@ async function getCompanyBranding(companyId: string) {
   }
 
   return {
-    company_name: (data as any)?.name ?? null,
+    company_name: (data as any)?.name ?? FIXED_COMPANY_NAME,
     company_logo_url: (data as any)?.logo_url || (data as any)?.logoUrl || null,
   };
 }
@@ -69,7 +66,7 @@ export async function PATCH(
       return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
     }
 
-    const auth = await requireAdminRole(req);
+    const auth = await requireSuperAdminRole(req);
     if ('error' in auth) {
       return NextResponse.json(
         { error: auth.error || 'Unauthorized' },
@@ -90,15 +87,7 @@ export async function PATCH(
       );
     }
 
-    let companyId = await resolveCompanyId(body?.companyId);
-
-    if (auth.user.role === 'admin') {
-      if (!auth.user.companyId) {
-        return NextResponse.json({ error: 'Admin user has no company scope.' }, { status: 400 });
-      }
-      companyId = auth.user.companyId;
-    }
-
+    const companyId = await resolveFixedCompanyId();
     const branding = await getCompanyBranding(companyId);
 
     const { data: existingProfile, error: existingError } = await supabaseAdmin
@@ -113,14 +102,6 @@ export async function PATCH(
 
     if (!existingProfile) {
       return NextResponse.json({ error: 'User not found.' }, { status: 404 });
-    }
-
-    if (
-      auth.user.role === 'admin' &&
-      auth.user.companyId &&
-      String(existingProfile.company_id || '') !== String(auth.user.companyId)
-    ) {
-      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     }
 
     const update: Record<string, any> = {

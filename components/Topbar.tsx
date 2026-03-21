@@ -66,6 +66,8 @@ const QUICK_VIEWS = [
 ];
 
 const TOGGLE_EVENT = 'app:toggle-sidebar';
+const FIXED_COMPANY_NAME = 'Pezesha';
+const FIXED_COMPANY_LOGO_URL = '/pezesha-logo.png';
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
@@ -142,8 +144,8 @@ export function Topbar() {
   const isAgent = normalizedRole === 'agent';
   const collectorScope = String(profile?.name || '').trim();
 
-  const companyDisplayName = profile?.company_name?.trim() || 'Company Workspace';
-  const companyLogoUrl = profile?.company_logo_url?.trim() || '';
+  const companyDisplayName = FIXED_COMPANY_NAME;
+  const companyLogoUrl = FIXED_COMPANY_LOGO_URL;
 
   function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -185,31 +187,10 @@ export function Topbar() {
         return;
       }
 
-      let companyName = (userProfile as any).company_name ?? null;
-      let companyLogoUrl = (userProfile as any).company_logo_url ?? null;
-
-      const needsCompanyFallback = !companyName || !companyLogoUrl;
-
-      if (needsCompanyFallback && userProfile.company_id) {
-        const { data: companyData, error: companyError } = await client
-          .from('companies')
-          .select('id,name,code,logo_url,logoUrl')
-          .eq('id', userProfile.company_id)
-          .maybeSingle();
-
-        if (companyError) {
-          console.error('Failed to load company in Topbar:', companyError);
-        } else if (companyData) {
-          const company = companyData as CompanyRow;
-          if (!companyName) companyName = company.name ?? null;
-          if (!companyLogoUrl) companyLogoUrl = company.logo_url || company.logoUrl || null;
-        }
-      }
-
       setProfile({
         ...(userProfile as any),
-        company_name: companyName,
-        company_logo_url: companyLogoUrl,
+        company_name: FIXED_COMPANY_NAME,
+        company_logo_url: FIXED_COMPANY_LOGO_URL,
       });
     }
 

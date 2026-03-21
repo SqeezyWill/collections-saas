@@ -1,21 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireAdminRole } from '@/lib/server-auth';
+import { requireSuperAdminRole } from '@/lib/server-auth';
 
 const PROFILE_TABLE = 'user_profiles';
 const COMPANIES_TABLE = 'companies';
+const FIXED_COMPANY_NAME = 'Pezesha';
 
-async function resolveCompanyId(rawCompanyInput: unknown) {
-  const input = String(rawCompanyInput || '').trim();
-  if (!input) {
-    throw new Error('Company is required.');
-  }
-
+async function resolveFixedCompanyId() {
   if (!supabaseAdmin) {
     throw new Error('Supabase admin is not configured.');
   }
 
-  const lowered = input.toLowerCase();
+  const lowered = FIXED_COMPANY_NAME.toLowerCase();
 
   const { data: companies, error } = await supabaseAdmin
     .from(COMPANIES_TABLE)
@@ -26,14 +22,15 @@ async function resolveCompanyId(rawCompanyInput: unknown) {
   }
 
   const match =
-    (companies || []).find((company: any) => String(company.id || '').toLowerCase() === lowered) ||
-    (companies || []).find((company: any) => String(company.code || '').toLowerCase() === lowered) ||
     (companies || []).find(
       (company: any) => String(company.name || '').trim().toLowerCase() === lowered
+    ) ||
+    (companies || []).find(
+      (company: any) => String(company.code || '').trim().toLowerCase() === lowered
     );
 
   if (!match?.id) {
-    throw new Error('Selected company could not be resolved.');
+    throw new Error(`Fixed company "${FIXED_COMPANY_NAME}" could not be resolved.`);
   }
 
   return String(match.id);
@@ -55,7 +52,7 @@ async function getCompanyBranding(companyId: string) {
   }
 
   return {
-    company_name: (data as any)?.name ?? null,
+    company_name: (data as any)?.name ?? FIXED_COMPANY_NAME,
     company_logo_url: (data as any)?.logo_url || (data as any)?.logoUrl || null,
   };
 }
@@ -66,7 +63,7 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
     }
 
-    const auth = await requireAdminRole(req);
+    const auth = await requireSuperAdminRole(req);
     if ('error' in auth) {
       return NextResponse.json(
         { error: auth.error || 'Unauthorized' },
@@ -74,20 +71,13 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    let q = supabaseAdmin
+    const companyId = await resolveFixedCompanyId();
+
+    const { data, error } = await supabaseAdmin
       .from(PROFILE_TABLE)
-      .select('id,name,email,role,company_id,company_name,company_logo_url');
-
-    const companyIdParam = req.nextUrl.searchParams.get('companyId')?.trim();
-
-    if (auth.user.role === 'admin' && auth.user.companyId) {
-      q = q.eq('company_id', auth.user.companyId);
-    } else if (companyIdParam) {
-      const resolvedCompanyId = await resolveCompanyId(companyIdParam);
-      q = q.eq('company_id', resolvedCompanyId);
-    }
-
-    const { data, error } = await q.order('name', { ascending: true });
+      .select('id,name,email,role,company_id,company_name,company_logo_url')
+      .eq('company_id', companyId)
+      .order('name', { ascending: true });
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
@@ -99,7 +89,7 @@ export async function GET(req: NextRequest) {
       email: row.email,
       role: row.role,
       companyId: row.company_id,
-      companyName: row.company_name ?? null,
+      companyName: row.company_name ?? FIXED_COMPANY_NAME,
       companyLogoUrl: row.company_logo_url ?? null,
     }));
 
@@ -118,7 +108,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
     }
 
-    const auth = await requireAdminRole(req);
+    const auth = await requireSuperAdminRole(req);
     if ('error' in auth) {
       return NextResponse.json(
         { error: auth.error || 'Unauthorized' },
@@ -140,15 +130,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let companyId = await resolveCompanyId(body?.companyId);
-
-    if (auth.user.role === 'admin') {
-      if (!auth.user.companyId) {
-        return NextResponse.json({ error: 'Admin user has no company scope.' }, { status: 400 });
-      }
-      companyId = auth.user.companyId;
-    }
-
+    const companyId = await resolveFixedCompanyId();
     const branding = await getCompanyBranding(companyId);
 
     const { data: createdUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
