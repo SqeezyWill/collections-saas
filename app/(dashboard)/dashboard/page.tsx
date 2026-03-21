@@ -1,14 +1,11 @@
-import { unstable_noStore as noStore } from 'next/cache';
+'use client';
+
 import Link from 'next/link';
-import { cookies } from 'next/headers';
-import { createClient } from '@supabase/supabase-js';
+import { useEffect, useMemo, useState } from 'react';
 import { KpiCard } from '@/components/KpiCard';
 import { DataTable } from '@/components/DataTable';
-import { supabaseAdmin } from '@/lib/supabase-admin';
+import { supabase } from '@/lib/supabase';
 import { currency } from '@/lib/utils';
-
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
 
 const PAGE_SIZE = 1000;
 
@@ -18,93 +15,6 @@ type UserProfile = {
   role: string | null;
   company_id: string | null;
 };
-
-function extractTokenFromCookieValue(raw: string | undefined | null) {
-  if (!raw) return null;
-
-  try {
-    const parsed = JSON.parse(raw);
-
-    if (typeof parsed === 'string') {
-      return parsed || null;
-    }
-
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
-        if (typeof item === 'string' && item.trim()) return item.trim();
-        if (item && typeof item === 'object' && 'access_token' in item) {
-          const token = String((item as any).access_token || '').trim();
-          if (token) return token;
-        }
-      }
-    }
-
-    if (parsed && typeof parsed === 'object' && 'access_token' in parsed) {
-      const token = String((parsed as any).access_token || '').trim();
-      if (token) return token;
-    }
-  } catch {
-    const trimmed = String(raw).trim();
-    if (trimmed) return trimmed;
-  }
-
-  return null;
-}
-
-async function getServerAccessToken() {
-  const store = await cookies();
-  const all = store.getAll();
-
-  const authCookies = all.filter((cookie) =>
-    /^sb-.*-auth-token(?:\.\d+)?$/.test(cookie.name)
-  );
-
-  if (!authCookies.length) {
-    return null;
-  }
-
-  const baseNames = Array.from(
-    new Set(authCookies.map((cookie) => cookie.name.replace(/\.\d+$/, '')))
-  );
-
-  for (const baseName of baseNames) {
-    const matching = authCookies
-      .filter((cookie) => cookie.name === baseName || cookie.name.startsWith(`${baseName}.`))
-      .sort((a, b) => {
-        const aMatch = a.name.match(/\.(\d+)$/);
-        const bMatch = b.name.match(/\.(\d+)$/);
-        const aIndex = aMatch ? Number(aMatch[1]) : 0;
-        const bIndex = bMatch ? Number(bMatch[1]) : 0;
-        return aIndex - bIndex;
-      });
-
-    const combined = matching.map((cookie) => cookie.value).join('');
-    const token = extractTokenFromCookieValue(combined);
-
-    if (token) return token;
-  }
-
-  return null;
-}
-
-async function resolveFixedCompanyId() {
-  if (!supabaseAdmin) {
-    throw new Error('Supabase admin is not configured.');
-  }
-
-  const { data: company, error } = await supabaseAdmin
-    .from('companies')
-    .select('id,name,code')
-    .or('name.eq.Pezesha,code.eq.Pezesha')
-    .limit(1)
-    .maybeSingle();
-
-  if (error || !company?.id) {
-    throw new Error('Unable to resolve fixed Pezesha company.');
-  }
-
-  return String(company.id);
-}
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
@@ -220,7 +130,7 @@ async function fetchAllRows(
     restrictToCollector?: boolean;
   }
 ) {
-  if (!supabaseAdmin) return [];
+  if (!supabase) return [];
 
   const { companyId, collectorName, restrictToCollector } = input;
 
@@ -230,7 +140,7 @@ async function fetchAllRows(
   while (true) {
     const to = from + PAGE_SIZE - 1;
 
-    let query = supabaseAdmin
+    let query = supabase
       .from(table)
       .select('*')
       .eq('company_id', companyId)
@@ -273,124 +183,191 @@ function alertClasses(tone: string) {
   return 'border-slate-200 bg-slate-50 text-slate-700';
 }
 
-export default async function DashboardPage() {
-  noStore();
+export default function DashboardPage() {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [accountList, setAccountList] = useState<any[]>([]);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [ptps, setPtps] = useState<any[]>([]);
+  const [dataError, setDataError] = useState<string | null>(null);
+  const [loadingData, setLoadingData] = useState(true);
 
-  if (!supabaseAdmin) {
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadProfile() {
+      try {
+        if (!supabase) {
+          if (mounted) {
+            setSessionError('Supabase client is not configured.');
+            setLoadingProfile(false);
+          }
+          return;
+        }
+
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (mounted) {
+            setSessionError('Unable to load user session.');
+            setLoadingProfile(false);
+          }
+          return;
+        }
+
+        const { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('id,name,role,company_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (profileError || !profileData?.id) {
+          if (mounted) {
+            setSessionError('Unable to load user session.');
+            setLoadingProfile(false);
+          }
+          return;
+        }
+
+        let resolvedCompanyId = String(profileData.company_id || '').trim();
+
+        if (!resolvedCompanyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .limit(1)
+            .maybeSingle();
+
+          if (fixedCompanyError || !fixedCompany?.id) {
+            if (mounted) {
+              setSessionError('Unable to resolve Pezesha company.');
+              setLoadingProfile(false);
+            }
+            return;
+          }
+
+          resolvedCompanyId = String(fixedCompany.id);
+        }
+
+        if (mounted) {
+          setProfile({
+            id: String(profileData.id),
+            name: profileData.name ?? null,
+            role: profileData.role ?? null,
+            company_id: resolvedCompanyId,
+          });
+          setSessionError(null);
+          setLoadingProfile(false);
+        }
+      } catch (error: any) {
+        if (mounted) {
+          setSessionError(error?.message || 'Unable to load user session.');
+          setLoadingProfile(false);
+        }
+      }
+    }
+
+    loadProfile();
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadDashboardData() {
+      if (loadingProfile) return;
+
+      if (!profile?.company_id) {
+        if (mounted) {
+          setLoadingData(false);
+        }
+        return;
+      }
+
+      try {
+        setLoadingData(true);
+        setDataError(null);
+
+        const normalizedRole = normalizeRole(profile.role);
+        const isAgent = normalizedRole === 'agent';
+        const collectorScope = String(profile.name || '').trim();
+
+        const [accountsRows, paymentsRows, ptpRows] = await Promise.all([
+          fetchAllRows('accounts', {
+            companyId: String(profile.company_id),
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+          fetchAllRows('payments', {
+            companyId: String(profile.company_id),
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+          fetchAllRows('ptps', {
+            companyId: String(profile.company_id),
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+        ]);
+
+        if (mounted) {
+          setAccountList(accountsRows);
+          setPayments(paymentsRows);
+          setPtps(ptpRows);
+          setLoadingData(false);
+        }
+      } catch (error: any) {
+        if (mounted) {
+          setDataError(error?.message || 'Unknown error');
+          setLoadingData(false);
+        }
+      }
+    }
+
+    loadDashboardData();
+
+    return () => {
+      mounted = false;
+    };
+  }, [loadingProfile, profile]);
+
+  if (loadingProfile || loadingData) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Supabase admin is not configured.</p>
+        <p className="text-slate-500">Loading dashboard...</p>
       </div>
     );
   }
 
-  let profile: UserProfile | null = null;
-
-try {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !anonKey) {
-    throw new Error('Supabase client env is not configured.');
-  }
-
-  const token = await getServerAccessToken();
-
-  if (!token) {
+  if (sessionError || !profile?.company_id) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Unable to load user session.</p>
+        <p className="text-red-600">{sessionError || 'Unable to load user session.'}</p>
       </div>
     );
   }
 
-  const authClient = createClient(url, anonKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const { data: authData, error: authError } = await authClient.auth.getUser(token);
-
-  if (authError || !authData.user) {
+  if (dataError) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Unable to load user session.</p>
+        <p className="text-red-600">Failed to load dashboard data: {dataError}</p>
       </div>
     );
   }
-
-  const { data: profileData, error: profileError } = await supabaseAdmin
-    .from('user_profiles')
-    .select('id,name,role,company_id')
-    .eq('id', authData.user.id)
-    .maybeSingle();
-
-  if (profileError || !profileData?.id) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Unable to load user session.</p>
-      </div>
-    );
-  }
-
-  const resolvedCompanyId = String(profileData.company_id || '').trim() || (await resolveFixedCompanyId());
-
-  profile = {
-    id: String(profileData.id),
-    name: profileData.name ?? null,
-    role: profileData.role ?? null,
-    company_id: resolvedCompanyId,
-  };
-} catch (error: any) {
-  return (
-    <div className="space-y-4">
-      <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-      <p className="text-red-600">
-        {error?.message || 'Unable to load user session.'}
-      </p>
-    </div>
-  );
-}
 
   const normalizedRole = normalizeRole(profile.role);
   const isAgent = normalizedRole === 'agent';
-  const collectorScope = String(profile.name || '').trim();
-
-  let accountList: any[] = [];
-  let payments: any[] = [];
-  let ptps: any[] = [];
-
-  try {
-    [accountList, payments, ptps] = await Promise.all([
-      fetchAllRows('accounts', {
-        companyId: String(profile.company_id),
-        collectorName: collectorScope,
-        restrictToCollector: isAgent,
-      }),
-      fetchAllRows('payments', {
-        companyId: String(profile.company_id),
-        collectorName: collectorScope,
-        restrictToCollector: isAgent,
-      }),
-      fetchAllRows('ptps', {
-        companyId: String(profile.company_id),
-        collectorName: collectorScope,
-        restrictToCollector: isAgent,
-      }),
-    ]);
-  } catch (error: any) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">
-          Failed to load dashboard data: {error?.message || 'Unknown error'}
-        </p>
-      </div>
-    );
-  }
 
   const paymentsByAccountId = new Map<
     string,

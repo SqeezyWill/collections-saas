@@ -260,12 +260,12 @@ export default function AdminPage() {
       }
 
       const list: DbCompany[] = (json?.companies ?? []).map((c: any) => ({
-        id: c.id,
-        name: c.name,
-        code: c.code,
-        themeColor: c.themeColor || '#2563eb',
-        logoUrl: c.logoUrl ?? null,
-      }));
+  id: c.id,
+  name: c.name,
+  code: c.code,
+  themeColor: c.themeColor || '#2563eb',
+  logoUrl: c.logo_url ?? c.logoUrl ?? null,
+}));
 
       setDbCompanies(list);
 

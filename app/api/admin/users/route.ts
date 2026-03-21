@@ -43,7 +43,7 @@ async function getCompanyBranding(companyId: string) {
 
   const { data, error } = await supabaseAdmin
     .from(COMPANIES_TABLE)
-    .select('id,name,logo_url,logoUrl')
+    .select('id,name,logo_url')
     .eq('id', companyId)
     .maybeSingle();
 
@@ -53,7 +53,7 @@ async function getCompanyBranding(companyId: string) {
 
   return {
     company_name: (data as any)?.name ?? FIXED_COMPANY_NAME,
-    company_logo_url: (data as any)?.logo_url || (data as any)?.logoUrl || null,
+    company_logo_url: (data as any)?.logo_url || null,
   };
 }
 
