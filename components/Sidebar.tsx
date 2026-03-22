@@ -44,6 +44,11 @@ const recoveryReportLinks: NavLink[] = [
   { href: '/ptps', label: 'PTPs', icon: CreditCard },
 ];
 
+const reportSubLinks: NavLink[] = [
+  { href: '/reports', label: 'Overview', icon: BarChart3 },
+  { href: '/reports?tab=early_warning', label: 'Early Warning', icon: FolderKanban },
+];
+
 const uploadToolLinks: NavLink[] = [
   { href: '/accounts/upload', label: 'New Accounts Upload', icon: Upload },
   { href: '/accounts/update-upload', label: 'Accounts Update Upload', icon: Upload },
@@ -101,6 +106,7 @@ export function Sidebar() {
   const [isHovering, setIsHovering] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [role, setRole] = useState('agent');
+  const [reportLinksOpen, setReportLinksOpen] = useState(true);
   const [reportsOpen, setReportsOpen] = useState(true);
   const [uploadToolsOpen, setUploadToolsOpen] = useState(true);
 
@@ -186,34 +192,43 @@ export function Sidebar() {
   const effectiveCollapsed = getEffectiveCollapsed(collapsed, pinnedOpen, isHovering);
 
   const activeHref = useMemo(() => {
-    const candidates = [...links, ...recoveryLinks, ...uploadLinks].sort(
-      (a, b) => b.href.length - a.href.length
-    );
-
-    return (
-      candidates.find((l) => pathname === l.href || pathname.startsWith(`${l.href}/`))?.href || ''
-    );
-  }, [pathname, links, recoveryLinks, uploadLinks]);
-
-  const isRecoverySectionActive = recoveryLinks.some(
-    (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
+  const candidates = [...links, ...reportSubLinks, ...recoveryLinks, ...uploadLinks].sort(
+    (a, b) => b.href.length - a.href.length
   );
 
-  const isUploadSectionActive = uploadLinks.some(
-    (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
+  return (
+    candidates.find((l) => pathname === l.href || pathname.startsWith(`${l.href}/`))?.href || ''
   );
+}, [pathname, links, recoveryLinks, uploadLinks]);
+
+  const isReportsSectionActive =
+  pathname === '/reports' || pathname.startsWith('/reports');
+
+const isRecoverySectionActive = recoveryLinks.some(
+  (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
+);
+
+const isUploadSectionActive = uploadLinks.some(
+  (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
+);
 
   useEffect(() => {
-    if (isRecoverySectionActive) {
-      setReportsOpen(true);
-    }
-  }, [isRecoverySectionActive]);
+  if (isReportsSectionActive) {
+    setReportLinksOpen(true);
+  }
+}, [isReportsSectionActive]);
 
-  useEffect(() => {
-    if (isUploadSectionActive) {
-      setUploadToolsOpen(true);
-    }
-  }, [isUploadSectionActive]);
+useEffect(() => {
+  if (isRecoverySectionActive) {
+    setReportsOpen(true);
+  }
+}, [isRecoverySectionActive]);
+
+useEffect(() => {
+  if (isUploadSectionActive) {
+    setUploadToolsOpen(true);
+  }
+}, [isUploadSectionActive]);
 
   function handleMouseEnter() {
     if (pinnedOpen) return;
@@ -325,29 +340,98 @@ export function Sidebar() {
             {links.map(({ href, label, icon: Icon }) => {
               const isActive = href === activeHref;
 
-              return (
-                <Link
-                  key={href}
-                  href={href}
-                  className={[
-                    'group relative flex items-center gap-3 rounded-xl px-3 py-3 transition',
-                    isActive
-                      ? 'bg-slate-900 text-white'
-                      : 'text-slate-300 hover:bg-slate-900 hover:text-white',
-                    effectiveCollapsed ? 'justify-center' : '',
-                  ].join(' ')}
-                  title={effectiveCollapsed ? label : undefined}
-                >
-                  <Icon size={18} />
-                  {!effectiveCollapsed ? <span className="truncate">{label}</span> : null}
+              if (href === '/reports') {
+  return (
+    <div key={href}>
+      <button
+        type="button"
+        onClick={() => {
+          if (effectiveCollapsed) {
+            router.push('/reports');
+            return;
+          }
+          setReportLinksOpen((prev) => !prev);
+        }}
+        className={[
+          'group relative flex w-full items-center gap-3 rounded-xl px-3 py-3 transition',
+          isReportsSectionActive
+            ? 'bg-slate-900 text-white'
+            : 'text-slate-300 hover:bg-slate-900 hover:text-white',
+          effectiveCollapsed ? 'justify-center' : '',
+        ].join(' ')}
+        title={effectiveCollapsed ? label : undefined}
+      >
+        <Icon size={18} />
+        {!effectiveCollapsed ? (
+          <>
+            <span className="flex-1 truncate">{label}</span>
+            <ChevronDown
+              size={16}
+              className={`transition-transform ${reportLinksOpen ? 'rotate-180' : 'rotate-0'}`}
+            />
+          </>
+        ) : null}
 
-                  {effectiveCollapsed ? (
-                    <span className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-xs text-white shadow-lg opacity-0 translate-x-[-4px] transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0">
-                      {label}
-                    </span>
-                  ) : null}
-                </Link>
-              );
+        {effectiveCollapsed ? (
+          <span className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-xs text-white shadow-lg opacity-0 translate-x-[-4px] transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0">
+            {label}
+          </span>
+        ) : null}
+      </button>
+
+      {!effectiveCollapsed && reportLinksOpen ? (
+        <div className="mt-1 space-y-1 pl-4">
+          {reportSubLinks.map(({ href: subHref, label: subLabel, icon: SubIcon }) => {
+            const isSubActive =
+              subHref === '/reports'
+                ? pathname === '/reports'
+                : pathname === '/reports';
+
+            return (
+              <Link
+                key={subHref}
+                href={subHref}
+                className={[
+                  'flex items-center gap-3 rounded-xl px-3 py-3 transition',
+                  isSubActive
+                    ? 'bg-slate-900 text-white'
+                    : 'text-slate-300 hover:bg-slate-900 hover:text-white',
+                ].join(' ')}
+              >
+                <SubIcon size={16} />
+                <span className="truncate">{subLabel}</span>
+              </Link>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+return (
+  <Link
+    key={href}
+    href={href}
+    className={[
+      'group relative flex items-center gap-3 rounded-xl px-3 py-3 transition',
+      isActive
+        ? 'bg-slate-900 text-white'
+        : 'text-slate-300 hover:bg-slate-900 hover:text-white',
+      effectiveCollapsed ? 'justify-center' : '',
+    ].join(' ')}
+    title={effectiveCollapsed ? label : undefined}
+  >
+    <Icon size={18} />
+    {!effectiveCollapsed ? <span className="truncate">{label}</span> : null}
+
+    {effectiveCollapsed ? (
+      <span className="pointer-events-none absolute left-full top-1/2 z-50 ml-3 -translate-y-1/2 whitespace-nowrap rounded-lg bg-slate-900 px-3 py-2 text-xs text-white shadow-lg opacity-0 translate-x-[-4px] transition-all duration-200 group-hover:opacity-100 group-hover:translate-x-0">
+        {label}
+      </span>
+    ) : null}
+  </Link>
+);
             })}
 
             {recoveryLinks.length > 0 ? (

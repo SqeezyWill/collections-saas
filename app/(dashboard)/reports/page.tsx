@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency } from '@/lib/utils';
@@ -312,6 +313,7 @@ function ReportsPageClient() {
   const [collectorPage, setCollectorPage] = useState(1);
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
   const [cacheHydrated, setCacheHydrated] = useState(false);
+  const searchParams = useSearchParams();
   const [restoredFromCache, setRestoredFromCache] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [priorityFilter, setPriorityFilter] = useState<'all' | WarningPriority>('all');
