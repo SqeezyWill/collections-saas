@@ -106,9 +106,9 @@ export function Sidebar() {
   const [isHovering, setIsHovering] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
   const [role, setRole] = useState('agent');
-  const [reportLinksOpen, setReportLinksOpen] = useState(true);
-  const [reportsOpen, setReportsOpen] = useState(true);
-  const [uploadToolsOpen, setUploadToolsOpen] = useState(true);
+  const [reportLinksOpen, setReportLinksOpen] = useState(false);
+  const [reportsOpen, setReportsOpen] = useState(false);
+  const [uploadToolsOpen, setUploadToolsOpen] = useState(false);
 
   const hoverCloseTimer = useRef<number | null>(null);
 
@@ -191,6 +191,14 @@ export function Sidebar() {
 
   const effectiveCollapsed = getEffectiveCollapsed(collapsed, pinnedOpen, isHovering);
 
+  useEffect(() => {
+  if (effectiveCollapsed) {
+    setReportLinksOpen(false);
+    setReportsOpen(false);
+    setUploadToolsOpen(false);
+  }
+}, [effectiveCollapsed]);
+
   const activeHref = useMemo(() => {
   const candidates = [...links, ...reportSubLinks, ...recoveryLinks, ...uploadLinks].sort(
     (a, b) => b.href.length - a.href.length
@@ -211,24 +219,6 @@ const isRecoverySectionActive = recoveryLinks.some(
 const isUploadSectionActive = uploadLinks.some(
   (link) => pathname === link.href || pathname.startsWith(`${link.href}/`)
 );
-
-  useEffect(() => {
-  if (isReportsSectionActive) {
-    setReportLinksOpen(true);
-  }
-}, [isReportsSectionActive]);
-
-useEffect(() => {
-  if (isRecoverySectionActive) {
-    setReportsOpen(true);
-  }
-}, [isRecoverySectionActive]);
-
-useEffect(() => {
-  if (isUploadSectionActive) {
-    setUploadToolsOpen(true);
-  }
-}, [isUploadSectionActive]);
 
   function handleMouseEnter() {
     if (pinnedOpen) return;
