@@ -529,14 +529,16 @@ function ReportsPageClient() {
     0
   );
 
-  const totalCollected = payments.reduce(
-    (sum, item) => sum + Number(item.amount || 0),
-    0
-  );
+  const totalCollected = accounts.reduce(
+  (sum, item) => sum + Number(item.amount_paid || 0),
+  0
+);
 
-  const collectedThisMonth = payments
-    .filter((item) => isCurrentMonth(item.paid_on))
-    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+const collectedThisMonth = accounts
+  .filter((item) =>
+    isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+  )
+  .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const openPtps = ptps.filter((item) => item.status === 'Promise To Pay').length;
 
@@ -569,29 +571,28 @@ function ReportsPageClient() {
     .sort((a, b) => String(a).localeCompare(String(b)));
 
   const productRows = accountProducts.map((product) => {
-    const productAccounts = accounts.filter(
-      (item) => normalizeText(item.product || item.product_name) === product
-    );
-    const productPayments = payments.filter(
-      (item) => normalizeText(item.product || item.product_name) === product
-    );
+  const productAccounts = accounts.filter(
+    (item) => normalizeText(item.product || item.product_name) === product
+  );
 
-    return {
-      product,
-      accounts: productAccounts.length,
-      balance: productAccounts.reduce(
-        (sum, item) => sum + Number(item.balance || 0),
-        0
-      ),
-      collected: productPayments.reduce(
-        (sum, item) => sum + Number(item.amount || 0),
-        0
-      ),
-      collectedThisMonth: productPayments
-        .filter((item) => isCurrentMonth(item.paid_on))
-        .reduce((sum, item) => sum + Number(item.amount || 0), 0),
-    };
-  });
+  return {
+    product,
+    accounts: productAccounts.length,
+    balance: productAccounts.reduce(
+      (sum, item) => sum + Number(item.balance || 0),
+      0
+    ),
+    collected: productAccounts.reduce(
+      (sum, item) => sum + Number(item.amount_paid || 0),
+      0
+    ),
+    collectedThisMonth: productAccounts
+      .filter((item) =>
+        isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+      )
+      .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+  };
+});
 
   const statuses = Array.from(
     new Set(accounts.map((item) => item.status).filter(Boolean))
@@ -612,59 +613,60 @@ function ReportsPageClient() {
   ).sort((a, b) => String(a).localeCompare(String(b)));
 
   const collectorRows = collectors.map((collector) => {
-    const collectorAccounts = accounts.filter(
-      (item) => item.collector_name === collector
-    );
-    const collectorPayments = payments.filter(
-      (item) => item.collector_name === collector
-    );
-    const collectorPtps = ptps.filter((item) => item.collector_name === collector);
+  const collectorAccounts = accounts.filter(
+    (item) => item.collector_name === collector
+  );
 
-    const collectorKeptPtps = collectorPtps.filter(
-      (item) => item.resolution_type === 'kept'
-    ).length;
+  const collectorCollected = collectorAccounts.reduce(
+    (sum, item) => sum + Number(item.amount_paid || 0),
+    0
+  );
 
-    const collectorBrokenPtps = collectorPtps.filter(
-      (item) => item.resolution_type === 'broken'
-    ).length;
+  const collectorPtps = ptps.filter((item) => item.collector_name === collector);
 
-    const collectorResolvedPtps = collectorPtps.filter(
-      (item) => item.resolution_type === 'kept' || item.resolution_type === 'broken'
-    ).length;
+  const collectorKeptPtps = collectorPtps.filter(
+    (item) => item.resolution_type === 'kept'
+  ).length;
 
-    const collected = collectorPayments.reduce(
-      (sum, item) => sum + Number(item.amount || 0),
+  const collectorBrokenPtps = collectorPtps.filter(
+    (item) => item.resolution_type === 'broken'
+  ).length;
+
+  const collectorResolvedPtps = collectorPtps.filter(
+    (item) => item.resolution_type === 'kept' || item.resolution_type === 'broken'
+  ).length;
+
+  const accountsCount = collectorAccounts.length;
+
+  return {
+    collector,
+    accounts: accountsCount,
+    balance: collectorAccounts.reduce(
+      (sum, item) => sum + Number(item.balance || 0),
       0
-    );
-
-    const accountsCount = collectorAccounts.length;
-
-    return {
-      collector,
-      accounts: accountsCount,
-      balance: collectorAccounts.reduce(
-        (sum, item) => sum + Number(item.balance || 0),
-        0
-      ),
-      collected,
-      collectedThisMonth: collectorPayments
-        .filter((item) => isCurrentMonth(item.paid_on))
-        .reduce((sum, item) => sum + Number(item.amount || 0), 0),
-      openPtps: collectorPtps.filter(
-        (item) => item.status === 'Promise To Pay'
-      ).length,
-      keptPtps: collectorKeptPtps,
-      brokenPtps: collectorBrokenPtps,
-      ptpKeptRate:
-        collectorResolvedPtps > 0
-          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-          : '0.0%',
-      callbacks: collectorAccounts.filter(
-        (item) => item.status === 'Callback Requested'
-      ).length,
-      avgCollectedPerAccount: accountsCount > 0 ? collected / accountsCount : 0,
-    };
-  });
+    ),
+    collected: collectorCollected,
+    collectedThisMonth: collectorAccounts
+      .filter((item) =>
+        isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+      )
+      .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+    openPtps: collectorPtps.filter(
+      (item) => item.status === 'Promise To Pay'
+    ).length,
+    keptPtps: collectorKeptPtps,
+    brokenPtps: collectorBrokenPtps,
+    ptpKeptRate:
+      collectorResolvedPtps > 0
+        ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+        : '0.0%',
+    callbacks: collectorAccounts.filter(
+      (item) => item.status === 'Callback Requested'
+    ).length,
+    avgCollectedPerAccount:
+      accountsCount > 0 ? collectorCollected / accountsCount : 0,
+  };
+});
 
   const totalCollectorPages = Math.max(
     1,
