@@ -267,8 +267,7 @@ export default function PaymentsPage() {
   }, [cacheHydrated]);
 
   const allTimeCollected = useMemo(
-    () =>
-      accountRows.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
+    () => accountRows.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
     [accountRows]
   );
 
@@ -284,9 +283,7 @@ export default function PaymentsPage() {
 
   const productSummary = useMemo(
     () =>
-      Array.from(
-        new Set(accountRows.map((item) => item.product).filter(Boolean))
-      ).map((product) => {
+      Array.from(new Set(accountRows.map((item) => item.product).filter(Boolean))).map((product) => {
         const productAccounts = accountRows.filter((item) => item.product === product);
 
         return {
@@ -301,6 +298,12 @@ export default function PaymentsPage() {
           count: productAccounts.filter((item) => Number(item.amount_paid || 0) > 0).length,
         };
       }),
+    [accountRows]
+  );
+
+  const collectedAccountRows = useMemo(
+    () =>
+      accountRows.filter((row) => Number(row.amount_paid || 0) > 0),
     [accountRows]
   );
 
@@ -393,27 +396,48 @@ export default function PaymentsPage() {
         </div>
       </div>
 
-      <DataTable
-        headers={[
-          'Collector',
-          'Product',
-          'Amount',
-          'Payment Made On',
-          'Posted On',
-          'Account ID',
-        ]}
-      >
-        {paymentRows.map((row) => (
-          <tr key={row.id}>
-            <td className="px-4 py-3 font-medium">{row.collector_name || '-'}</td>
-            <td className="px-4 py-3">{row.product || '-'}</td>
-            <td className="px-4 py-3">{currency(Number(row.amount || 0))}</td>
-            <td className="px-4 py-3">{formatDate(row.paid_on)}</td>
-            <td className="px-4 py-3">{formatDate(row.created_at || row.paid_on)}</td>
-            <td className="px-4 py-3">{row.account_id || '-'}</td>
-          </tr>
-        ))}
-      </DataTable>
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">
+          {paymentRows.length > 0 ? 'Payment Log' : 'Collected Accounts'}
+        </h2>
+        <p className="mt-1 text-sm text-slate-500">
+          {paymentRows.length > 0
+            ? 'Showing posted payments from the payments table.'
+            : 'No payment rows found yet, so this view is showing accounts with amount paid.'}
+        </p>
+
+        <div className="mt-4">
+          <DataTable
+            headers={
+              paymentRows.length > 0
+                ? ['Collector', 'Product', 'Amount', 'Payment Made On', 'Posted On', 'Account ID']
+                : ['Collector', 'Product', 'Amount Paid', 'Last Action Date', 'Created On', 'Account ID']
+            }
+          >
+            {paymentRows.length > 0
+              ? paymentRows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-4 py-3 font-medium">{row.collector_name || '-'}</td>
+                    <td className="px-4 py-3">{row.product || '-'}</td>
+                    <td className="px-4 py-3">{currency(Number(row.amount || 0))}</td>
+                    <td className="px-4 py-3">{formatDate(row.paid_on)}</td>
+                    <td className="px-4 py-3">{formatDate(row.created_at || row.paid_on)}</td>
+                    <td className="px-4 py-3">{row.account_id || row.id || '-'}</td>
+                  </tr>
+                ))
+              : collectedAccountRows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-4 py-3 font-medium">{row.collector_name || '-'}</td>
+                    <td className="px-4 py-3">{row.product || '-'}</td>
+                    <td className="px-4 py-3">{currency(Number(row.amount_paid || 0))}</td>
+                    <td className="px-4 py-3">{formatDate(row.last_action_date)}</td>
+                    <td className="px-4 py-3">{formatDate(row.created_at)}</td>
+                    <td className="px-4 py-3">{row.id || '-'}</td>
+                  </tr>
+                ))}
+          </DataTable>
+        </div>
+      </div>
     </div>
   );
 }
