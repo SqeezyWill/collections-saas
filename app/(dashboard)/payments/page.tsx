@@ -7,6 +7,7 @@ import { currency, formatDate } from '@/lib/utils';
 
 const PAYMENTS_CACHE_PREFIX = 'payments-page-cache:v2:';
 const PEZESHA_FALLBACK_NAME = 'Pezesha';
+const ROWS_PER_PAGE = 15;
 
 type AuthProfile = {
   id: string;
@@ -52,6 +53,7 @@ export default function PaymentsPage() {
   const [cacheHydrated, setCacheHydrated] = useState(false);
   const [restoredFromCache, setRestoredFromCache] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [currentPage, setCurrentPage] = useState(1);
 
   const paymentsCacheKey = useMemo(() => {
     const companyId = normalizeText(profile?.company_id) || 'pending-company';
@@ -247,6 +249,7 @@ export default function PaymentsPage() {
           setLoading(false);
           setIsRefreshing(false);
           setRestoredFromCache(false);
+          setCurrentPage(1);
         }
       } catch (error: any) {
         if (mounted) {
@@ -302,10 +305,20 @@ export default function PaymentsPage() {
   );
 
   const collectedAccountRows = useMemo(
-    () =>
-      accountRows.filter((row) => Number(row.amount_paid || 0) > 0),
+    () => accountRows.filter((row) => Number(row.amount_paid || 0) > 0),
     [accountRows]
   );
+
+  const displayRows = paymentRows.length > 0 ? paymentRows : collectedAccountRows;
+  const totalPages = Math.max(1, Math.ceil(displayRows.length / ROWS_PER_PAGE));
+  const paginatedRows = displayRows.slice(
+    (currentPage - 1) * ROWS_PER_PAGE,
+    currentPage * ROWS_PER_PAGE
+  );
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [paymentRows.length, collectedAccountRows.length]);
 
   const isAgent = normalizeRole(profile?.role) === 'agent';
 
@@ -415,7 +428,7 @@ export default function PaymentsPage() {
             }
           >
             {paymentRows.length > 0
-              ? paymentRows.map((row) => (
+              ? paginatedRows.map((row) => (
                   <tr key={row.id}>
                     <td className="px-4 py-3 font-medium">{row.collector_name || '-'}</td>
                     <td className="px-4 py-3">{row.product || '-'}</td>
@@ -425,7 +438,7 @@ export default function PaymentsPage() {
                     <td className="px-4 py-3">{row.account_id || row.id || '-'}</td>
                   </tr>
                 ))
-              : collectedAccountRows.map((row) => (
+              : paginatedRows.map((row) => (
                   <tr key={row.id}>
                     <td className="px-4 py-3 font-medium">{row.collector_name || '-'}</td>
                     <td className="px-4 py-3">{row.product || '-'}</td>
@@ -437,6 +450,41 @@ export default function PaymentsPage() {
                 ))}
           </DataTable>
         </div>
+
+        {displayRows.length > ROWS_PER_PAGE ? (
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <p className="text-sm text-slate-500">
+              Showing {(currentPage - 1) * ROWS_PER_PAGE + 1}-
+              {Math.min(currentPage * ROWS_PER_PAGE, displayRows.length)} of {displayRows.length}
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+                disabled={currentPage === 1}
+                className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+                  currentPage === 1
+                    ? 'cursor-not-allowed border-slate-200 text-slate-300'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Previous
+              </button>
+
+              <button
+                onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+                disabled={currentPage === totalPages}
+                className={`rounded-xl border px-4 py-2 text-sm font-medium ${
+                  currentPage === totalPages
+                    ? 'cursor-not-allowed border-slate-200 text-slate-300'
+                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );
