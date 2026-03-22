@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
 
   const { data: profile, error: profileError } = await supabaseAdmin
     .from('user_profiles')
-    .select('id, role, company_id')
+    .select('id, name, role, company_id')
     .eq('id', user.id)
     .maybeSingle();
 
@@ -122,7 +122,7 @@ export async function GET(req: NextRequest) {
     .limit(8);
 
   const role = String(profile.role || '').trim().toLowerCase();
-  const collectorScope = String(user.user_metadata?.name || '').trim();
+  const collectorScope = String(profile.name || '').trim();
 
   if (role === 'agent' && collectorScope) {
     query = query.eq('collector_name', collectorScope);

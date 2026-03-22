@@ -22,16 +22,6 @@ type AuthProfile = {
   email: string | null;
   company_id: string | null;
   role: string | null;
-  company_name?: string | null;
-  company_logo_url?: string | null;
-};
-
-type CompanyRow = {
-  id: string;
-  name: string | null;
-  code?: string | null;
-  logo_url?: string | null;
-  logoUrl?: string | null;
 };
 
 type SearchField =
@@ -177,7 +167,7 @@ export function Topbar() {
     async function buildProfile(userId: string) {
       const { data: userProfile, error: profileError } = await client
         .from('user_profiles')
-        .select('id,name,email,company_id,role,company_name,company_logo_url')
+        .select('id,name,email,company_id,role')
         .eq('id', userId)
         .maybeSingle();
 
@@ -187,15 +177,18 @@ export function Topbar() {
         return;
       }
 
-      setProfile({
-        ...(userProfile as any),
-        company_name: FIXED_COMPANY_NAME,
-        company_logo_url: FIXED_COMPANY_LOGO_URL,
-      });
+      setProfile(userProfile as AuthProfile);
     }
 
     async function loadProfile() {
-      const { data: sessionData } = await client.auth.getSession();
+      const { data: sessionData, error: sessionError } = await client.auth.getSession();
+
+      if (sessionError) {
+        console.error('Failed to load session in Topbar:', sessionError);
+        setProfile(null);
+        return;
+      }
+
       const userId = sessionData.session?.user?.id;
 
       if (!userId) {
@@ -337,7 +330,14 @@ export function Topbar() {
 
         const {
           data: { session },
+          error: sessionError,
         } = await client.auth.getSession();
+
+        if (sessionError) {
+          console.error('Topbar search session error:', sessionError);
+          setResults([]);
+          return;
+        }
 
         const token = session?.access_token;
         if (!token) {
