@@ -356,6 +356,19 @@ function ReportsPageClient() {
   }, [reportsCacheKey]);
 
   useEffect(() => {
+  const requestedTab = searchParams.get('tab');
+
+  if (requestedTab === 'early_warning') {
+    setActiveTab('early_warning');
+    return;
+  }
+
+  if (requestedTab === 'overview') {
+    setActiveTab('overview');
+  }
+}, [searchParams]);
+
+  useEffect(() => {
     if (!cacheHydrated) return;
 
     try {
@@ -508,24 +521,6 @@ function ReportsPageClient() {
       mounted = false;
     };
   }, [cacheHydrated]);
-
-  if (!reportData.loaded && !restoredFromCache) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Reports</h1>
-        <p className="text-slate-500">Loading reports...</p>
-      </div>
-    );
-  }
-
-  if (reportData.error && !restoredFromCache && reportData.accounts.length === 0) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold">Reports</h1>
-        <p className="text-red-600">Failed to load report data: {reportData.error}</p>
-      </div>
-    );
-  }
 
   const { accounts, payments, ptps } = reportData;
 
@@ -761,6 +756,24 @@ function ReportsPageClient() {
   const brokenPtpNearDue = earlyWarningRows.filter(
     (row) => row.daysToRollover <= 2 && row.ptpStatus === 'Broken'
   ).length;
+
+  if (!reportData.loaded && !restoredFromCache) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Reports</h1>
+        <p className="text-slate-500">Loading reports...</p>
+      </div>
+    );
+  }
+
+  if (reportData.error && !restoredFromCache && reportData.accounts.length === 0) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Reports</h1>
+        <p className="text-red-600">Failed to load report data: {reportData.error}</p>
+      </div>
+    );
+  }
 
   function handleDownloadCollectorReport() {
     downloadCsv(
