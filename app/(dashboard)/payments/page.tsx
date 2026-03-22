@@ -202,7 +202,7 @@ export default function PaymentsPage() {
         let accountsQuery = client
           .from('accounts')
           .select(
-            'id,collector_name,product,product_name,balance,amount_paid,last_action_date,updated_at,created_at'
+            'id,collector_name,product,balance,amount_paid,last_action_date,updated_at,created_at'
           )
           .eq('company_id', resolvedCompanyId)
           .order('created_at', { ascending: false });
