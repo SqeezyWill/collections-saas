@@ -26,9 +26,25 @@ type ReportState = {
   error: string | null;
 };
 
-type ActiveTab = 'overview' | 'early_warning';
+type ActiveTab = 'overview' | 'early_warning' | 'roll_rates';
 type WarningPriority = 'Critical' | 'High' | 'Medium' | 'Low';
 type RolloverFilter = 'all' | '3' | '2' | '1';
+type RollRateWindow = 'current_month' | 'last_30_days' | 'custom';
+type RollRateWeek = 'Week 1' | 'Week 2' | 'Week 3' | 'Week 4' | 'Week 5';
+
+type RollRateRow = {
+  collector: string;
+  week: RollRateWeek;
+  bucket: string;
+  nextBucket: string;
+  accountsInBucket: number;
+  accountsAtRisk: number;
+  valueInBucket: number;
+  valueAtRisk: number;
+  rollRateCount: number;
+  rollRateValue: number;
+  highRiskAgent: boolean;
+};
 
 type EarlyWarningRow = {
   id: string;
@@ -75,6 +91,61 @@ function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
 }
 
+function startOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function endOfMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+}
+
+function toDateInputValue(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function parseInputDate(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
+function daysBetween(start: Date, end: Date) {
+  const diffMs = end.getTime() - start.getTime();
+  return Math.round(diffMs / (1000 * 60 * 60 * 24));
+}
+
+function clampRangeToNinetyDays(start: Date, end: Date) {
+  const diff = daysBetween(start, end);
+  if (diff <= 92) return { start, end };
+
+  const cappedEnd = new Date(start);
+  cappedEnd.setDate(cappedEnd.getDate() + 92);
+  return { start, end: cappedEnd };
+}
+
+function parseDateOnly(value: string | null | undefined) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
+function getWeekOfMonth(dateValue: string | null | undefined): RollRateWeek | null {
+  const date = parseDateOnly(dateValue);
+  if (!date) return null;
+
+  const day = date.getDate();
+
+  if (day <= 7) return 'Week 1';
+  if (day <= 14) return 'Week 2';
+  if (day <= 21) return 'Week 3';
+  if (day <= 28) return 'Week 4';
+  return 'Week 5';
+}
+
 function getKpiValueClass(value: string) {
   const length = value.length;
 
@@ -116,16 +187,6 @@ function downloadCsv(filename: string, rows: Record<string, any>[]) {
   link.remove();
 
   URL.revokeObjectURL(url);
-}
-
-function parseDateOnly(value: string | null | undefined) {
-  const raw = normalizeText(value);
-  if (!raw) return null;
-
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return null;
-
-  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 }
 
 function daysUntil(dateValue: string | null | undefined) {
@@ -319,6 +380,13 @@ function ReportsPageClient() {
   const [priorityFilter, setPriorityFilter] = useState<'all' | WarningPriority>('all');
   const [rolloverFilter, setRolloverFilter] = useState<RolloverFilter>('all');
   const [collectorFilter, setCollectorFilter] = useState('all');
+  const [rollRateWindow, setRollRateWindow] = useState<RollRateWindow>('current_month');
+  const [rollRateStartDate, setRollRateStartDate] = useState(
+    toDateInputValue(startOfMonth(new Date()))
+  );
+  const [rollRateEndDate, setRollRateEndDate] = useState(
+    toDateInputValue(endOfMonth(new Date()))
+  );
 
   const reportsCacheKey = useMemo(() => {
     const companyId = normalizeText(profile?.company_id) || 'pending-company';
@@ -344,6 +412,9 @@ function ReportsPageClient() {
       if (parsed?.priorityFilter) setPriorityFilter(parsed.priorityFilter);
       if (parsed?.rolloverFilter) setRolloverFilter(parsed.rolloverFilter);
       if (parsed?.collectorFilter) setCollectorFilter(parsed.collectorFilter);
+      if (parsed?.rollRateWindow) setRollRateWindow(parsed.rollRateWindow);
+      if (parsed?.rollRateStartDate) setRollRateStartDate(parsed.rollRateStartDate);
+      if (parsed?.rollRateEndDate) setRollRateEndDate(parsed.rollRateEndDate);
 
       if (parsed?.reportData?.loaded) {
         setRestoredFromCache(true);
@@ -356,17 +427,22 @@ function ReportsPageClient() {
   }, [reportsCacheKey]);
 
   useEffect(() => {
-  const requestedTab = searchParams.get('tab');
+    const requestedTab = searchParams.get('tab');
 
-  if (requestedTab === 'early_warning') {
-    setActiveTab('early_warning');
-    return;
-  }
+    if (requestedTab === 'early_warning') {
+      setActiveTab('early_warning');
+      return;
+    }
 
-  if (requestedTab === 'overview') {
-    setActiveTab('overview');
-  }
-}, [searchParams]);
+    if (requestedTab === 'roll_rates') {
+      setActiveTab('roll_rates');
+      return;
+    }
+
+    if (requestedTab === 'overview') {
+      setActiveTab('overview');
+    }
+  }, [searchParams]);
 
   useEffect(() => {
     if (!cacheHydrated) return;
@@ -381,6 +457,9 @@ function ReportsPageClient() {
           priorityFilter,
           rolloverFilter,
           collectorFilter,
+          rollRateWindow,
+          rollRateStartDate,
+          rollRateEndDate,
           savedAt: Date.now(),
         })
       );
@@ -395,6 +474,9 @@ function ReportsPageClient() {
     priorityFilter,
     rolloverFilter,
     collectorFilter,
+    rollRateWindow,
+    rollRateStartDate,
+    rollRateEndDate,
     cacheHydrated,
   ]);
 
@@ -522,7 +604,7 @@ function ReportsPageClient() {
     };
   }, [cacheHydrated]);
 
-  const { accounts, payments, ptps } = reportData;
+  const { accounts, ptps } = reportData;
 
   const totalBalance = accounts.reduce(
     (sum, item) => sum + Number(item.balance || 0),
@@ -530,25 +612,21 @@ function ReportsPageClient() {
   );
 
   const totalCollected = accounts.reduce(
-  (sum, item) => sum + Number(item.amount_paid || 0),
-  0
-);
+    (sum, item) => sum + Number(item.amount_paid || 0),
+    0
+  );
 
-const collectedThisMonth = accounts
-  .filter((item) =>
-    isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
-  )
-  .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
+  const collectedThisMonth = accounts
+    .filter((item) =>
+      isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+    )
+    .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const openPtps = ptps.filter((item) => item.status === 'Promise To Pay').length;
 
-  const keptPtps = ptps.filter(
-    (item) => item.resolution_type === 'kept'
-  ).length;
+  const keptPtps = ptps.filter((item) => item.resolution_type === 'kept').length;
 
-  const brokenPtps = ptps.filter(
-    (item) => item.resolution_type === 'broken'
-  ).length;
+  const brokenPtps = ptps.filter((item) => item.resolution_type === 'broken').length;
 
   const resolvedPtps = ptps.filter(
     (item) => item.resolution_type === 'kept' || item.resolution_type === 'broken'
@@ -567,32 +645,31 @@ const collectedThisMonth = accounts
         .map((item) => normalizeText(item.product || item.product_name))
         .filter(Boolean)
     )
-  )
-    .sort((a, b) => String(a).localeCompare(String(b)));
+  ).sort((a, b) => String(a).localeCompare(String(b)));
 
   const productRows = accountProducts.map((product) => {
-  const productAccounts = accounts.filter(
-    (item) => normalizeText(item.product || item.product_name) === product
-  );
+    const productAccounts = accounts.filter(
+      (item) => normalizeText(item.product || item.product_name) === product
+    );
 
-  return {
-    product,
-    accounts: productAccounts.length,
-    balance: productAccounts.reduce(
-      (sum, item) => sum + Number(item.balance || 0),
-      0
-    ),
-    collected: productAccounts.reduce(
-      (sum, item) => sum + Number(item.amount_paid || 0),
-      0
-    ),
-    collectedThisMonth: productAccounts
-      .filter((item) =>
-        isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
-      )
-      .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
-  };
-});
+    return {
+      product,
+      accounts: productAccounts.length,
+      balance: productAccounts.reduce(
+        (sum, item) => sum + Number(item.balance || 0),
+        0
+      ),
+      collected: productAccounts.reduce(
+        (sum, item) => sum + Number(item.amount_paid || 0),
+        0
+      ),
+      collectedThisMonth: productAccounts
+        .filter((item) =>
+          isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+        )
+        .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+    };
+  });
 
   const statuses = Array.from(
     new Set(accounts.map((item) => item.status).filter(Boolean))
@@ -613,60 +690,60 @@ const collectedThisMonth = accounts
   ).sort((a, b) => String(a).localeCompare(String(b)));
 
   const collectorRows = collectors.map((collector) => {
-  const collectorAccounts = accounts.filter(
-    (item) => item.collector_name === collector
-  );
+    const collectorAccounts = accounts.filter(
+      (item) => item.collector_name === collector
+    );
 
-  const collectorCollected = collectorAccounts.reduce(
-    (sum, item) => sum + Number(item.amount_paid || 0),
-    0
-  );
-
-  const collectorPtps = ptps.filter((item) => item.collector_name === collector);
-
-  const collectorKeptPtps = collectorPtps.filter(
-    (item) => item.resolution_type === 'kept'
-  ).length;
-
-  const collectorBrokenPtps = collectorPtps.filter(
-    (item) => item.resolution_type === 'broken'
-  ).length;
-
-  const collectorResolvedPtps = collectorPtps.filter(
-    (item) => item.resolution_type === 'kept' || item.resolution_type === 'broken'
-  ).length;
-
-  const accountsCount = collectorAccounts.length;
-
-  return {
-    collector,
-    accounts: accountsCount,
-    balance: collectorAccounts.reduce(
-      (sum, item) => sum + Number(item.balance || 0),
+    const collectorCollected = collectorAccounts.reduce(
+      (sum, item) => sum + Number(item.amount_paid || 0),
       0
-    ),
-    collected: collectorCollected,
-    collectedThisMonth: collectorAccounts
-      .filter((item) =>
-        isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
-      )
-      .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
-    openPtps: collectorPtps.filter(
-      (item) => item.status === 'Promise To Pay'
-    ).length,
-    keptPtps: collectorKeptPtps,
-    brokenPtps: collectorBrokenPtps,
-    ptpKeptRate:
-      collectorResolvedPtps > 0
-        ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-        : '0.0%',
-    callbacks: collectorAccounts.filter(
-      (item) => item.status === 'Callback Requested'
-    ).length,
-    avgCollectedPerAccount:
-      accountsCount > 0 ? collectorCollected / accountsCount : 0,
-  };
-});
+    );
+
+    const collectorPtps = ptps.filter((item) => item.collector_name === collector);
+
+    const collectorKeptPtps = collectorPtps.filter(
+      (item) => item.resolution_type === 'kept'
+    ).length;
+
+    const collectorBrokenPtps = collectorPtps.filter(
+      (item) => item.resolution_type === 'broken'
+    ).length;
+
+    const collectorResolvedPtps = collectorPtps.filter(
+      (item) => item.resolution_type === 'kept' || item.resolution_type === 'broken'
+    ).length;
+
+    const accountsCount = collectorAccounts.length;
+
+    return {
+      collector,
+      accounts: accountsCount,
+      balance: collectorAccounts.reduce(
+        (sum, item) => sum + Number(item.balance || 0),
+        0
+      ),
+      collected: collectorCollected,
+      collectedThisMonth: collectorAccounts
+        .filter((item) =>
+          isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+        )
+        .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+      openPtps: collectorPtps.filter(
+        (item) => item.status === 'Promise To Pay'
+      ).length,
+      keptPtps: collectorKeptPtps,
+      brokenPtps: collectorBrokenPtps,
+      ptpKeptRate:
+        collectorResolvedPtps > 0
+          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+          : '0.0%',
+      callbacks: collectorAccounts.filter(
+        (item) => item.status === 'Callback Requested'
+      ).length,
+      avgCollectedPerAccount:
+        accountsCount > 0 ? collectorCollected / accountsCount : 0,
+    };
+  });
 
   const totalCollectorPages = Math.max(
     1,
@@ -759,6 +836,129 @@ const collectedThisMonth = accounts
     (row) => row.daysToRollover <= 2 && row.ptpStatus === 'Broken'
   ).length;
 
+  const computedRollRateRange = useMemo(() => {
+    const now = new Date();
+
+    if (rollRateWindow === 'current_month') {
+      return {
+        start: startOfMonth(now),
+        end: endOfMonth(now),
+      };
+    }
+
+    if (rollRateWindow === 'last_30_days') {
+      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const start = new Date(end);
+      start.setDate(start.getDate() - 29);
+      return { start, end };
+    }
+
+    const parsedStart = parseInputDate(rollRateStartDate) || startOfMonth(now);
+    const parsedEnd = parseInputDate(rollRateEndDate) || endOfMonth(now);
+
+    return clampRangeToNinetyDays(parsedStart, parsedEnd);
+  }, [rollRateWindow, rollRateStartDate, rollRateEndDate]);
+
+  const rollRateAccountsInRange = useMemo(() => {
+    return accounts.filter((account) => {
+      const dueDate =
+        normalizeText(account.due_date) ||
+        normalizeText(account.loan_due_date) ||
+        normalizeText(account.next_action_date);
+
+      const parsed = parseDateOnly(dueDate);
+      if (!parsed) return false;
+
+      return parsed >= computedRollRateRange.start && parsed <= computedRollRateRange.end;
+    });
+  }, [accounts, computedRollRateRange]);
+
+  const rollRateRows = useMemo(() => {
+    const grouped = new Map<string, RollRateRow>();
+
+    for (const account of rollRateAccountsInRange) {
+      const collector = normalizeText(account.collector_name) || 'Unassigned';
+      const dueDate =
+        normalizeText(account.due_date) ||
+        normalizeText(account.loan_due_date) ||
+        normalizeText(account.next_action_date);
+
+      const week = getWeekOfMonth(dueDate);
+      if (!week) continue;
+
+      const currentBucket = getBucketLabel(account.dpd);
+      const nextBucket = getNextBucketLabel(currentBucket);
+      const balance = Number(account.balance || 0);
+      const amountPaid = Number(account.amount_paid || 0);
+      const daysToRollover = daysUntil(dueDate);
+
+      const isAtRisk =
+        daysToRollover !== null &&
+        daysToRollover >= 1 &&
+        daysToRollover <= 7 &&
+        balance > 0;
+
+      const key = `${collector}::${week}::${currentBucket}`;
+
+      if (!grouped.has(key)) {
+        grouped.set(key, {
+          collector,
+          week,
+          bucket: currentBucket,
+          nextBucket,
+          accountsInBucket: 0,
+          accountsAtRisk: 0,
+          valueInBucket: 0,
+          valueAtRisk: 0,
+          rollRateCount: 0,
+          rollRateValue: 0,
+          highRiskAgent: false,
+        });
+      }
+
+      const row = grouped.get(key)!;
+
+      row.accountsInBucket += 1;
+      row.valueInBucket += balance;
+
+      if (isAtRisk) {
+        row.accountsAtRisk += 1;
+        row.valueAtRisk += Math.max(balance - amountPaid, 0);
+      }
+    }
+
+    const rows = Array.from(grouped.values()).map((row) => {
+      const rollRateCount =
+        row.accountsInBucket > 0 ? (row.accountsAtRisk / row.accountsInBucket) * 100 : 0;
+
+      const rollRateValue =
+        row.valueInBucket > 0 ? (row.valueAtRisk / row.valueInBucket) * 100 : 0;
+
+      return {
+        ...row,
+        rollRateCount,
+        rollRateValue,
+        highRiskAgent: rollRateCount >= 40 || rollRateValue >= 40,
+      };
+    });
+
+    return rows.sort((a, b) => {
+      const weekOrder = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
+      const weekDiff = weekOrder.indexOf(a.week) - weekOrder.indexOf(b.week);
+      if (weekDiff !== 0) return weekDiff;
+
+      if (b.rollRateCount !== a.rollRateCount) return b.rollRateCount - a.rollRateCount;
+      return b.valueAtRisk - a.valueAtRisk;
+    });
+  }, [rollRateAccountsInRange]);
+
+  const highRiskAgentCount = new Set(
+    rollRateRows.filter((row) => row.highRiskAgent).map((row) => row.collector)
+  ).size;
+
+  const totalAccountsAtRisk = rollRateRows.reduce((sum, row) => sum + row.accountsAtRisk, 0);
+  const totalValueAtRisk = rollRateRows.reduce((sum, row) => sum + row.valueAtRisk, 0);
+
   if (!reportData.loaded && !restoredFromCache) {
     return (
       <div className="space-y-4">
@@ -843,6 +1043,25 @@ const collectedThisMonth = accounts
     );
   }
 
+  function handleDownloadRollRatesReport() {
+    downloadCsv(
+      'roll-rates-report.csv',
+      rollRateRows.map((row) => ({
+        Collector: row.collector,
+        Week: row.week,
+        'Current Bucket': row.bucket,
+        'Next Bucket': row.nextBucket,
+        'Accounts In Bucket': row.accountsInBucket,
+        'Accounts At Risk': row.accountsAtRisk,
+        'Value In Bucket': row.valueInBucket,
+        'Value At Risk': row.valueAtRisk,
+        'Roll Rate Count %': row.rollRateCount.toFixed(1),
+        'Roll Rate Value %': row.rollRateValue.toFixed(1),
+        'High Risk Agent': row.highRiskAgent ? 'Yes' : 'No',
+      }))
+    );
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -889,12 +1108,19 @@ const collectedThisMonth = accounts
                 Download Status Report
               </button>
             </>
-          ) : (
+          ) : activeTab === 'early_warning' ? (
             <button
               onClick={handleDownloadEarlyWarningReport}
               className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
               Download Early Warning Report
+            </button>
+          ) : (
+            <button
+              onClick={handleDownloadRollRatesReport}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Download Roll Rates Report
             </button>
           )}
         </div>
@@ -923,6 +1149,18 @@ const collectedThisMonth = accounts
           }`}
         >
           Early Warning
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('roll_rates')}
+          className={`rounded-xl px-4 py-3 text-sm font-medium ${
+            activeTab === 'roll_rates'
+              ? 'bg-slate-900 text-white'
+              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          Roll Rates
         </button>
       </div>
 
@@ -1142,7 +1380,7 @@ const collectedThisMonth = accounts
             </div>
           </div>
         </>
-      ) : (
+      ) : activeTab === 'early_warning' ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-sm">
@@ -1296,6 +1534,153 @@ const collectedThisMonth = accounts
               {filteredEarlyWarningRows.length === 0 ? (
                 <div className="rounded-b-2xl border-x border-b border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
                   No accounts match the current early warning filters.
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-sm">
+              <p className="text-sm text-rose-700">High Roll-Risk Agents</p>
+              <p className={getKpiValueClass(String(highRiskAgentCount))}>
+                {highRiskAgentCount}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+              <p className="text-sm text-amber-700">Accounts At Risk</p>
+              <p className={getKpiValueClass(String(totalAccountsAtRisk))}>
+                {totalAccountsAtRisk}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5 shadow-sm">
+              <p className="text-sm text-orange-700">Value At Risk</p>
+              <p className={getKpiValueClass(currency(totalValueAtRisk))}>
+                {currency(totalValueAtRisk)}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className="text-sm text-slate-500">Weeks in View</p>
+              <p
+                className={getKpiValueClass(
+                  String(new Set(rollRateRows.map((row) => row.week)).size)
+                )}
+              >
+                {new Set(rollRateRows.map((row) => row.week)).size}
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Roll Rates by Agent and Week</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Live weekly roll-risk view by collector, bucket and value. This version uses
+                  current account state and will be followed by locked weekly snapshot logic next.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-3">
+                <div>
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Period
+                  </label>
+                  <select
+                    value={rollRateWindow}
+                    onChange={(e) => setRollRateWindow(e.target.value as RollRateWindow)}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                  >
+                    <option value="current_month">Current month</option>
+                    <option value="last_30_days">Last 30 days</option>
+                    <option value="custom">Custom range</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={rollRateStartDate}
+                    onChange={(e) => setRollRateStartDate(e.target.value)}
+                    disabled={rollRateWindow !== 'custom'}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:bg-slate-100"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
+                    End Date
+                  </label>
+                  <input
+                    type="date"
+                    value={rollRateEndDate}
+                    onChange={(e) => setRollRateEndDate(e.target.value)}
+                    disabled={rollRateWindow !== 'custom'}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:bg-slate-100"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {rollRateWindow === 'custom' ? (
+              <p className="mt-3 text-sm text-slate-500">
+                Custom range is capped to 3 months for performance and consistency.
+              </p>
+            ) : null}
+
+            <div className="mt-4 overflow-x-auto">
+              <DataTable
+                headers={[
+                  'Collector',
+                  'Week',
+                  'Current Bucket',
+                  'Next Bucket',
+                  'Accounts In Bucket',
+                  'Accounts At Risk',
+                  'Value In Bucket',
+                  'Value At Risk',
+                  'Roll Rate Count %',
+                  'Roll Rate Value %',
+                  'Risk Flag',
+                ]}
+              >
+                {rollRateRows.map((row, index) => (
+                  <tr key={`${row.collector}-${row.week}-${row.bucket}-${index}`}>
+                    <td className="px-4 py-3 font-medium">{row.collector}</td>
+                    <td className="px-4 py-3">{row.week}</td>
+                    <td className="px-4 py-3">{row.bucket}</td>
+                    <td className="px-4 py-3">{row.nextBucket}</td>
+                    <td className="px-4 py-3">{row.accountsInBucket}</td>
+                    <td className="px-4 py-3">{row.accountsAtRisk}</td>
+                    <td className="px-4 py-3">{currency(row.valueInBucket)}</td>
+                    <td className="px-4 py-3">{currency(row.valueAtRisk)}</td>
+                    <td className="px-4 py-3">{formatPercent(row.rollRateCount)}</td>
+                    <td className="px-4 py-3">{formatPercent(row.rollRateValue)}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
+                          row.highRiskAgent
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {row.highRiskAgent ? 'High Risk' : 'Watch'}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </DataTable>
+
+              {rollRateRows.length === 0 ? (
+                <div className="rounded-b-2xl border-x border-b border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
+                  No roll-rate rows match the selected period.
                 </div>
               ) : null}
             </div>
