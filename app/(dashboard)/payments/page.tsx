@@ -5,8 +5,29 @@ import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
+const PAYMENTS_CACHE_PREFIX = 'payments-page-cache:v1:';
+const PEZESHA_FALLBACK_NAME = 'Pezesha';
+
+type AuthProfile = {
+  id: string;
+  name: string | null;
+  role: string | null;
+  company_id: string | null;
+};
+
+type CachedPaymentsState = {
+  profile: AuthProfile | null;
+  paymentRows: any[];
+  accountRows: any[];
+  savedAt: number;
+};
+
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
+}
+
+function normalizeText(value: unknown) {
+  return String(value || '').trim();
 }
 
 function isCurrentMonth(dateValue: string | null | undefined) {
@@ -16,6 +37,7 @@ function isCurrentMonth(dateValue: string | null | undefined) {
   const now = new Date();
 
   return (
+    !Number.isNaN(date.getTime()) &&
     date.getFullYear() === now.getFullYear() &&
     date.getMonth() === now.getMonth()
   );
@@ -24,13 +46,66 @@ function isCurrentMonth(dateValue: string | null | undefined) {
 export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
-  const [rows, setRows] = useState<any[]>([]);
-  const [profile, setProfile] = useState<{
-    id: string;
-    name: string | null;
-    role: string | null;
-    company_id: string | null;
-  } | null>(null);
+  const [paymentRows, setPaymentRows] = useState<any[]>([]);
+  const [accountRows, setAccountRows] = useState<any[]>([]);
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
+  const [restoredFromCache, setRestoredFromCache] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const paymentsCacheKey = useMemo(() => {
+    const companyId = normalizeText(profile?.company_id) || 'pending-company';
+    const role = normalizeRole(profile?.role);
+    const name = normalizeText(profile?.name) || 'unknown-user';
+    return `${PAYMENTS_CACHE_PREFIX}${companyId}:${role}:${name}`;
+  }, [profile?.company_id, profile?.role, profile?.name]);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(paymentsCacheKey);
+      if (!raw) {
+        setCacheHydrated(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as CachedPaymentsState;
+
+      if (parsed?.profile) setProfile(parsed.profile);
+      if (Array.isArray(parsed?.paymentRows)) setPaymentRows(parsed.paymentRows);
+      if (Array.isArray(parsed?.accountRows)) setAccountRows(parsed.accountRows);
+
+      if (
+        parsed?.profile ||
+        Array.isArray(parsed?.paymentRows) ||
+        Array.isArray(parsed?.accountRows)
+      ) {
+        setRestoredFromCache(true);
+        setLoading(false);
+      }
+    } catch {
+      // ignore cache errors
+    } finally {
+      setCacheHydrated(true);
+    }
+  }, [paymentsCacheKey]);
+
+  useEffect(() => {
+    if (!cacheHydrated) return;
+
+    try {
+      sessionStorage.setItem(
+        paymentsCacheKey,
+        JSON.stringify({
+          profile,
+          paymentRows,
+          accountRows,
+          savedAt: Date.now(),
+        })
+      );
+    } catch {
+      // ignore cache errors
+    }
+  }, [paymentsCacheKey, profile, paymentRows, accountRows, cacheHydrated]);
 
   useEffect(() => {
     let mounted = true;
@@ -45,20 +120,39 @@ export default function PaymentsPage() {
           return;
         }
 
+        const client = supabase;
+
+        if (paymentRows.length === 0 && accountRows.length === 0) {
+          setLoading(true);
+        } else {
+          setIsRefreshing(true);
+        }
+
         const {
           data: { session },
-        } = await supabase.auth.getSession();
+          error: sessionError,
+        } = await client.auth.getSession();
+
+        if (sessionError) {
+          if (mounted) {
+            setErrorMessage(sessionError.message || 'Unable to load user session.');
+            setLoading(false);
+            setIsRefreshing(false);
+          }
+          return;
+        }
 
         const userId = session?.user?.id;
         if (!userId) {
           if (mounted) {
             setErrorMessage('Unable to load user session.');
             setLoading(false);
+            setIsRefreshing(false);
           }
           return;
         }
 
-        let { data: profileData, error: profileError } = await supabase
+        const { data: profileData, error: profileError } = await client
           .from('user_profiles')
           .select('id,name,role,company_id')
           .eq('id', userId)
@@ -68,6 +162,7 @@ export default function PaymentsPage() {
           if (mounted) {
             setErrorMessage('Unable to load user profile.');
             setLoading(false);
+            setIsRefreshing(false);
           }
           return;
         }
@@ -75,10 +170,10 @@ export default function PaymentsPage() {
         let resolvedCompanyId = String(profileData.company_id || '').trim();
 
         if (!resolvedCompanyId) {
-          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+          const { data: fixedCompany, error: fixedCompanyError } = await client
             .from('companies')
             .select('id,name,code')
-            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .or(`name.eq.${PEZESHA_FALLBACK_NAME},code.eq.${PEZESHA_FALLBACK_NAME}`)
             .limit(1)
             .maybeSingle();
 
@@ -86,6 +181,7 @@ export default function PaymentsPage() {
             if (mounted) {
               setErrorMessage('Unable to resolve Pezesha company.');
               setLoading(false);
+              setIsRefreshing(false);
             }
             return;
           }
@@ -97,22 +193,44 @@ export default function PaymentsPage() {
         const isAgent = normalizedRole === 'agent';
         const collectorScope = String(profileData.name || '').trim();
 
-        let query = supabase
+        let paymentsQuery = client
           .from('payments')
           .select('*')
           .eq('company_id', resolvedCompanyId)
           .order('created_at', { ascending: false });
 
+        let accountsQuery = client
+          .from('accounts')
+          .select(
+            'id,collector_name,product,product_name,balance,amount_paid,last_action_date,updated_at,created_at'
+          )
+          .eq('company_id', resolvedCompanyId)
+          .order('created_at', { ascending: false });
+
         if (isAgent && collectorScope) {
-          query = query.eq('collector_name', collectorScope);
+          paymentsQuery = paymentsQuery.eq('collector_name', collectorScope);
+          accountsQuery = accountsQuery.eq('collector_name', collectorScope);
         }
 
-        const { data: paymentRows, error } = await query;
+        const [
+          { data: fetchedPaymentRows, error: paymentsError },
+          { data: fetchedAccountRows, error: accountsError },
+        ] = await Promise.all([paymentsQuery, accountsQuery]);
 
-        if (error) {
+        if (paymentsError) {
           if (mounted) {
-            setErrorMessage(`Failed to load payments: ${error.message}`);
+            setErrorMessage(`Failed to load payments: ${paymentsError.message}`);
             setLoading(false);
+            setIsRefreshing(false);
+          }
+          return;
+        }
+
+        if (accountsError) {
+          if (mounted) {
+            setErrorMessage(`Failed to load payment summary accounts: ${accountsError.message}`);
+            setLoading(false);
+            setIsRefreshing(false);
           }
           return;
         }
@@ -124,66 +242,85 @@ export default function PaymentsPage() {
             role: profileData.role ?? null,
             company_id: resolvedCompanyId,
           });
-          setRows(paymentRows ?? []);
+          setPaymentRows(fetchedPaymentRows ?? []);
+          setAccountRows(fetchedAccountRows ?? []);
+          setErrorMessage('');
           setLoading(false);
+          setIsRefreshing(false);
+          setRestoredFromCache(false);
         }
       } catch (error: any) {
         if (mounted) {
           setErrorMessage(error?.message || 'Failed to load payments.');
           setLoading(false);
+          setIsRefreshing(false);
         }
       }
     }
 
-    loadPayments();
+    if (cacheHydrated) {
+      loadPayments();
+    }
 
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [cacheHydrated]);
 
   const allTimeCollected = useMemo(
     () =>
-      (rows ?? []).reduce(
-        (sum, row) => sum + Number(row.amount || 0),
+      accountRows.reduce(
+        (sum, row) => sum + Number(row.amount_paid || 0),
         0
       ),
-    [rows]
+    [accountRows]
   );
 
   const collectedThisMonth = useMemo(
     () =>
-      (rows ?? [])
-        .filter((row) => isCurrentMonth(row.paid_on))
-        .reduce((sum, row) => sum + Number(row.amount || 0), 0),
-    [rows]
+      accountRows
+        .filter((row) =>
+          isCurrentMonth(row.last_action_date || row.updated_at || row.created_at)
+        )
+        .reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
+    [accountRows]
   );
 
-  const latestPayment = rows?.[0] ?? null;
+  const latestPayment = paymentRows?.[0] ?? null;
 
   const productSummary = useMemo(
     () =>
-      Array.from(new Set((rows ?? []).map((item) => item.product).filter(Boolean))).map((product) => {
-        const productPayments = (rows ?? []).filter((item) => item.product === product);
+      Array.from(
+        new Set(
+          accountRows
+            .map((item) => item.product || item.product_name)
+            .filter(Boolean)
+        )
+      ).map((product) => {
+        const productAccounts = accountRows.filter(
+          (item) => (item.product || item.product_name) === product
+        );
 
         return {
           product,
-          total: productPayments.reduce(
-            (sum, item) => sum + Number(item.amount || 0),
+          total: productAccounts.reduce(
+            (sum, item) => sum + Number(item.amount_paid || 0),
             0
           ),
-          monthly: productPayments
-            .filter((item) => isCurrentMonth(item.paid_on))
-            .reduce((sum, item) => sum + Number(item.amount || 0), 0),
-          count: productPayments.length,
+          monthly: productAccounts
+            .filter((item) =>
+              isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+            )
+            .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+          count: productAccounts.filter((item) => Number(item.amount_paid || 0) > 0).length,
         };
       }),
-    [rows]
+    [accountRows]
   );
 
   const isAgent = normalizeRole(profile?.role) === 'agent';
 
-  if (loading) {
+  if (loading && !restoredFromCache && paymentRows.length === 0 && accountRows.length === 0) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Payments</h1>
@@ -192,7 +329,7 @@ export default function PaymentsPage() {
     );
   }
 
-  if (errorMessage) {
+  if (errorMessage && !restoredFromCache && paymentRows.length === 0 && accountRows.length === 0) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Payments</h1>
@@ -204,7 +341,21 @@ export default function PaymentsPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold">Payments</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold">Payments</h1>
+          {isRefreshing ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              Refreshing…
+            </span>
+          ) : null}
+        </div>
+
+        {restoredFromCache ? (
+          <p className="mt-2 text-sm text-slate-500">
+            Restored your last payments view while the latest data loads.
+          </p>
+        ) : null}
+
         <p className="mt-1 text-slate-500">
           {isAgent
             ? 'Live payment log for your assigned portfolio.'
@@ -243,7 +394,7 @@ export default function PaymentsPage() {
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <h2 className="text-lg font-semibold text-slate-900">Product Summary</h2>
         <div className="mt-4">
-          <DataTable headers={['Product', 'Payments', 'Collected', 'Collected This Month']}>
+          <DataTable headers={['Product', 'Paid Accounts', 'Collected', 'Collected This Month']}>
             {productSummary.map((row) => (
               <tr key={row.product}>
                 <td className="px-4 py-3 font-medium">{row.product}</td>
@@ -266,7 +417,7 @@ export default function PaymentsPage() {
           'Account ID',
         ]}
       >
-        {(rows ?? []).map((row) => (
+        {paymentRows.map((row) => (
           <tr key={row.id}>
             <td className="px-4 py-3 font-medium">{row.collector_name || '-'}</td>
             <td className="px-4 py-3">{row.product || '-'}</td>
