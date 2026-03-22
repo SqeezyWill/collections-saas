@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
@@ -8,7 +9,7 @@ import { currency } from '@/lib/utils';
 
 const PAGE_SIZE = 1000;
 const COLLECTOR_PAGE_SIZE = 15;
-const REPORTS_CACHE_PREFIX = 'reports-cache:v1:';
+const REPORTS_CACHE_PREFIX = 'reports-cache:v2:';
 
 type AuthProfile = {
   id: string;
@@ -26,25 +27,11 @@ type ReportState = {
   error: string | null;
 };
 
-type ActiveTab = 'overview' | 'early_warning' | 'roll_rates';
+type ActiveTab = 'overview' | 'early_warning' | 'roll_rates' | 'conversion_rates';
 type WarningPriority = 'Critical' | 'High' | 'Medium' | 'Low';
 type RolloverFilter = 'all' | '3' | '2' | '1';
-type RollRateWindow = 'current_month' | 'last_30_days' | 'custom';
+type PeriodWindow = 'current_month' | 'last_30_days' | 'custom';
 type RollRateWeek = 'Week 1' | 'Week 2' | 'Week 3' | 'Week 4' | 'Week 5';
-
-type RollRateRow = {
-  collector: string;
-  week: RollRateWeek;
-  bucket: string;
-  nextBucket: string;
-  accountsInBucket: number;
-  accountsAtRisk: number;
-  valueInBucket: number;
-  valueAtRisk: number;
-  rollRateCount: number;
-  rollRateValue: number;
-  highRiskAgent: boolean;
-};
 
 type EarlyWarningRow = {
   id: string;
@@ -66,12 +53,65 @@ type EarlyWarningRow = {
   rawStatus: string;
 };
 
+type RollRateAgentRow = {
+  collector: string;
+  accountsHeld: number;
+  portfolioValue: number;
+  week1Count: number;
+  week1Value: number;
+  week2Count: number;
+  week2Value: number;
+  week3Count: number;
+  week3Value: number;
+  week4Count: number;
+  week4Value: number;
+  week5Count: number;
+  week5Value: number;
+  totalAtRiskCount: number;
+  totalAtRiskValue: number;
+  countRate: number;
+  valueRate: number;
+  highRiskAgent: boolean;
+};
+
+type ConversionRow = {
+  collector: string;
+  totalAccountsHeld: number;
+  convertedAccounts: number;
+  unconvertedAccounts: number;
+  totalBalanceHeld: number;
+  convertedValue: number;
+  unconvertedValue: number;
+  countConversionRate: number;
+  valueConversionRate: number;
+  highPriorityFollowup: boolean;
+};
+
+type DrilldownRow = {
+  id: string;
+  cfid: string;
+  debtorName: string;
+  collector: string;
+  product: string;
+  bucket: string;
+  dueDate: string;
+  balance: number;
+  amountPaid: number;
+  status: string;
+  actionLabel: string;
+  href: string;
+};
+
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
 }
 
 function normalizeText(value: unknown) {
   return String(value || '').trim();
+}
+
+function normalizeCollectorName(value: unknown) {
+  return normalizeText(value) || 'Unassigned';
 }
 
 function isCurrentMonth(dateValue: string | null | undefined) {
@@ -109,6 +149,16 @@ function parseInputDate(value: string) {
   return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 }
 
+function parseDateOnly(value: string | null | undefined) {
+  const raw = normalizeText(value);
+  if (!raw) return null;
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
+}
+
 function daysBetween(start: Date, end: Date) {
   const diffMs = end.getTime() - start.getTime();
   return Math.round(diffMs / (1000 * 60 * 60 * 24));
@@ -121,16 +171,6 @@ function clampRangeToNinetyDays(start: Date, end: Date) {
   const cappedEnd = new Date(start);
   cappedEnd.setDate(cappedEnd.getDate() + 92);
   return { start, end: cappedEnd };
-}
-
-function parseDateOnly(value: string | null | undefined) {
-  const raw = normalizeText(value);
-  if (!raw) return null;
-
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return null;
-
-  return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 }
 
 function getWeekOfMonth(dateValue: string | null | undefined): RollRateWeek | null {
@@ -357,6 +397,25 @@ async function fetchAllRows(
   return allRows;
 }
 
+function buildAccountHref(input: {
+  product?: string;
+  collector?: string;
+  dueStart?: string;
+  dueEnd?: string;
+  paid?: 'yes' | 'no';
+}) {
+  const params = new URLSearchParams();
+
+  if (input.product) params.set('product', input.product);
+  if (input.collector) params.set('collector', input.collector);
+  if (input.dueStart) params.set('due_start', input.dueStart);
+  if (input.dueEnd) params.set('due_end', input.dueEnd);
+  if (input.paid) params.set('paid', input.paid);
+
+  const query = params.toString();
+  return query ? `/accounts?${query}` : '/accounts';
+}
+
 export default function ReportsPageWrapper() {
   return <ReportsPageClient />;
 }
@@ -380,13 +439,17 @@ function ReportsPageClient() {
   const [priorityFilter, setPriorityFilter] = useState<'all' | WarningPriority>('all');
   const [rolloverFilter, setRolloverFilter] = useState<RolloverFilter>('all');
   const [collectorFilter, setCollectorFilter] = useState('all');
-  const [rollRateWindow, setRollRateWindow] = useState<RollRateWindow>('current_month');
-  const [rollRateStartDate, setRollRateStartDate] = useState(
+  const [periodWindow, setPeriodWindow] = useState<PeriodWindow>('current_month');
+  const [periodStartDate, setPeriodStartDate] = useState(
     toDateInputValue(startOfMonth(new Date()))
   );
-  const [rollRateEndDate, setRollRateEndDate] = useState(
+  const [periodEndDate, setPeriodEndDate] = useState(
     toDateInputValue(endOfMonth(new Date()))
   );
+  const [selectedProducts, setSelectedProducts] = useState<string[]>([]);
+  const [drilldownTitle, setDrilldownTitle] = useState('');
+  const [drilldownRows, setDrilldownRows] = useState<DrilldownRow[]>([]);
+  const drilldownRef = useRef<HTMLDivElement | null>(null);
 
   const reportsCacheKey = useMemo(() => {
     const companyId = normalizeText(profile?.company_id) || 'pending-company';
@@ -412,9 +475,10 @@ function ReportsPageClient() {
       if (parsed?.priorityFilter) setPriorityFilter(parsed.priorityFilter);
       if (parsed?.rolloverFilter) setRolloverFilter(parsed.rolloverFilter);
       if (parsed?.collectorFilter) setCollectorFilter(parsed.collectorFilter);
-      if (parsed?.rollRateWindow) setRollRateWindow(parsed.rollRateWindow);
-      if (parsed?.rollRateStartDate) setRollRateStartDate(parsed.rollRateStartDate);
-      if (parsed?.rollRateEndDate) setRollRateEndDate(parsed.rollRateEndDate);
+      if (parsed?.periodWindow) setPeriodWindow(parsed.periodWindow);
+      if (parsed?.periodStartDate) setPeriodStartDate(parsed.periodStartDate);
+      if (parsed?.periodEndDate) setPeriodEndDate(parsed.periodEndDate);
+      if (Array.isArray(parsed?.selectedProducts)) setSelectedProducts(parsed.selectedProducts);
 
       if (parsed?.reportData?.loaded) {
         setRestoredFromCache(true);
@@ -439,6 +503,11 @@ function ReportsPageClient() {
       return;
     }
 
+    if (requestedTab === 'conversion_rates') {
+      setActiveTab('conversion_rates');
+      return;
+    }
+
     if (requestedTab === 'overview') {
       setActiveTab('overview');
     }
@@ -457,9 +526,10 @@ function ReportsPageClient() {
           priorityFilter,
           rolloverFilter,
           collectorFilter,
-          rollRateWindow,
-          rollRateStartDate,
-          rollRateEndDate,
+          periodWindow,
+          periodStartDate,
+          periodEndDate,
+          selectedProducts,
           savedAt: Date.now(),
         })
       );
@@ -474,9 +544,10 @@ function ReportsPageClient() {
     priorityFilter,
     rolloverFilter,
     collectorFilter,
-    rollRateWindow,
-    rollRateStartDate,
-    rollRateEndDate,
+    periodWindow,
+    periodStartDate,
+    periodEndDate,
+    selectedProducts,
     cacheHydrated,
   ]);
 
@@ -604,12 +675,15 @@ function ReportsPageClient() {
     };
   }, [cacheHydrated]);
 
+  useEffect(() => {
+    if (drilldownRows.length > 0 && drilldownRef.current) {
+      drilldownRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [drilldownRows]);
+
   const { accounts, ptps } = reportData;
 
-  const totalBalance = accounts.reduce(
-    (sum, item) => sum + Number(item.balance || 0),
-    0
-  );
+  const totalBalance = accounts.reduce((sum, item) => sum + Number(item.balance || 0), 0);
 
   const totalCollected = accounts.reduce(
     (sum, item) => sum + Number(item.amount_paid || 0),
@@ -623,9 +697,7 @@ function ReportsPageClient() {
     .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const openPtps = ptps.filter((item) => item.status === 'Promise To Pay').length;
-
   const keptPtps = ptps.filter((item) => item.resolution_type === 'kept').length;
-
   const brokenPtps = ptps.filter((item) => item.resolution_type === 'broken').length;
 
   const resolvedPtps = ptps.filter(
@@ -647,6 +719,19 @@ function ReportsPageClient() {
     )
   ).sort((a, b) => String(a).localeCompare(String(b)));
 
+  const selectedProductSet = useMemo(() => {
+    if (selectedProducts.length === 0) {
+      return new Set(accountProducts);
+    }
+    return new Set(selectedProducts);
+  }, [selectedProducts, accountProducts]);
+
+  const filteredAccountsByProduct = useMemo(() => {
+    return accounts.filter((item) =>
+      selectedProductSet.has(normalizeText(item.product || item.product_name))
+    );
+  }, [accounts, selectedProductSet]);
+
   const productRows = accountProducts.map((product) => {
     const productAccounts = accounts.filter(
       (item) => normalizeText(item.product || item.product_name) === product
@@ -655,10 +740,7 @@ function ReportsPageClient() {
     return {
       product,
       accounts: productAccounts.length,
-      balance: productAccounts.reduce(
-        (sum, item) => sum + Number(item.balance || 0),
-        0
-      ),
+      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
       collected: productAccounts.reduce(
         (sum, item) => sum + Number(item.amount_paid || 0),
         0
@@ -686,12 +768,12 @@ function ReportsPageClient() {
   });
 
   const collectors = Array.from(
-    new Set(accounts.map((item) => item.collector_name).filter(Boolean))
+    new Set(accounts.map((item) => normalizeCollectorName(item.collector_name)).filter(Boolean))
   ).sort((a, b) => String(a).localeCompare(String(b)));
 
   const collectorRows = collectors.map((collector) => {
     const collectorAccounts = accounts.filter(
-      (item) => item.collector_name === collector
+      (item) => normalizeCollectorName(item.collector_name) === collector
     );
 
     const collectorCollected = collectorAccounts.reduce(
@@ -699,7 +781,9 @@ function ReportsPageClient() {
       0
     );
 
-    const collectorPtps = ptps.filter((item) => item.collector_name === collector);
+    const collectorPtps = ptps.filter(
+      (item) => normalizeCollectorName(item.collector_name) === collector
+    );
 
     const collectorKeptPtps = collectorPtps.filter(
       (item) => item.resolution_type === 'kept'
@@ -718,19 +802,14 @@ function ReportsPageClient() {
     return {
       collector,
       accounts: accountsCount,
-      balance: collectorAccounts.reduce(
-        (sum, item) => sum + Number(item.balance || 0),
-        0
-      ),
+      balance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
       collected: collectorCollected,
       collectedThisMonth: collectorAccounts
         .filter((item) =>
           isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
         )
         .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
-      openPtps: collectorPtps.filter(
-        (item) => item.status === 'Promise To Pay'
-      ).length,
+      openPtps: collectorPtps.filter((item) => item.status === 'Promise To Pay').length,
       keptPtps: collectorKeptPtps,
       brokenPtps: collectorBrokenPtps,
       ptpKeptRate:
@@ -745,10 +824,7 @@ function ReportsPageClient() {
     };
   });
 
-  const totalCollectorPages = Math.max(
-    1,
-    Math.ceil(collectorRows.length / COLLECTOR_PAGE_SIZE)
-  );
+  const totalCollectorPages = Math.max(1, Math.ceil(collectorRows.length / COLLECTOR_PAGE_SIZE));
 
   const pagedCollectorRows = collectorRows.slice(
     (collectorPage - 1) * COLLECTOR_PAGE_SIZE,
@@ -783,7 +859,7 @@ function ReportsPageClient() {
           id: String(account.id || `${account.cfid || ''}-${account.account_no || ''}`),
           cfid: normalizeText(account.cfid) || '-',
           debtorName: normalizeText(account.debtor_name) || '-',
-          collector: normalizeText(account.collector_name) || 'Unassigned',
+          collector: normalizeCollectorName(account.collector_name),
           product: normalizeText(account.product || account.product_name) || '-',
           currentBucket,
           nextBucket,
@@ -809,58 +885,55 @@ function ReportsPageClient() {
 
   const filteredEarlyWarningRows = useMemo(() => {
     return earlyWarningRows.filter((row) => {
-      if (priorityFilter !== 'all' && row.priority !== priorityFilter) {
-        return false;
-      }
-
-      if (rolloverFilter !== 'all' && row.daysToRollover !== Number(rolloverFilter)) {
-        return false;
-      }
-
-      if (collectorFilter !== 'all' && row.collector !== collectorFilter) {
-        return false;
-      }
-
+      if (priorityFilter !== 'all' && row.priority !== priorityFilter) return false;
+      if (rolloverFilter !== 'all' && row.daysToRollover !== Number(rolloverFilter)) return false;
+      if (collectorFilter !== 'all' && row.collector !== collectorFilter) return false;
+      if (!selectedProductSet.has(row.product)) return false;
       return true;
     });
-  }, [earlyWarningRows, priorityFilter, rolloverFilter, collectorFilter]);
+  }, [earlyWarningRows, priorityFilter, rolloverFilter, collectorFilter, selectedProductSet]);
 
-  const criticalWarningCount = earlyWarningRows.filter((row) => row.priority === 'Critical').length;
-  const warningDueTomorrow = earlyWarningRows.filter((row) => row.daysToRollover === 1).length;
-  const unreachableNearDue = earlyWarningRows.filter(
-    (row) =>
-      row.daysToRollover <= 2 &&
-      row.disposition.toLowerCase().includes('unreach')
+  const criticalWarningCount = filteredEarlyWarningRows.filter(
+    (row) => row.priority === 'Critical'
   ).length;
-  const brokenPtpNearDue = earlyWarningRows.filter(
+
+  const warningDueTomorrow = filteredEarlyWarningRows.filter(
+    (row) => row.daysToRollover === 1
+  ).length;
+
+  const unreachableNearDue = filteredEarlyWarningRows.filter(
+    (row) => row.daysToRollover <= 2 && row.disposition.toLowerCase().includes('unreach')
+  ).length;
+
+  const brokenPtpNearDue = filteredEarlyWarningRows.filter(
     (row) => row.daysToRollover <= 2 && row.ptpStatus === 'Broken'
   ).length;
 
-  const computedRollRateRange = useMemo(() => {
+  const computedRange = useMemo(() => {
     const now = new Date();
 
-    if (rollRateWindow === 'current_month') {
+    if (periodWindow === 'current_month') {
       return {
         start: startOfMonth(now),
         end: endOfMonth(now),
       };
     }
 
-    if (rollRateWindow === 'last_30_days') {
+    if (periodWindow === 'last_30_days') {
       const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const start = new Date(end);
       start.setDate(start.getDate() - 29);
       return { start, end };
     }
 
-    const parsedStart = parseInputDate(rollRateStartDate) || startOfMonth(now);
-    const parsedEnd = parseInputDate(rollRateEndDate) || endOfMonth(now);
+    const parsedStart = parseInputDate(periodStartDate) || startOfMonth(now);
+    const parsedEnd = parseInputDate(periodEndDate) || endOfMonth(now);
 
     return clampRangeToNinetyDays(parsedStart, parsedEnd);
-  }, [rollRateWindow, rollRateStartDate, rollRateEndDate]);
+  }, [periodWindow, periodStartDate, periodEndDate]);
 
   const rollRateAccountsInRange = useMemo(() => {
-    return accounts.filter((account) => {
+    return filteredAccountsByProduct.filter((account) => {
       const dueDate =
         normalizeText(account.due_date) ||
         normalizeText(account.loan_due_date) ||
@@ -869,95 +942,253 @@ function ReportsPageClient() {
       const parsed = parseDateOnly(dueDate);
       if (!parsed) return false;
 
-      return parsed >= computedRollRateRange.start && parsed <= computedRollRateRange.end;
+      return parsed >= computedRange.start && parsed <= computedRange.end;
     });
-  }, [accounts, computedRollRateRange]);
+  }, [filteredAccountsByProduct, computedRange]);
 
-  const rollRateRows = useMemo(() => {
-    const grouped = new Map<string, RollRateRow>();
+  const weekRanges = useMemo(() => {
+    const ranges: Record<RollRateWeek, { start: Date | null; end: Date | null }> = {
+      'Week 1': { start: null, end: null },
+      'Week 2': { start: null, end: null },
+      'Week 3': { start: null, end: null },
+      'Week 4': { start: null, end: null },
+      'Week 5': { start: null, end: null },
+    };
+
+    const cursor = new Date(computedRange.start);
+    while (cursor <= computedRange.end) {
+      const key = getWeekOfMonth(toDateInputValue(cursor));
+      if (key) {
+        if (!ranges[key].start) ranges[key].start = new Date(cursor);
+        ranges[key].end = new Date(cursor);
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return ranges;
+  }, [computedRange]);
+
+  const rollRateProductRows = useMemo(() => {
+    const products = Array.from(selectedProductSet).sort((a, b) => a.localeCompare(b));
+
+    return products.map((product) => {
+      const rows = rollRateAccountsInRange.filter(
+        (account) => normalizeText(account.product || account.product_name) === product
+      );
+
+      const atRisk = rows.filter(
+        (account) => Number(account.balance || 0) > Number(account.amount_paid || 0)
+      );
+
+      return {
+        product,
+        accountsAtRisk: atRisk.length,
+        valueAtRisk: atRisk.reduce(
+          (sum, item) => sum + Math.max(Number(item.balance || 0) - Number(item.amount_paid || 0), 0),
+          0
+        ),
+        rows: atRisk,
+      };
+    });
+  }, [rollRateAccountsInRange, selectedProductSet]);
+
+  const rollRateAgentRows = useMemo(() => {
+    const grouped = new Map<string, RollRateAgentRow>();
 
     for (const account of rollRateAccountsInRange) {
-      const collector = normalizeText(account.collector_name) || 'Unassigned';
-      const dueDate =
+      const collector = normalizeCollectorName(account.collector_name);
+      const week = getWeekOfMonth(
         normalizeText(account.due_date) ||
-        normalizeText(account.loan_due_date) ||
-        normalizeText(account.next_action_date);
-
-      const week = getWeekOfMonth(dueDate);
+          normalizeText(account.loan_due_date) ||
+          normalizeText(account.next_action_date)
+      );
       if (!week) continue;
 
-      const currentBucket = getBucketLabel(account.dpd);
-      const nextBucket = getNextBucketLabel(currentBucket);
       const balance = Number(account.balance || 0);
-      const amountPaid = Number(account.amount_paid || 0);
-      const daysToRollover = daysUntil(dueDate);
+      const outstanding = Math.max(balance - Number(account.amount_paid || 0), 0);
+      const isAtRisk = outstanding > 0;
 
-      const isAtRisk =
-        daysToRollover !== null &&
-        daysToRollover >= 1 &&
-        daysToRollover <= 7 &&
-        balance > 0;
-
-      const key = `${collector}::${week}::${currentBucket}`;
-
-      if (!grouped.has(key)) {
-        grouped.set(key, {
+      if (!grouped.has(collector)) {
+        grouped.set(collector, {
           collector,
-          week,
-          bucket: currentBucket,
-          nextBucket,
-          accountsInBucket: 0,
-          accountsAtRisk: 0,
-          valueInBucket: 0,
-          valueAtRisk: 0,
-          rollRateCount: 0,
-          rollRateValue: 0,
+          accountsHeld: 0,
+          portfolioValue: 0,
+          week1Count: 0,
+          week1Value: 0,
+          week2Count: 0,
+          week2Value: 0,
+          week3Count: 0,
+          week3Value: 0,
+          week4Count: 0,
+          week4Value: 0,
+          week5Count: 0,
+          week5Value: 0,
+          totalAtRiskCount: 0,
+          totalAtRiskValue: 0,
+          countRate: 0,
+          valueRate: 0,
           highRiskAgent: false,
         });
       }
 
-      const row = grouped.get(key)!;
-
-      row.accountsInBucket += 1;
-      row.valueInBucket += balance;
+      const row = grouped.get(collector)!;
+      row.accountsHeld += 1;
+      row.portfolioValue += balance;
 
       if (isAtRisk) {
-        row.accountsAtRisk += 1;
-        row.valueAtRisk += Math.max(balance - amountPaid, 0);
+        row.totalAtRiskCount += 1;
+        row.totalAtRiskValue += outstanding;
+
+        if (week === 'Week 1') {
+          row.week1Count += 1;
+          row.week1Value += outstanding;
+        } else if (week === 'Week 2') {
+          row.week2Count += 1;
+          row.week2Value += outstanding;
+        } else if (week === 'Week 3') {
+          row.week3Count += 1;
+          row.week3Value += outstanding;
+        } else if (week === 'Week 4') {
+          row.week4Count += 1;
+          row.week4Value += outstanding;
+        } else {
+          row.week5Count += 1;
+          row.week5Value += outstanding;
+        }
       }
     }
 
-    const rows = Array.from(grouped.values()).map((row) => {
-      const rollRateCount =
-        row.accountsInBucket > 0 ? (row.accountsAtRisk / row.accountsInBucket) * 100 : 0;
+    return Array.from(grouped.values())
+      .map((row) => {
+        const countRate = row.accountsHeld > 0 ? (row.totalAtRiskCount / row.accountsHeld) * 100 : 0;
+        const valueRate = row.portfolioValue > 0 ? (row.totalAtRiskValue / row.portfolioValue) * 100 : 0;
 
-      const rollRateValue =
-        row.valueInBucket > 0 ? (row.valueAtRisk / row.valueInBucket) * 100 : 0;
-
-      return {
-        ...row,
-        rollRateCount,
-        rollRateValue,
-        highRiskAgent: rollRateCount >= 40 || rollRateValue >= 40,
-      };
-    });
-
-    return rows.sort((a, b) => {
-      const weekOrder = ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5'];
-      const weekDiff = weekOrder.indexOf(a.week) - weekOrder.indexOf(b.week);
-      if (weekDiff !== 0) return weekDiff;
-
-      if (b.rollRateCount !== a.rollRateCount) return b.rollRateCount - a.rollRateCount;
-      return b.valueAtRisk - a.valueAtRisk;
-    });
+        return {
+          ...row,
+          countRate,
+          valueRate,
+          highRiskAgent: countRate >= 40 || valueRate >= 40,
+        };
+      })
+      .sort((a, b) => {
+        if (b.countRate !== a.countRate) return b.countRate - a.countRate;
+        return b.totalAtRiskValue - a.totalAtRiskValue;
+      });
   }, [rollRateAccountsInRange]);
 
   const highRiskAgentCount = new Set(
-    rollRateRows.filter((row) => row.highRiskAgent).map((row) => row.collector)
+    rollRateAgentRows.filter((row) => row.highRiskAgent).map((row) => row.collector)
   ).size;
 
-  const totalAccountsAtRisk = rollRateRows.reduce((sum, row) => sum + row.accountsAtRisk, 0);
-  const totalValueAtRisk = rollRateRows.reduce((sum, row) => sum + row.valueAtRisk, 0);
+  const totalAccountsAtRisk = rollRateAgentRows.reduce(
+    (sum, row) => sum + row.totalAtRiskCount,
+    0
+  );
+
+  const totalValueAtRisk = rollRateAgentRows.reduce(
+    (sum, row) => sum + row.totalAtRiskValue,
+    0
+  );
+
+  const conversionRows = useMemo(() => {
+    const grouped = new Map<string, ConversionRow>();
+
+    for (const account of filteredAccountsByProduct) {
+      const collector = normalizeCollectorName(account.collector_name);
+      const balance = Number(account.balance || 0);
+      const amountPaid = Number(account.amount_paid || 0);
+      const converted = amountPaid > 0;
+
+      if (!grouped.has(collector)) {
+        grouped.set(collector, {
+          collector,
+          totalAccountsHeld: 0,
+          convertedAccounts: 0,
+          unconvertedAccounts: 0,
+          totalBalanceHeld: 0,
+          convertedValue: 0,
+          unconvertedValue: 0,
+          countConversionRate: 0,
+          valueConversionRate: 0,
+          highPriorityFollowup: false,
+        });
+      }
+
+      const row = grouped.get(collector)!;
+      row.totalAccountsHeld += 1;
+      row.totalBalanceHeld += balance;
+
+      if (converted) {
+        row.convertedAccounts += 1;
+        row.convertedValue += amountPaid;
+      } else {
+        row.unconvertedAccounts += 1;
+        row.unconvertedValue += balance;
+      }
+    }
+
+    return Array.from(grouped.values())
+      .map((row) => {
+        const countConversionRate =
+          row.totalAccountsHeld > 0 ? (row.convertedAccounts / row.totalAccountsHeld) * 100 : 0;
+
+        const valueConversionRate =
+          row.totalBalanceHeld > 0 ? (row.convertedValue / row.totalBalanceHeld) * 100 : 0;
+
+        return {
+          ...row,
+          countConversionRate,
+          valueConversionRate,
+          highPriorityFollowup: row.unconvertedAccounts > 0 && countConversionRate < 30,
+        };
+      })
+      .sort((a, b) => {
+        if (b.countConversionRate !== a.countConversionRate) {
+          return b.countConversionRate - a.countConversionRate;
+        }
+        return b.convertedValue - a.convertedValue;
+      });
+  }, [filteredAccountsByProduct]);
+
+  const totalConvertedAccounts = conversionRows.reduce(
+    (sum, row) => sum + row.convertedAccounts,
+    0
+  );
+
+  const totalConvertedValue = conversionRows.reduce(
+    (sum, row) => sum + row.convertedValue,
+    0
+  );
+
+  const overallConversionCountRate =
+    filteredAccountsByProduct.length > 0
+      ? (totalConvertedAccounts / filteredAccountsByProduct.length) * 100
+      : 0;
+
+  const overallConversionValueRate =
+    filteredAccountsByProduct.reduce((sum, item) => sum + Number(item.balance || 0), 0) > 0
+      ? (totalConvertedValue /
+          filteredAccountsByProduct.reduce((sum, item) => sum + Number(item.balance || 0), 0)) *
+        100
+      : 0;
+
+  const productSummaryRows = useMemo(() => {
+    return Array.from(selectedProductSet)
+      .sort((a, b) => a.localeCompare(b))
+      .map((product) => {
+        const productAccounts = filteredAccountsByProduct.filter(
+          (item) => normalizeText(item.product || item.product_name) === product
+        );
+
+        return {
+          product,
+          totalAccounts: productAccounts.length,
+          totalValue: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+          convertedAccounts: productAccounts.filter((item) => Number(item.amount_paid || 0) > 0).length,
+          convertedValue: productAccounts.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+        };
+      });
+  }, [selectedProductSet, filteredAccountsByProduct]);
 
   if (!reportData.loaded && !restoredFromCache) {
     return (
@@ -975,6 +1206,69 @@ function ReportsPageClient() {
         <p className="text-red-600">Failed to load report data: {reportData.error}</p>
       </div>
     );
+  }
+
+  function clearDrilldown() {
+    setDrilldownTitle('');
+    setDrilldownRows([]);
+  }
+
+  function openDrilldown(title: string, rows: any[]) {
+    const mapped: DrilldownRow[] = rows.map((account) => {
+      const dueDate =
+        normalizeText(account.due_date) ||
+        normalizeText(account.loan_due_date) ||
+        normalizeText(account.next_action_date) ||
+        '-';
+
+      const product = normalizeText(account.product || account.product_name) || '-';
+      const collector = normalizeCollectorName(account.collector_name);
+      const paid = Number(account.amount_paid || 0) > 0 ? 'yes' : 'no';
+
+      return {
+        id: String(account.id || `${account.cfid || ''}-${account.account_no || ''}`),
+        cfid: normalizeText(account.cfid) || '-',
+        debtorName: normalizeText(account.debtor_name) || '-',
+        collector,
+        product,
+        bucket: getBucketLabel(account.dpd),
+        dueDate,
+        balance: Number(account.balance || 0),
+        amountPaid: Number(account.amount_paid || 0),
+        status: normalizeText(account.status) || '-',
+        actionLabel: 'Open Accounts',
+        href: buildAccountHref({
+          product,
+          collector,
+          dueStart: dueDate !== '-' ? dueDate : undefined,
+          dueEnd: dueDate !== '-' ? dueDate : undefined,
+          paid: paid as 'yes' | 'no',
+        }),
+      };
+    });
+
+    setDrilldownTitle(title);
+    setDrilldownRows(mapped);
+  }
+
+  function toggleProduct(product: string) {
+    setSelectedProducts((prev) => {
+      if (prev.length === 0) {
+        return accountProducts.filter((item) => item !== product);
+      }
+
+      if (prev.includes(product)) {
+        const next = prev.filter((item) => item !== product);
+        return next.length === 0 ? [] : next;
+      }
+
+      const next = [...prev, product].sort((a, b) => a.localeCompare(b));
+      return next;
+    });
+  }
+
+  function selectAllProducts() {
+    setSelectedProducts([]);
   }
 
   function handleDownloadCollectorReport() {
@@ -1046,19 +1340,125 @@ function ReportsPageClient() {
   function handleDownloadRollRatesReport() {
     downloadCsv(
       'roll-rates-report.csv',
-      rollRateRows.map((row) => ({
+      rollRateAgentRows.map((row) => ({
         Collector: row.collector,
-        Week: row.week,
-        'Current Bucket': row.bucket,
-        'Next Bucket': row.nextBucket,
-        'Accounts In Bucket': row.accountsInBucket,
-        'Accounts At Risk': row.accountsAtRisk,
-        'Value In Bucket': row.valueInBucket,
-        'Value At Risk': row.valueAtRisk,
-        'Roll Rate Count %': row.rollRateCount.toFixed(1),
-        'Roll Rate Value %': row.rollRateValue.toFixed(1),
+        'Accounts Held': row.accountsHeld,
+        'Portfolio Value': row.portfolioValue,
+        'Week 1 Count': row.week1Count,
+        'Week 1 Value': row.week1Value,
+        'Week 2 Count': row.week2Count,
+        'Week 2 Value': row.week2Value,
+        'Week 3 Count': row.week3Count,
+        'Week 3 Value': row.week3Value,
+        'Week 4 Count': row.week4Count,
+        'Week 4 Value': row.week4Value,
+        'Week 5 Count': row.week5Count,
+        'Week 5 Value': row.week5Value,
+        'Total At Risk Count': row.totalAtRiskCount,
+        'Total At Risk Value': row.totalAtRiskValue,
+        'Count Rate %': row.countRate.toFixed(1),
+        'Value Rate %': row.valueRate.toFixed(1),
         'High Risk Agent': row.highRiskAgent ? 'Yes' : 'No',
       }))
+    );
+  }
+
+  function handleDownloadConversionReport() {
+    downloadCsv(
+      'conversion-rates-report.csv',
+      conversionRows.map((row) => ({
+        Collector: row.collector,
+        'Accounts Held': row.totalAccountsHeld,
+        'Converted Accounts': row.convertedAccounts,
+        'Unconverted Accounts': row.unconvertedAccounts,
+        'Count Conversion Rate %': row.countConversionRate.toFixed(1),
+        'Total Balance Held': row.totalBalanceHeld,
+        'Converted Value': row.convertedValue,
+        'Unconverted Value': row.unconvertedValue,
+        'Value Conversion Rate %': row.valueConversionRate.toFixed(1),
+        'High Priority Followup': row.highPriorityFollowup ? 'Yes' : 'No',
+      }))
+    );
+  }
+
+  function renderProductChip(product: string) {
+    const isActive = selectedProducts.length === 0 || selectedProducts.includes(product);
+
+    return (
+      <button
+        key={product}
+        type="button"
+        onClick={() => toggleProduct(product)}
+        className={`rounded-full px-3 py-2 text-sm font-medium ${
+          isActive
+            ? 'bg-slate-900 text-white'
+            : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+        }`}
+      >
+        {product}
+      </button>
+    );
+  }
+
+  function renderDrilldownSection() {
+    if (drilldownRows.length === 0) return null;
+
+    return (
+      <div ref={drilldownRef} className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-900">{drilldownTitle}</h2>
+            <p className="mt-1 text-sm text-slate-500">
+              Click Open Accounts to move to the accounts workspace with matching context.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={clearDrilldown}
+            className="rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          >
+            Clear
+          </button>
+        </div>
+
+        <DataTable
+          headers={[
+            'CFID',
+            'Debtor',
+            'Collector',
+            'Product',
+            'Bucket',
+            'Due Date',
+            'Balance',
+            'Amount Paid',
+            'Status',
+            'Action',
+          ]}
+        >
+          {drilldownRows.map((row) => (
+            <tr key={row.id}>
+              <td className="px-4 py-3 font-medium">{row.cfid}</td>
+              <td className="px-4 py-3">{row.debtorName}</td>
+              <td className="px-4 py-3">{row.collector}</td>
+              <td className="px-4 py-3">{row.product}</td>
+              <td className="px-4 py-3">{row.bucket}</td>
+              <td className="px-4 py-3">{row.dueDate}</td>
+              <td className="px-4 py-3">{currency(row.balance)}</td>
+              <td className="px-4 py-3">{currency(row.amountPaid)}</td>
+              <td className="px-4 py-3">{row.status}</td>
+              <td className="px-4 py-3">
+                <Link
+                  href={row.href}
+                  className="inline-flex rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  {row.actionLabel}
+                </Link>
+              </td>
+            </tr>
+          ))}
+        </DataTable>
+      </div>
     );
   }
 
@@ -1115,12 +1515,19 @@ function ReportsPageClient() {
             >
               Download Early Warning Report
             </button>
-          ) : (
+          ) : activeTab === 'roll_rates' ? (
             <button
               onClick={handleDownloadRollRatesReport}
               className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
             >
               Download Roll Rates Report
+            </button>
+          ) : (
+            <button
+              onClick={handleDownloadConversionReport}
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Download Conversion Report
             </button>
           )}
         </div>
@@ -1129,7 +1536,10 @@ function ReportsPageClient() {
       <div className="flex flex-wrap gap-3">
         <button
           type="button"
-          onClick={() => setActiveTab('overview')}
+          onClick={() => {
+            setActiveTab('overview');
+            clearDrilldown();
+          }}
           className={`rounded-xl px-4 py-3 text-sm font-medium ${
             activeTab === 'overview'
               ? 'bg-slate-900 text-white'
@@ -1141,7 +1551,10 @@ function ReportsPageClient() {
 
         <button
           type="button"
-          onClick={() => setActiveTab('early_warning')}
+          onClick={() => {
+            setActiveTab('early_warning');
+            clearDrilldown();
+          }}
           className={`rounded-xl px-4 py-3 text-sm font-medium ${
             activeTab === 'early_warning'
               ? 'bg-slate-900 text-white'
@@ -1153,7 +1566,10 @@ function ReportsPageClient() {
 
         <button
           type="button"
-          onClick={() => setActiveTab('roll_rates')}
+          onClick={() => {
+            setActiveTab('roll_rates');
+            clearDrilldown();
+          }}
           className={`rounded-xl px-4 py-3 text-sm font-medium ${
             activeTab === 'roll_rates'
               ? 'bg-slate-900 text-white'
@@ -1162,23 +1578,111 @@ function ReportsPageClient() {
         >
           Roll Rates
         </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('conversion_rates');
+            clearDrilldown();
+          }}
+          className={`rounded-xl px-4 py-3 text-sm font-medium ${
+            activeTab === 'conversion_rates'
+              ? 'bg-slate-900 text-white'
+              : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+          }`}
+        >
+          Conversion Rates
+        </button>
       </div>
+
+      {(activeTab === 'roll_rates' || activeTab === 'conversion_rates' || activeTab === 'early_warning') ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Product Selection</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Choose all products or combine multiple products to focus the report.
+              </p>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Period
+                </label>
+                <select
+                  value={periodWindow}
+                  onChange={(e) => setPeriodWindow(e.target.value as PeriodWindow)}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                >
+                  <option value="current_month">Current month</option>
+                  <option value="last_30_days">Last 30 days</option>
+                  <option value="custom">Custom range</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
+                  Start Date
+                </label>
+                <input
+                  type="date"
+                  value={periodStartDate}
+                  onChange={(e) => setPeriodStartDate(e.target.value)}
+                  disabled={periodWindow !== 'custom'}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:bg-slate-100"
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
+                  End Date
+                </label>
+                <input
+                  type="date"
+                  value={periodEndDate}
+                  onChange={(e) => setPeriodEndDate(e.target.value)}
+                  disabled={periodWindow !== 'custom'}
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:bg-slate-100"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              type="button"
+              onClick={selectAllProducts}
+              className={`rounded-full px-3 py-2 text-sm font-medium ${
+                selectedProducts.length === 0
+                  ? 'bg-slate-900 text-white'
+                  : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+              }`}
+            >
+              All Products
+            </button>
+            {accountProducts.map(renderProductChip)}
+          </div>
+
+          {periodWindow === 'custom' ? (
+            <p className="mt-3 text-sm text-slate-500">
+              Custom range is capped to 3 months for performance and consistency.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       {activeTab === 'overview' ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Portfolio Balance</p>
-              <p className={getKpiValueClass(currency(totalBalance))}>
-                {currency(totalBalance)}
-              </p>
+              <p className={getKpiValueClass(currency(totalBalance))}>{currency(totalBalance)}</p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Collected to Date</p>
-              <p className={getKpiValueClass(currency(totalCollected))}>
-                {currency(totalCollected)}
-              </p>
+              <p className={getKpiValueClass(currency(totalCollected))}>{currency(totalCollected)}</p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1190,23 +1694,17 @@ function ReportsPageClient() {
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Open PTPs</p>
-              <p className={getKpiValueClass(String(openPtps))}>
-                {openPtps}
-              </p>
+              <p className={getKpiValueClass(String(openPtps))}>{openPtps}</p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Kept PTPs</p>
-              <p className={getKpiValueClass(String(keptPtps))}>
-                {keptPtps}
-              </p>
+              <p className={getKpiValueClass(String(keptPtps))}>{keptPtps}</p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Broken PTPs</p>
-              <p className={getKpiValueClass(String(brokenPtps))}>
-                {brokenPtps}
-              </p>
+              <p className={getKpiValueClass(String(brokenPtps))}>{brokenPtps}</p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1298,9 +1796,7 @@ function ReportsPageClient() {
                     <td className="px-4 py-3">{row.brokenPtps}</td>
                     <td className="px-4 py-3">{row.ptpKeptRate}</td>
                     <td className="px-4 py-3">{row.callbacks}</td>
-                    <td className="px-4 py-3">
-                      {currency(row.avgCollectedPerAccount)}
-                    </td>
+                    <td className="px-4 py-3">{currency(row.avgCollectedPerAccount)}</td>
                   </tr>
                 ))}
               </DataTable>
@@ -1342,15 +1838,11 @@ function ReportsPageClient() {
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-900">
-              Management Snapshot
-            </h2>
+            <h2 className="text-lg font-semibold text-slate-900">Management Snapshot</h2>
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div>
                 <p className="text-sm text-slate-500">Callback Accounts</p>
-                <p className="mt-1 text-xl font-semibold text-slate-900">
-                  {callbackAccounts}
-                </p>
+                <p className="mt-1 text-xl font-semibold text-slate-900">{callbackAccounts}</p>
               </div>
 
               <div>
@@ -1538,8 +2030,9 @@ function ReportsPageClient() {
               ) : null}
             </div>
           </div>
+          {renderDrilldownSection()}
         </>
-      ) : (
+      ) : activeTab === 'roll_rates' ? (
         <>
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-sm">
@@ -1549,12 +2042,24 @@ function ReportsPageClient() {
               </p>
             </div>
 
-            <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
+            <button
+              type="button"
+              onClick={() =>
+                openDrilldown(
+                  `All Accounts At Risk (${totalAccountsAtRisk})`,
+                  rollRateAccountsInRange.filter(
+                    (account) => Number(account.balance || 0) > Number(account.amount_paid || 0)
+                  )
+                )
+              }
+              className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-left shadow-sm"
+            >
               <p className="text-sm text-amber-700">Accounts At Risk</p>
               <p className={getKpiValueClass(String(totalAccountsAtRisk))}>
                 {totalAccountsAtRisk}
               </p>
-            </div>
+              <p className="mt-1 text-sm text-amber-700">Click to open affected accounts</p>
+            </button>
 
             <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5 shadow-sm">
               <p className="text-sm text-orange-700">Value At Risk</p>
@@ -1564,127 +2069,378 @@ function ReportsPageClient() {
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-              <p className="text-sm text-slate-500">Weeks in View</p>
-              <p
-                className={getKpiValueClass(
-                  String(new Set(rollRateRows.map((row) => row.week)).size)
-                )}
-              >
-                {new Set(rollRateRows.map((row) => row.week)).size}
+              <p className="text-sm text-slate-500">Products in View</p>
+              <p className={getKpiValueClass(String(Array.from(selectedProductSet).length))}>
+                {Array.from(selectedProductSet).length}
               </p>
             </div>
           </div>
 
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">Roll Rates by Agent and Week</h2>
+                <h2 className="text-lg font-semibold text-slate-900">Product Breakdown</h2>
                 <p className="mt-1 text-sm text-slate-500">
-                  Live weekly roll-risk view by collector, bucket and value. This version uses
-                  current account state and will be followed by locked weekly snapshot logic next.
+                  Review all products or focus on one or multiple products before drilling into agents.
                 </p>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-3">
-                <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
-                    Period
-                  </label>
-                  <select
-                    value={rollRateWindow}
-                    onChange={(e) => setRollRateWindow(e.target.value as RollRateWindow)}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
-                  >
-                    <option value="current_month">Current month</option>
-                    <option value="last_30_days">Last 30 days</option>
-                    <option value="custom">Custom range</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
-                    Start Date
-                  </label>
-                  <input
-                    type="date"
-                    value={rollRateStartDate}
-                    onChange={(e) => setRollRateStartDate(e.target.value)}
-                    disabled={rollRateWindow !== 'custom'}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:bg-slate-100"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
-                    End Date
-                  </label>
-                  <input
-                    type="date"
-                    value={rollRateEndDate}
-                    onChange={(e) => setRollRateEndDate(e.target.value)}
-                    disabled={rollRateWindow !== 'custom'}
-                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 disabled:bg-slate-100"
-                  />
-                </div>
               </div>
             </div>
 
-            {rollRateWindow === 'custom' ? (
-              <p className="mt-3 text-sm text-slate-500">
-                Custom range is capped to 3 months for performance and consistency.
-              </p>
-            ) : null}
+            <DataTable headers={['Product', 'Accounts At Risk', 'Value At Risk', 'Action']}>
+              {rollRateProductRows.map((row) => (
+                <tr key={row.product}>
+                  <td className="px-4 py-3 font-medium">{row.product}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openDrilldown(
+                          `${row.product} Accounts At Risk (${row.accountsAtRisk})`,
+                          row.rows
+                        )
+                      }
+                      className="font-medium text-blue-700 hover:underline"
+                    >
+                      {row.accountsAtRisk}
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">{currency(row.valueAtRisk)}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        openDrilldown(
+                          `${row.product} Accounts At Risk (${row.accountsAtRisk})`,
+                          row.rows
+                        )
+                      }
+                      className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      View Accounts
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </DataTable>
+          </div>
 
-            <div className="mt-4 overflow-x-auto">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Roll Rates by Agent</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Each agent appears once. Click any count to open the affected accounts below.
+                </p>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
               <DataTable
                 headers={[
                   'Collector',
-                  'Week',
-                  'Current Bucket',
-                  'Next Bucket',
-                  'Accounts In Bucket',
-                  'Accounts At Risk',
-                  'Value In Bucket',
-                  'Value At Risk',
-                  'Roll Rate Count %',
-                  'Roll Rate Value %',
+                  'Accounts Held',
+                  'Portfolio Value',
+                  'Week 1',
+                  'Week 2',
+                  'Week 3',
+                  'Week 4',
+                  'Week 5',
+                  'Total At Risk',
+                  'Total Value At Risk',
+                  'Count Rate %',
+                  'Value Rate %',
                   'Risk Flag',
+                  'Action',
                 ]}
               >
-                {rollRateRows.map((row, index) => (
-                  <tr key={`${row.collector}-${row.week}-${row.bucket}-${index}`}>
-                    <td className="px-4 py-3 font-medium">{row.collector}</td>
-                    <td className="px-4 py-3">{row.week}</td>
-                    <td className="px-4 py-3">{row.bucket}</td>
-                    <td className="px-4 py-3">{row.nextBucket}</td>
-                    <td className="px-4 py-3">{row.accountsInBucket}</td>
-                    <td className="px-4 py-3">{row.accountsAtRisk}</td>
-                    <td className="px-4 py-3">{currency(row.valueInBucket)}</td>
-                    <td className="px-4 py-3">{currency(row.valueAtRisk)}</td>
-                    <td className="px-4 py-3">{formatPercent(row.rollRateCount)}</td>
-                    <td className="px-4 py-3">{formatPercent(row.rollRateValue)}</td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
-                          row.highRiskAgent
-                            ? 'bg-rose-100 text-rose-700'
-                            : 'bg-slate-100 text-slate-600'
-                        }`}
-                      >
-                        {row.highRiskAgent ? 'High Risk' : 'Watch'}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
+                {rollRateAgentRows.map((row) => {
+                  const collectorAccounts = rollRateAccountsInRange.filter(
+                    (account) => normalizeCollectorName(account.collector_name) === row.collector
+                  );
+
+                  const weekRows = (week: RollRateWeek) =>
+                    collectorAccounts.filter((account) => {
+                      const dueDate =
+                        normalizeText(account.due_date) ||
+                        normalizeText(account.loan_due_date) ||
+                        normalizeText(account.next_action_date);
+                      const accountWeek = getWeekOfMonth(dueDate);
+                      const outstanding =
+                        Math.max(Number(account.balance || 0) - Number(account.amount_paid || 0), 0);
+                      return accountWeek === week && outstanding > 0;
+                    });
+
+                  const totalRows = collectorAccounts.filter(
+                    (account) =>
+                      Math.max(Number(account.balance || 0) - Number(account.amount_paid || 0), 0) > 0
+                  );
+
+                  return (
+                    <tr key={row.collector}>
+                      <td className="px-4 py-3 font-medium">{row.collector}</td>
+                      <td className="px-4 py-3">{row.accountsHeld}</td>
+                      <td className="px-4 py-3">{currency(row.portfolioValue)}</td>
+
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openDrilldown(`${row.collector} - Week 1 Accounts At Risk`, weekRows('Week 1'))}
+                          className="font-medium text-blue-700 hover:underline"
+                        >
+                          {row.week1Count}
+                        </button>
+                        <div className="text-xs text-slate-500">{currency(row.week1Value)}</div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openDrilldown(`${row.collector} - Week 2 Accounts At Risk`, weekRows('Week 2'))}
+                          className="font-medium text-blue-700 hover:underline"
+                        >
+                          {row.week2Count}
+                        </button>
+                        <div className="text-xs text-slate-500">{currency(row.week2Value)}</div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openDrilldown(`${row.collector} - Week 3 Accounts At Risk`, weekRows('Week 3'))}
+                          className="font-medium text-blue-700 hover:underline"
+                        >
+                          {row.week3Count}
+                        </button>
+                        <div className="text-xs text-slate-500">{currency(row.week3Value)}</div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openDrilldown(`${row.collector} - Week 4 Accounts At Risk`, weekRows('Week 4'))}
+                          className="font-medium text-blue-700 hover:underline"
+                        >
+                          {row.week4Count}
+                        </button>
+                        <div className="text-xs text-slate-500">{currency(row.week4Value)}</div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openDrilldown(`${row.collector} - Week 5 Accounts At Risk`, weekRows('Week 5'))}
+                          className="font-medium text-blue-700 hover:underline"
+                        >
+                          {row.week5Count}
+                        </button>
+                        <div className="text-xs text-slate-500">{currency(row.week5Value)}</div>
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openDrilldown(`${row.collector} - Total Accounts At Risk`, totalRows)}
+                          className="font-medium text-blue-700 hover:underline"
+                        >
+                          {row.totalAtRiskCount}
+                        </button>
+                      </td>
+
+                      <td className="px-4 py-3">{currency(row.totalAtRiskValue)}</td>
+                      <td className="px-4 py-3">{formatPercent(row.countRate)}</td>
+                      <td className="px-4 py-3">{formatPercent(row.valueRate)}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
+                            row.highRiskAgent
+                              ? 'bg-rose-100 text-rose-700'
+                              : 'bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          {row.highRiskAgent ? 'High Risk' : 'Watch'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => openDrilldown(`${row.collector} - Total Accounts At Risk`, totalRows)}
+                          className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                        >
+                          View Accounts
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </DataTable>
 
-              {rollRateRows.length === 0 ? (
+              {rollRateAgentRows.length === 0 ? (
                 <div className="rounded-b-2xl border-x border-b border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
-                  No roll-rate rows match the selected period.
+                  No roll-rate rows match the selected period and products.
                 </div>
               ) : null}
             </div>
           </div>
+          {renderDrilldownSection()}
+        </>
+      ) : (
+        <>
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm">
+              <p className="text-sm text-emerald-700">Converted Accounts</p>
+              <p className={getKpiValueClass(String(totalConvertedAccounts))}>
+                {totalConvertedAccounts}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 shadow-sm">
+              <p className="text-sm text-blue-700">Converted Value</p>
+              <p className={getKpiValueClass(currency(totalConvertedValue))}>
+                {currency(totalConvertedValue)}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className="text-sm text-slate-500">Count Conversion Rate</p>
+              <p className={getKpiValueClass(formatPercent(overallConversionCountRate))}>
+                {formatPercent(overallConversionCountRate)}
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className="text-sm text-slate-500">Value Conversion Rate</p>
+              <p className={getKpiValueClass(formatPercent(overallConversionValueRate))}>
+                {formatPercent(overallConversionValueRate)}
+              </p>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Product Breakdown</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Conversion by product using the same product selection applied above.
+                </p>
+              </div>
+            </div>
+
+            <DataTable
+              headers={[
+                'Product',
+                'Accounts',
+                'Value Held',
+                'Converted Accounts',
+                'Converted Value',
+              ]}
+            >
+              {productSummaryRows.map((row) => (
+                <tr key={row.product}>
+                  <td className="px-4 py-3 font-medium">{row.product}</td>
+                  <td className="px-4 py-3">{row.totalAccounts}</td>
+                  <td className="px-4 py-3">{currency(row.totalValue)}</td>
+                  <td className="px-4 py-3">{row.convertedAccounts}</td>
+                  <td className="px-4 py-3">{currency(row.convertedValue)}</td>
+                </tr>
+              ))}
+            </DataTable>
+          </div>
+
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Conversion Rate by Agent</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Click converted or unconverted counts to open the affected accounts below.
+                </p>
+              </div>
+            </div>
+
+            <DataTable
+              headers={[
+                'Collector',
+                'Accounts Held',
+                'Converted Accounts',
+                'Unconverted Accounts',
+                'Count Conversion %',
+                'Value Held',
+                'Converted Value',
+                'Unconverted Value',
+                'Value Conversion %',
+                'Follow-up',
+                'Action',
+              ]}
+            >
+              {conversionRows.map((row) => {
+                const collectorAccounts = filteredAccountsByProduct.filter(
+                  (account) => normalizeCollectorName(account.collector_name) === row.collector
+                );
+                const convertedRows = collectorAccounts.filter(
+                  (account) => Number(account.amount_paid || 0) > 0
+                );
+                const unconvertedRows = collectorAccounts.filter(
+                  (account) => Number(account.amount_paid || 0) <= 0
+                );
+
+                return (
+                  <tr key={row.collector}>
+                    <td className="px-4 py-3 font-medium">{row.collector}</td>
+                    <td className="px-4 py-3">{row.totalAccountsHeld}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => openDrilldown(`${row.collector} - Converted Accounts`, convertedRows)}
+                        className="font-medium text-blue-700 hover:underline"
+                      >
+                        {row.convertedAccounts}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => openDrilldown(`${row.collector} - Unconverted Accounts`, unconvertedRows)}
+                        className="font-medium text-blue-700 hover:underline"
+                      >
+                        {row.unconvertedAccounts}
+                      </button>
+                    </td>
+                    <td className="px-4 py-3">{formatPercent(row.countConversionRate)}</td>
+                    <td className="px-4 py-3">{currency(row.totalBalanceHeld)}</td>
+                    <td className="px-4 py-3">{currency(row.convertedValue)}</td>
+                    <td className="px-4 py-3">{currency(row.unconvertedValue)}</td>
+                    <td className="px-4 py-3">{formatPercent(row.valueConversionRate)}</td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${
+                          row.highPriorityFollowup
+                            ? 'bg-amber-100 text-amber-700'
+                            : 'bg-emerald-100 text-emerald-700'
+                        }`}
+                      >
+                        {row.highPriorityFollowup ? 'Needs Follow-up' : 'Healthy'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => openDrilldown(`${row.collector} - Unconverted Accounts`, unconvertedRows)}
+                        className="rounded-xl bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-800"
+                      >
+                        View Accounts
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </DataTable>
+
+            {conversionRows.length === 0 ? (
+              <div className="rounded-b-2xl border-x border-b border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
+                No conversion rows match the selected products.
+              </div>
+            ) : null}
+          </div>
+          {renderDrilldownSection()}
         </>
       )}
     </div>
