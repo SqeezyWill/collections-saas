@@ -5,7 +5,7 @@ import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
-const PAYMENTS_CACHE_PREFIX = 'payments-page-cache:v1:';
+const PAYMENTS_CACHE_PREFIX = 'payments-page-cache:v2:';
 const PEZESHA_FALLBACK_NAME = 'Pezesha';
 
 type AuthProfile = {
@@ -63,6 +63,7 @@ export default function PaymentsPage() {
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(paymentsCacheKey);
+
       if (!raw) {
         setCacheHydrated(true);
         return;
@@ -201,9 +202,7 @@ export default function PaymentsPage() {
 
         let accountsQuery = client
           .from('accounts')
-          .select(
-            'id,collector_name,product,balance,amount_paid,last_action_date,updated_at,created_at'
-          )
+          .select('id,collector_name,product,balance,amount_paid,last_action_date,created_at')
           .eq('company_id', resolvedCompanyId)
           .order('created_at', { ascending: false });
 
@@ -269,19 +268,14 @@ export default function PaymentsPage() {
 
   const allTimeCollected = useMemo(
     () =>
-      accountRows.reduce(
-        (sum, row) => sum + Number(row.amount_paid || 0),
-        0
-      ),
+      accountRows.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
     [accountRows]
   );
 
   const collectedThisMonth = useMemo(
     () =>
       accountRows
-        .filter((row) =>
-          isCurrentMonth(row.last_action_date || row.updated_at || row.created_at)
-        )
+        .filter((row) => isCurrentMonth(row.last_action_date || row.created_at))
         .reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
     [accountRows]
   );
@@ -291,15 +285,9 @@ export default function PaymentsPage() {
   const productSummary = useMemo(
     () =>
       Array.from(
-        new Set(
-          accountRows
-            .map((item) => item.product || item.product_name)
-            .filter(Boolean)
-        )
+        new Set(accountRows.map((item) => item.product).filter(Boolean))
       ).map((product) => {
-        const productAccounts = accountRows.filter(
-          (item) => (item.product || item.product_name) === product
-        );
+        const productAccounts = accountRows.filter((item) => item.product === product);
 
         return {
           product,
@@ -308,9 +296,7 @@ export default function PaymentsPage() {
             0
           ),
           monthly: productAccounts
-            .filter((item) =>
-              isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
-            )
+            .filter((item) => isCurrentMonth(item.last_action_date || item.created_at))
             .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
           count: productAccounts.filter((item) => Number(item.amount_paid || 0) > 0).length,
         };
