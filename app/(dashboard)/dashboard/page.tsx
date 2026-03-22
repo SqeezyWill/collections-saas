@@ -237,90 +237,117 @@ useEffect(() => {
 }, [dashboardCacheKey]);
 
   useEffect(() => {
-    let mounted = true;
+  let mounted = true;
 
-    async function loadProfile() {
-      try {
-        if (!supabase) {
-          if (mounted) {
+  async function loadProfile() {
+    try {
+      if (!supabase) {
+        if (mounted) {
+          if (!profile && !restoredFromCache) {
             setSessionError('Supabase client is not configured.');
-            setLoadingProfile(false);
           }
-          return;
+          setLoadingProfile(false);
         }
+        return;
+      }
 
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
+      const firstSessionResult = await supabase.auth.getSession();
 
-        const userId = session?.user?.id;
-        if (!userId) {
-          if (mounted) {
-            setSessionError('Unable to load user session.');
-            setLoadingProfile(false);
-          }
-          return;
+let session = firstSessionResult.data.session;
+let sessionLoadError = firstSessionResult.error;
+
+if (!session && !sessionLoadError) {
+  await new Promise((resolve) => window.setTimeout(resolve, 250));
+
+  const secondSessionResult = await supabase.auth.getSession();
+  session = secondSessionResult.data.session;
+  sessionLoadError = secondSessionResult.error;
+}
+
+      if (!mounted) return;
+
+      if (sessionLoadError) {
+        if (!profile && !restoredFromCache) {
+          setSessionError('Unable to load user session.');
         }
+        setLoadingProfile(false);
+        return;
+      }
 
-        const { data: profileData, error: profileError } = await supabase
-          .from('user_profiles')
-          .select('id,name,role,company_id')
-          .eq('id', userId)
+      const userId = session?.user?.id;
+      if (!userId) {
+        if (!profile && !restoredFromCache) {
+          setSessionError('Unable to load user session.');
+        }
+        setLoadingProfile(false);
+        return;
+      }
+
+      const { data: profileData, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('id,name,role,company_id')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (!mounted) return;
+
+      if (profileError || !profileData?.id) {
+        if (!profile && !restoredFromCache) {
+          setSessionError('Unable to load user session.');
+        }
+        setLoadingProfile(false);
+        return;
+      }
+
+      let resolvedCompanyId = String(profileData.company_id || '').trim();
+
+      if (!resolvedCompanyId) {
+        const { data: fixedCompany, error: fixedCompanyError } = await supabase
+          .from('companies')
+          .select('id,name,code')
+          .or('name.eq.Pezesha,code.eq.Pezesha')
+          .limit(1)
           .maybeSingle();
 
-        if (profileError || !profileData?.id) {
-          if (mounted) {
-            setSessionError('Unable to load user session.');
-            setLoadingProfile(false);
+        if (!mounted) return;
+
+        if (fixedCompanyError || !fixedCompany?.id) {
+          if (!profile && !restoredFromCache) {
+            setSessionError('Unable to resolve Pezesha company.');
           }
+          setLoadingProfile(false);
           return;
         }
 
-        let resolvedCompanyId = String(profileData.company_id || '').trim();
-
-        if (!resolvedCompanyId) {
-          const { data: fixedCompany, error: fixedCompanyError } = await supabase
-            .from('companies')
-            .select('id,name,code')
-            .or('name.eq.Pezesha,code.eq.Pezesha')
-            .limit(1)
-            .maybeSingle();
-
-          if (fixedCompanyError || !fixedCompany?.id) {
-            if (mounted) {
-              setSessionError('Unable to resolve Pezesha company.');
-              setLoadingProfile(false);
-            }
-            return;
-          }
-
-          resolvedCompanyId = String(fixedCompany.id);
-        }
-
-        if (mounted) {
-          setProfile({
-            id: String(profileData.id),
-            name: profileData.name ?? null,
-            role: profileData.role ?? null,
-            company_id: resolvedCompanyId,
-          });
-          setSessionError(null);
-          setLoadingProfile(false);
-        }
-      } catch (error: any) {
-        if (mounted) {
-          setSessionError(error?.message || 'Unable to load user session.');
-          setLoadingProfile(false);
-        }
+        resolvedCompanyId = String(fixedCompany.id);
       }
+
+      if (!mounted) return;
+
+      setProfile({
+        id: String(profileData.id),
+        name: profileData.name ?? null,
+        role: profileData.role ?? null,
+        company_id: resolvedCompanyId,
+      });
+      setSessionError(null);
+      setLoadingProfile(false);
+    } catch (error: any) {
+      if (!mounted) return;
+
+      if (!profile && !restoredFromCache) {
+        setSessionError(error?.message || 'Unable to load user session.');
+      }
+      setLoadingProfile(false);
     }
+  }
 
-    loadProfile();
+  loadProfile();
 
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  return () => {
+    mounted = false;
+  };
+}, [restoredFromCache, profile]);
 
   useEffect(() => {
     let mounted = true;
@@ -328,21 +355,25 @@ useEffect(() => {
     async function loadDashboardData() {
       if (loadingProfile || !cacheHydrated) return;
 
-      if (!profile?.company_id) {
-        if (mounted) {
-          setLoadingData(false);
-        }
-        return;
-      }
-
-      try {
-  if (accountList.length === 0 && ptps.length === 0) {
-  setLoadingData(true);
-} else {
-  setIsRefreshing(true);
+if (!profile?.company_id) {
+  if (mounted) {
+    if (accountList.length === 0 && ptps.length === 0) {
+      setLoadingData(false);
+    } else {
+      setIsRefreshing(false);
+    }
+  }
+  return;
 }
 
-setDataError(null);
+try {
+  if (accountList.length === 0 && ptps.length === 0) {
+    setLoadingData(true);
+  } else {
+    setIsRefreshing(true);
+  }
+
+  setDataError(null);
 
         const normalizedRole = normalizeRole(profile.role);
         const isAgent = normalizedRole === 'agent';
@@ -409,7 +440,13 @@ setDataError(null);
   }
 }, [dashboardCacheKey, profile, accountList, payments, ptps, cacheHydrated]);
 
-  if ((loadingProfile || loadingData) && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
+  if (
+  (loadingProfile || loadingData) &&
+  !restoredFromCache &&
+  !profile &&
+  accountList.length === 0 &&
+  ptps.length === 0
+) {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3">
@@ -420,12 +457,6 @@ setDataError(null);
           </span>
         ) : null}
       </div>
-
-      {restoredFromCache ? (
-        <p className="text-sm text-slate-500">
-          Restored your last dashboard view while the latest data loads.
-        </p>
-      ) : null}
 
       <p className="text-slate-500">Loading dashboard...</p>
     </div>
@@ -441,14 +472,30 @@ setDataError(null);
     );
   }
 
-  if (dataError) {
-    return (
-      <div className="space-y-4">
+  if (sessionError && !profile && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
         <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Failed to load dashboard data: {dataError}</p>
+        {isRefreshing ? (
+          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+            Refreshing…
+          </span>
+        ) : null}
       </div>
-    );
-  }
+      <p className="text-red-600">{sessionError}</p>
+    </div>
+  );
+}
+
+if (!profile?.company_id && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
+  return (
+    <div className="space-y-4">
+      <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+      <p className="text-red-600">Unable to load user session.</p>
+    </div>
+  );
+}
 
   const normalizedRole = normalizeRole(profile.role);
   const isAgent = normalizedRole === 'agent';
