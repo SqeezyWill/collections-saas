@@ -204,7 +204,13 @@ export default function PaymentsPage() {
 
         let accountsQuery = client
           .from('accounts')
+<<<<<<< HEAD
           .select('id,collector_name,product,balance,amount_paid,last_action_date,created_at')
+=======
+          .select(
+            'id,collector_name,product,balance,amount_paid,last_action_date,updated_at,created_at'
+          )
+>>>>>>> 04242f0 (Fix admin user update schema and delete auth users properly)
           .eq('company_id', resolvedCompanyId)
           .order('created_at', { ascending: false });
 
