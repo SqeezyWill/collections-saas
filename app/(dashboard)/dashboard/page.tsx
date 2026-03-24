@@ -135,7 +135,7 @@ async function fetchAllRows(
 
   const { companyId, collectorName, restrictToCollector } = input;
 
-  let allRows: any[] = [];
+  const allRows: any[] = [];
   let from = 0;
 
   while (true) {
@@ -159,7 +159,7 @@ async function fetchAllRows(
     }
 
     const rows = data ?? [];
-    allRows = [...allRows, ...rows];
+    allRows.push(...rows);
 
     if (rows.length < PAGE_SIZE) {
       break;
@@ -185,232 +185,345 @@ function alertClasses(tone: string) {
 }
 
 export default function DashboardPage() {
-const [profile, setProfile] = useState<UserProfile | null>(null);
-const [sessionError, setSessionError] = useState<string | null>(null);
-const [loadingProfile, setLoadingProfile] = useState(true);
-const [accountList, setAccountList] = useState<any[]>([]);
-const [payments, setPayments] = useState<any[]>([]);
-const [ptps, setPtps] = useState<any[]>([]);
-const [dataError, setDataError] = useState<string | null>(null);
-const [loadingData, setLoadingData] = useState(true);
-const [cacheHydrated, setCacheHydrated] = useState(false);
-const [isRefreshing, setIsRefreshing] = useState(false);
-const [restoredFromCache, setRestoredFromCache] = useState(false);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [accountList, setAccountList] = useState<any[]>([]);
+  const [payments, setPayments] = useState<any[]>([]);
+  const [ptps, setPtps] = useState<any[]>([]);
+  const [dataError, setDataError] = useState<string | null>(null);
+  const [loadingData, setLoadingData] = useState(true);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [restoredFromCache, setRestoredFromCache] = useState(false);
+  const [resolvedCompanyId, setResolvedCompanyId] = useState('');
+  const [companyResolved, setCompanyResolved] = useState(false);
 
-const dashboardCacheKey = useMemo(() => {
-  const companyId = String(profile?.company_id || '').trim() || 'pending-company';
-  const role = normalizeRole(profile?.role);
-  const name = String(profile?.name || '').trim() || 'unknown-user';
-  return `${DASHBOARD_CACHE_PREFIX}${companyId}:${role}:${name}`;
-}, [profile?.company_id, profile?.role, profile?.name]);
+  const normalizedProfileRole = normalizeRole(profile?.role);
+  const normalizedProfileName = String(profile?.name || '').trim();
 
-useEffect(() => {
-  try {
-    const raw = sessionStorage.getItem(dashboardCacheKey);
-
-    if (!raw) {
-      setCacheHydrated(true);
-      return;
-    }
-
-    const parsed = JSON.parse(raw);
-
-    if (parsed?.profile) setProfile(parsed.profile);
-    if (Array.isArray(parsed?.accountList)) setAccountList(parsed.accountList);
-    if (Array.isArray(parsed?.payments)) setPayments(parsed.payments);
-    if (Array.isArray(parsed?.ptps)) setPtps(parsed.ptps);
-
-    if (
-      parsed?.profile ||
-      Array.isArray(parsed?.accountList) ||
-      Array.isArray(parsed?.payments) ||
-      Array.isArray(parsed?.ptps)
-    ) {
-      setRestoredFromCache(true);
-      setLoadingData(false);
-    }
-  } catch {
-    // ignore cache errors
-  } finally {
-    setCacheHydrated(true);
-  }
-}, [dashboardCacheKey]);
+  const dashboardCacheKey = useMemo(() => {
+    const companyId =
+      String(resolvedCompanyId || profile?.company_id || '').trim() || 'pending-company';
+    const role = normalizedProfileRole || 'unknown-role';
+    const name = normalizedProfileName || 'unknown-user';
+    return `${DASHBOARD_CACHE_PREFIX}${companyId}:${role}:${name}`;
+  }, [resolvedCompanyId, profile?.company_id, normalizedProfileRole, normalizedProfileName]);
 
   useEffect(() => {
-  let mounted = true;
-
-  async function loadProfile() {
     try {
-      if (!supabase) {
-        if (mounted) {
-          if (!profile && !restoredFromCache) {
-            setSessionError('Supabase client is not configured.');
+      const raw = sessionStorage.getItem(dashboardCacheKey);
+
+      if (!raw) {
+        setCacheHydrated(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw);
+
+      if (parsed?.profile) setProfile(parsed.profile);
+      if (Array.isArray(parsed?.accountList)) setAccountList(parsed.accountList);
+      if (Array.isArray(parsed?.payments)) setPayments(parsed.payments);
+      if (Array.isArray(parsed?.ptps)) setPtps(parsed.ptps);
+
+      if (typeof parsed?.resolvedCompanyId === 'string' && parsed.resolvedCompanyId.trim()) {
+        setResolvedCompanyId(parsed.resolvedCompanyId);
+        setCompanyResolved(true);
+      }
+
+      if (
+        parsed?.profile ||
+        Array.isArray(parsed?.accountList) ||
+        Array.isArray(parsed?.payments) ||
+        Array.isArray(parsed?.ptps)
+      ) {
+        setRestoredFromCache(true);
+        setLoadingData(false);
+      }
+    } catch {
+      // ignore cache errors
+    } finally {
+      setCacheHydrated(true);
+    }
+  }, [dashboardCacheKey]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadCompanyContext() {
+      try {
+        if (!supabase) {
+          if (mounted) {
+            if (!restoredFromCache) {
+              setSessionError('Supabase client is not configured.');
+            }
+            setCompanyResolved(true);
+            setLoadingProfile(false);
           }
+          return;
+        }
+
+        const firstSessionResult = await supabase.auth.getSession();
+
+        let session = firstSessionResult.data.session;
+        let sessionLoadError = firstSessionResult.error;
+
+        if (!session && !sessionLoadError) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+
+          const secondSessionResult = await supabase.auth.getSession();
+          session = secondSessionResult.data.session;
+          sessionLoadError = secondSessionResult.error;
+        }
+
+        if (!mounted) return;
+
+        if (sessionLoadError) {
+          if (!restoredFromCache) {
+            setSessionError('Unable to load user session.');
+          }
+          setCompanyResolved(true);
           setLoadingProfile(false);
+          return;
         }
-        return;
-      }
 
-      const firstSessionResult = await supabase.auth.getSession();
-
-let session = firstSessionResult.data.session;
-let sessionLoadError = firstSessionResult.error;
-
-if (!session && !sessionLoadError) {
-  await new Promise((resolve) => window.setTimeout(resolve, 250));
-
-  const secondSessionResult = await supabase.auth.getSession();
-  session = secondSessionResult.data.session;
-  sessionLoadError = secondSessionResult.error;
-}
-
-      if (!mounted) return;
-
-      if (sessionLoadError) {
-        if (!profile && !restoredFromCache) {
-          setSessionError('Unable to load user session.');
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (!restoredFromCache) {
+            setSessionError('Unable to load user session.');
+          }
+          setCompanyResolved(true);
+          setLoadingProfile(false);
+          return;
         }
-        setLoadingProfile(false);
-        return;
-      }
 
-      const userId = session?.user?.id;
-      if (!userId) {
-        if (!profile && !restoredFromCache) {
-          setSessionError('Unable to load user session.');
-        }
-        setLoadingProfile(false);
-        return;
-      }
-
-      const { data: profileData, error: profileError } = await supabase
-        .from('user_profiles')
-        .select('id,name,role,company_id')
-        .eq('id', userId)
-        .maybeSingle();
-
-      if (!mounted) return;
-
-      if (profileError || !profileData?.id) {
-        if (!profile && !restoredFromCache) {
-          setSessionError('Unable to load user session.');
-        }
-        setLoadingProfile(false);
-        return;
-      }
-
-      let resolvedCompanyId = String(profileData.company_id || '').trim();
-
-      if (!resolvedCompanyId) {
-        const { data: fixedCompany, error: fixedCompanyError } = await supabase
-          .from('companies')
-          .select('id,name,code')
-          .or('name.eq.Pezesha,code.eq.Pezesha')
-          .limit(1)
+        const { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('company_id')
+          .eq('id', userId)
           .maybeSingle();
 
         if (!mounted) return;
 
-        if (fixedCompanyError || !fixedCompany?.id) {
+        if (profileError) {
+          if (!restoredFromCache) {
+            setSessionError(profileError.message || 'Unable to resolve company context.');
+          }
+          setCompanyResolved(true);
+          setLoadingProfile(false);
+          return;
+        }
+
+        let companyId = String(profileData?.company_id || '').trim();
+
+        if (!companyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .limit(1)
+            .maybeSingle();
+
+          if (!mounted) return;
+
+          if (fixedCompanyError || !fixedCompany?.id) {
+            if (!restoredFromCache) {
+              setSessionError('Unable to resolve Pezesha company.');
+            }
+            setCompanyResolved(true);
+            setLoadingProfile(false);
+            return;
+          }
+
+          companyId = String(fixedCompany.id);
+        }
+
+        if (!mounted) return;
+
+        setResolvedCompanyId(companyId);
+        setCompanyResolved(true);
+        setSessionError(null);
+      } catch (error: any) {
+        if (!mounted) return;
+
+        if (!restoredFromCache) {
+          setSessionError(error?.message || 'Unable to resolve company context.');
+        }
+        setCompanyResolved(true);
+        setLoadingProfile(false);
+      }
+    }
+
+    loadCompanyContext();
+
+    return () => {
+      mounted = false;
+    };
+  }, [restoredFromCache]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadProfile() {
+      try {
+        if (!cacheHydrated || !companyResolved) {
+          return;
+        }
+
+        if (!supabase) {
+          if (mounted) {
+            if (!profile && !restoredFromCache) {
+              setSessionError('Supabase client is not configured.');
+            }
+            setLoadingProfile(false);
+          }
+          return;
+        }
+
+        if (!resolvedCompanyId) {
+          if (mounted) {
+            if (!profile && !restoredFromCache) {
+              setSessionError('Unable to resolve Pezesha company.');
+            }
+            setLoadingProfile(false);
+          }
+          return;
+        }
+
+        const firstSessionResult = await supabase.auth.getSession();
+
+        let session = firstSessionResult.data.session;
+        let sessionLoadError = firstSessionResult.error;
+
+        if (!session && !sessionLoadError) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+
+          const secondSessionResult = await supabase.auth.getSession();
+          session = secondSessionResult.data.session;
+          sessionLoadError = secondSessionResult.error;
+        }
+
+        if (!mounted) return;
+
+        if (sessionLoadError) {
           if (!profile && !restoredFromCache) {
-            setSessionError('Unable to resolve Pezesha company.');
+            setSessionError('Unable to load user session.');
           }
           setLoadingProfile(false);
           return;
         }
 
-        resolvedCompanyId = String(fixedCompany.id);
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (!profile && !restoredFromCache) {
+            setSessionError('Unable to load user session.');
+          }
+          setLoadingProfile(false);
+          return;
+        }
+
+        const { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('id,name,role,company_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (!mounted) return;
+
+        if (profileError || !profileData?.id) {
+          if (!profile && !restoredFromCache) {
+            setSessionError('Unable to load user session.');
+          }
+          setLoadingProfile(false);
+          return;
+        }
+
+        setProfile({
+          id: String(profileData.id),
+          name: profileData.name ?? null,
+          role: profileData.role ?? null,
+          company_id: resolvedCompanyId,
+        });
+        setSessionError(null);
+        setLoadingProfile(false);
+      } catch (error: any) {
+        if (!mounted) return;
+
+        if (!profile && !restoredFromCache) {
+          setSessionError(error?.message || 'Unable to load user session.');
+        }
+        setLoadingProfile(false);
       }
-
-      if (!mounted) return;
-
-      setProfile({
-        id: String(profileData.id),
-        name: profileData.name ?? null,
-        role: profileData.role ?? null,
-        company_id: resolvedCompanyId,
-      });
-      setSessionError(null);
-      setLoadingProfile(false);
-    } catch (error: any) {
-      if (!mounted) return;
-
-      if (!profile && !restoredFromCache) {
-        setSessionError(error?.message || 'Unable to load user session.');
-      }
-      setLoadingProfile(false);
     }
-  }
 
-  loadProfile();
+    loadProfile();
 
-  return () => {
-    mounted = false;
-  };
-}, [restoredFromCache, profile]);
+    return () => {
+      mounted = false;
+    };
+  }, [cacheHydrated, companyResolved, resolvedCompanyId, restoredFromCache]);
 
   useEffect(() => {
     let mounted = true;
 
     async function loadDashboardData() {
-      if (loadingProfile || !cacheHydrated) return;
+      if (loadingProfile || !cacheHydrated || !companyResolved) return;
 
-if (!profile?.company_id) {
-  if (mounted) {
-    if (accountList.length === 0 && ptps.length === 0) {
-      setLoadingData(false);
-    } else {
-      setIsRefreshing(false);
-    }
-  }
-  return;
-}
+      if (!resolvedCompanyId) {
+        if (mounted) {
+          if (accountList.length === 0 && ptps.length === 0) {
+            setLoadingData(false);
+          } else {
+            setIsRefreshing(false);
+          }
+        }
+        return;
+      }
 
-try {
-  if (accountList.length === 0 && ptps.length === 0) {
-    setLoadingData(true);
-  } else {
-    setIsRefreshing(true);
-  }
+      try {
+        if (accountList.length === 0 && ptps.length === 0) {
+          setLoadingData(true);
+        } else {
+          setIsRefreshing(true);
+        }
 
-  setDataError(null);
+        setDataError(null);
 
-        const normalizedRole = normalizeRole(profile.role);
-        const isAgent = normalizedRole === 'agent';
-        const collectorScope = String(profile.name || '').trim();
+        const isAgent = normalizedProfileRole === 'agent';
+        const collectorScope = normalizedProfileName;
 
         const [accountsRows, paymentsRows, ptpRows] = await Promise.all([
           fetchAllRows('accounts', {
-            companyId: String(profile.company_id),
+            companyId: resolvedCompanyId,
             collectorName: collectorScope,
             restrictToCollector: isAgent,
           }),
           fetchAllRows('payments', {
-            companyId: String(profile.company_id),
+            companyId: resolvedCompanyId,
             collectorName: collectorScope,
             restrictToCollector: isAgent,
           }),
           fetchAllRows('ptps', {
-            companyId: String(profile.company_id),
+            companyId: resolvedCompanyId,
             collectorName: collectorScope,
             restrictToCollector: isAgent,
           }),
         ]);
 
         if (mounted) {
-  setAccountList(accountsRows);
-  setPayments(paymentsRows);
-  setPtps(ptpRows);
-  setLoadingData(false);
-  setIsRefreshing(false);
-  setRestoredFromCache(false);
-}
+          setAccountList(accountsRows);
+          setPayments(paymentsRows);
+          setPtps(ptpRows);
+          setLoadingData(false);
+          setIsRefreshing(false);
+          setRestoredFromCache(false);
+        }
       } catch (error: any) {
         if (mounted) {
-  setDataError(error?.message || 'Unknown error');
-  setLoadingData(false);
-  setIsRefreshing(false);
-}
+          setDataError(error?.message || 'Unknown error');
+          setLoadingData(false);
+          setIsRefreshing(false);
+        }
       }
     }
 
@@ -419,86 +532,84 @@ try {
     return () => {
       mounted = false;
     };
-  }, [loadingProfile, profile, cacheHydrated]);
+  }, [
+    loadingProfile,
+    cacheHydrated,
+    companyResolved,
+    resolvedCompanyId,
+    normalizedProfileRole,
+    normalizedProfileName,
+  ]);
 
   useEffect(() => {
-  if (!cacheHydrated) return;
+    if (!cacheHydrated) return;
 
-  try {
-    sessionStorage.setItem(
-      dashboardCacheKey,
-      JSON.stringify({
-        profile,
-        accountList,
-        payments,
-        ptps,
-        savedAt: Date.now(),
-      })
-    );
-  } catch {
-    // ignore storage errors
-  }
-}, [dashboardCacheKey, profile, accountList, payments, ptps, cacheHydrated]);
+    try {
+      sessionStorage.setItem(
+        dashboardCacheKey,
+        JSON.stringify({
+          profile,
+          resolvedCompanyId,
+          accountList,
+          payments,
+          ptps,
+          savedAt: Date.now(),
+        })
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [dashboardCacheKey, profile, resolvedCompanyId, accountList, payments, ptps, cacheHydrated]);
 
   if (
-  (loadingProfile || loadingData) &&
-  !restoredFromCache &&
-  !profile &&
-  accountList.length === 0 &&
-  ptps.length === 0
-) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        {isRefreshing ? (
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-            Refreshing…
-          </span>
-        ) : null}
-      </div>
-
-      <p className="text-slate-500">Loading dashboard...</p>
-    </div>
-  );
-}
-
-  if (sessionError || !profile?.company_id) {
+    (loadingProfile || loadingData) &&
+    !restoredFromCache &&
+    !profile &&
+    accountList.length === 0 &&
+    ptps.length === 0
+  ) {
     return (
       <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">{sessionError || 'Unable to load user session.'}</p>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+          {isRefreshing ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              Refreshing…
+            </span>
+          ) : null}
+        </div>
+
+        <p className="text-slate-500">Loading dashboard...</p>
       </div>
     );
   }
 
   if (sessionError && !profile && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-3">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        {isRefreshing ? (
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-            Refreshing…
-          </span>
-        ) : null}
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+          {isRefreshing ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              Refreshing…
+            </span>
+          ) : null}
+        </div>
+        <p className="text-red-600">{sessionError}</p>
       </div>
-      <p className="text-red-600">{sessionError}</p>
-    </div>
-  );
-}
+    );
+  }
 
-if (!profile?.company_id && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
-  return (
-    <div className="space-y-4">
-      <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-      <p className="text-red-600">Unable to load user session.</p>
-    </div>
-  );
-}
+  if (!resolvedCompanyId && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">Unable to load user session.</p>
+      </div>
+    );
+  }
 
-  const normalizedRole = normalizeRole(profile.role);
-  const isAgent = normalizedRole === 'agent';
+  const isAgent = normalizedProfileRole === 'agent';
 
   const paymentsByAccountId = new Map<
     string,
@@ -558,15 +669,15 @@ if (!profile?.company_id && !restoredFromCache && accountList.length === 0 && pt
   const totalCollected = accountList.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const collectedThisMonthFromPayments = payments
-  .filter((item) => isCurrentMonth(item.paid_on))
-  .reduce((sum, item) => sum + Number(item.amount || 0), 0);
+    .filter((item) => isCurrentMonth(item.paid_on))
+    .reduce((sum, item) => sum + Number(item.amount || 0), 0);
 
-const collectedThisMonth =
-  collectedThisMonthFromPayments > 0
-    ? collectedThisMonthFromPayments
-    : accountList
-        .filter((item) => isCurrentMonth(item.last_action_date))
-        .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
+  const collectedThisMonth =
+    collectedThisMonthFromPayments > 0
+      ? collectedThisMonthFromPayments
+      : accountList
+          .filter((item) => isCurrentMonth(item.last_action_date))
+          .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const openPtpAccountIds = new Set(
     normalizedPtps
@@ -615,90 +726,91 @@ const collectedThisMonth =
   );
 
   const collectorPerformance = collectors.map((collector) => {
-  const collectorAccounts = accountList.filter((item) => item.collector_name === collector);
+    const collectorAccounts = accountList.filter((item) => item.collector_name === collector);
 
-  const collectorCollected = collectorAccounts.reduce(
-    (sum, item) => sum + Number(item.amount_paid || 0),
-    0
-  );
-
-  const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
-
-  const collectorOpenPtpAccounts = new Set(
-    collectorPtps
-      .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
-      .map((ptp) => ptp.account_id)
-  );
-
-  const collectorKeptPtps = collectorPtps.filter(
-    (ptp) => ptp.effectiveStatus === 'Kept'
-  ).length;
-
-  const collectorBrokenPtps = collectorPtps.filter(
-    (ptp) => ptp.effectiveStatus === 'Broken'
-  ).length;
-
-  const collectorResolvedPtps = collectorPtps.filter(
-    (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
-  ).length;
-
-  return {
-    collector,
-    assignedAccounts: collectorAccounts.length,
-    totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-    totalCollected: collectorCollected,
-    openPtps: collectorOpenPtpAccounts.size,
-    keptPtps: collectorKeptPtps,
-    brokenPtps: collectorBrokenPtps,
-    ptpKeptRate:
-      collectorResolvedPtps > 0
-        ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-        : '0.0%',
-    callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
-      .length,
-  };
-});
-  const accountProducts = Array.from(
-  new Set(
-    accountList
-      .map((item) => String(item.product || item.product_name || '').trim())
-      .filter(Boolean)
-  )
-);
-
-  const accountCoverage = accountProducts.map((product) => {
-  const productAccounts = accountList.filter((item) => {
-    const productName = String(item.product || item.product_name || '').trim();
-    return productName === product;
-  });
-
-  return {
-    product,
-    accounts: productAccounts.length,
-    balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-  };
-});
-
-  const paymentCoverage = accountProducts.map((product) => {
-  const productAccounts = accountList.filter((item) => {
-    const productName = String(item.product || item.product_name || '').trim();
-    return productName === product;
-  });
-
-  const paidProductAccounts = productAccounts.filter(
-    (item) => Number(item.amount_paid || 0) > 0
-  );
-
-  return {
-    product,
-    paymentsCount: paidProductAccounts.length,
-    collected: paidProductAccounts.reduce(
+    const collectorCollected = collectorAccounts.reduce(
       (sum, item) => sum + Number(item.amount_paid || 0),
       0
-    ),
-    hasPayments: paidProductAccounts.length > 0,
-  };
-});
+    );
+
+    const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
+
+    const collectorOpenPtpAccounts = new Set(
+      collectorPtps
+        .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
+        .map((ptp) => ptp.account_id)
+    );
+
+    const collectorKeptPtps = collectorPtps.filter(
+      (ptp) => ptp.effectiveStatus === 'Kept'
+    ).length;
+
+    const collectorBrokenPtps = collectorPtps.filter(
+      (ptp) => ptp.effectiveStatus === 'Broken'
+    ).length;
+
+    const collectorResolvedPtps = collectorPtps.filter(
+      (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
+    ).length;
+
+    return {
+      collector,
+      assignedAccounts: collectorAccounts.length,
+      totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+      totalCollected: collectorCollected,
+      openPtps: collectorOpenPtpAccounts.size,
+      keptPtps: collectorKeptPtps,
+      brokenPtps: collectorBrokenPtps,
+      ptpKeptRate:
+        collectorResolvedPtps > 0
+          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+          : '0.0%',
+      callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
+        .length,
+    };
+  });
+
+  const accountProducts = Array.from(
+    new Set(
+      accountList
+        .map((item) => String(item.product || item.product_name || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  const accountCoverage = accountProducts.map((product) => {
+    const productAccounts = accountList.filter((item) => {
+      const productName = String(item.product || item.product_name || '').trim();
+      return productName === product;
+    });
+
+    return {
+      product,
+      accounts: productAccounts.length,
+      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+    };
+  });
+
+  const paymentCoverage = accountProducts.map((product) => {
+    const productAccounts = accountList.filter((item) => {
+      const productName = String(item.product || item.product_name || '').trim();
+      return productName === product;
+    });
+
+    const paidProductAccounts = productAccounts.filter(
+      (item) => Number(item.amount_paid || 0) > 0
+    );
+
+    return {
+      product,
+      paymentsCount: paidProductAccounts.length,
+      collected: paidProductAccounts.reduce(
+        (sum, item) => sum + Number(item.amount_paid || 0),
+        0
+      ),
+      hasPayments: paidProductAccounts.length > 0,
+    };
+  });
 
   const callbacksToday = accountList.filter(
     (item) =>
@@ -881,31 +993,32 @@ const collectedThisMonth =
   return (
     <div className="space-y-6">
       <div>
-  <div className="flex items-center gap-3">
-    <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-    {isRefreshing ? (
-      <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-        Refreshing…
-      </span>
-    ) : null}
-  </div>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+          {isRefreshing ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              Refreshing…
+            </span>
+          ) : null}
+        </div>
 
-  {restoredFromCache ? (
-    <p className="mt-2 text-sm text-slate-500">
-      Restored your last dashboard view while the latest data loads.
-    </p>
-  ) : null}
+        {restoredFromCache ? (
+          <p className="mt-2 text-sm text-slate-500">
+            Restored your last dashboard view while the latest data loads.
+          </p>
+        ) : null}
 
-  <p className="mt-1 text-slate-500">
-    {isAgent
-      ? 'Collections performance overview for your assigned portfolio.'
-      : 'Collections performance overview for your current tenant workspace.'}
-  </p>
+        <p className="mt-1 text-slate-500">
+          {isAgent
+            ? 'Collections performance overview for your assigned portfolio.'
+            : 'Collections performance overview for your current tenant workspace.'}
+        </p>
         {isAgent ? (
           <p className="mt-2 inline-flex rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
             Agent view: dashboard is limited to your allocated accounts
           </p>
         ) : null}
+        {dataError ? <p className="mt-2 text-sm text-red-600">{dataError}</p> : null}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
