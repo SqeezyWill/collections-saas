@@ -203,16 +203,10 @@ export default function PaymentsPage() {
           .order('created_at', { ascending: false });
 
         let accountsQuery = client
-          .from('accounts')
-<<<<<<< HEAD
-          .select('id,collector_name,product,balance,amount_paid,last_action_date,created_at')
-=======
-          .select(
-            'id,collector_name,product,balance,amount_paid,last_action_date,updated_at,created_at'
-          )
->>>>>>> 04242f0 (Fix admin user update schema and delete auth users properly)
-          .eq('company_id', resolvedCompanyId)
-          .order('created_at', { ascending: false });
+  .from('accounts')
+  .select('id,collector_name,product,balance,amount_paid,last_action_date,created_at')
+  .eq('company_id', resolvedCompanyId)
+  .order('created_at', { ascending: false });
 
         if (isAgent && collectorScope) {
           paymentsQuery = paymentsQuery.eq('collector_name', collectorScope);
