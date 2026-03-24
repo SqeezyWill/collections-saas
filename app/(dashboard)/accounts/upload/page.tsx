@@ -309,22 +309,24 @@ export default function UploadAccountsPage() {
     }
 
     setFileName(file.name);
-setLoadingPreview(true);
+    setLoadingPreview(true);
+    setMessage('Preparing preview...');
 
-try {
-  const client = supabase;
-  if (!client) {
-    setErrorMessage('Supabase is not configured.');
-    setLoadingPreview(false);
-    return;
-  }
+    try {
+      const client = supabase;
 
-  const { companyId, companyName } = await resolveCurrentCompany();
+      if (!client) {
+        setErrorMessage('Supabase is not configured.');
+        setLoadingPreview(false);
+        return;
+      }
 
-  setResolvedCompanyId(companyId);
-  setResolvedCompanyName(companyName || PEZESHA_FALLBACK_NAME);
+      const { companyId, companyName } = await resolveCurrentCompany();
 
-  Papa.parse<ParsedRow>(file, {
+      setResolvedCompanyId(companyId);
+      setResolvedCompanyName(companyName || PEZESHA_FALLBACK_NAME);
+
+      Papa.parse<ParsedRow>(file, {
         header: true,
         skipEmptyLines: true,
         worker: true,
@@ -354,15 +356,20 @@ try {
               return;
             }
 
-            let cfidQuery = client.from('accounts').select('cfid').not('cfid', 'is', null);
+            let cfidQuery = client
+              .from('accounts')
+              .select('cfid')
+              .not('cfid', 'is', null)
+              .order('cfid', { ascending: false })
+              .limit(1);
 
-let existingByLoanQuery = client
-  .from('accounts')
-  .select('id,account_no,customer_id,debtor_name');
+            let existingByLoanQuery = client
+              .from('accounts')
+              .select('id,account_no,customer_id,debtor_name');
 
-let existingByCustomerQuery = client
-  .from('accounts')
-  .select('id,account_no,customer_id,debtor_name');
+            let existingByCustomerQuery = client
+              .from('accounts')
+              .select('id,account_no,customer_id,debtor_name');
 
             if (companyId) {
               cfidQuery = cfidQuery.eq('company_id', companyId);
