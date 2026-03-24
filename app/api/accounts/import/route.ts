@@ -25,6 +25,14 @@ type PreparedInsertRow = {
   existingAccountId: string | null;
 };
 
+type InvalidRowResult = {
+  rowNumber: number;
+  loan_id: string | null;
+  customer_id: string | null;
+  customer_names: string | null;
+  reason: string;
+};
+
 function toNumber(value: unknown) {
   const cleaned = String(value ?? '').replace(/,/g, '').trim();
   if (!cleaned) return null;
@@ -427,14 +435,58 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'rows array is required.' }, { status: 400 });
   }
 
-  const filteredRows = rows.filter(
-    (row) =>
-      String(row?.['customer_names'] || '').trim() !== '' ||
-      String(row?.['loan_id'] || '').trim() !== ''
-  );
+  const invalidRows: InvalidRowResult[] = [];
+  const filteredRows = rows.filter((row, index) => {
+    const rowNumber = index + 1;
+    const loanId = String(row?.['loan_id'] || '').trim();
+    const customerId = String(row?.['customer_id'] || '').trim();
+    const customerNames = String(row?.['customer_names'] || '').trim();
+
+    if (!loanId && !customerId && !customerNames) {
+      invalidRows.push({
+        rowNumber,
+        loan_id: null,
+        customer_id: null,
+        customer_names: null,
+        reason: 'Blank row.',
+      });
+      return false;
+    }
+
+    if (!customerNames) {
+      invalidRows.push({
+        rowNumber,
+        loan_id: loanId || null,
+        customer_id: customerId || null,
+        customer_names: null,
+        reason: 'Missing customer_names.',
+      });
+      return false;
+    }
+
+    if (!loanId) {
+      invalidRows.push({
+        rowNumber,
+        loan_id: null,
+        customer_id: customerId || null,
+        customer_names: customerNames,
+        reason: 'Missing loan_id.',
+      });
+      return false;
+    }
+
+    return true;
+  });
 
   if (!filteredRows.length) {
-    return NextResponse.json({ error: 'No valid rows found to import.' }, { status: 400 });
+    return NextResponse.json(
+      {
+        error: 'No valid rows found to import.',
+        invalidRowCount: invalidRows.length,
+        invalidRows,
+      },
+      { status: 400 }
+    );
   }
 
   let companyId = String(auth.user.companyId || '').trim() || null;
@@ -651,13 +703,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       success: false,
       importedCount: 0,
+      notesImportedCount: 0,
+      invalidRowCount: invalidRows.length,
+      invalidRows,
       duplicateSummary: {
         duplicateExactCount,
         conflictCount,
         sameCustomerOtherFacilityCount,
       },
       duplicateResults,
-      error: 'No new accounts to import. All rows are duplicates or conflicts.',
+      error: 'No new accounts to import. All valid rows are duplicates or conflicts.',
     });
   }
 
@@ -706,6 +761,8 @@ export async function POST(req: NextRequest) {
     success: true,
     importedCount: insertedAccounts?.length || 0,
     notesImportedCount: notesPayload.length,
+    invalidRowCount: invalidRows.length,
+    invalidRows,
     duplicateSummary: {
       duplicateExactCount,
       conflictCount,
