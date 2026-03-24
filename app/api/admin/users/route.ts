@@ -6,35 +6,37 @@ const PROFILE_TABLE = 'user_profiles';
 const COMPANIES_TABLE = 'companies';
 const FIXED_COMPANY_NAME = 'Pezesha';
 const FIXED_COMPANY_LOGO_URL = '/logos/pezesha-logo.png';
+const ALLOWED_ROLES = new Set(['agent', 'admin', 'super_admin']);
+
+function normalizeEmail(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeRole(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
 
 async function resolveFixedCompanyId() {
   if (!supabaseAdmin) {
     throw new Error('Supabase admin is not configured.');
   }
 
-  const lowered = FIXED_COMPANY_NAME.toLowerCase();
-
-  const { data: companies, error } = await supabaseAdmin
+  const { data, error } = await supabaseAdmin
     .from(COMPANIES_TABLE)
-    .select('id,name,code');
+    .select('id,name,code')
+    .or(`name.eq.${FIXED_COMPANY_NAME},code.eq.${FIXED_COMPANY_NAME}`)
+    .limit(1)
+    .maybeSingle();
 
   if (error) {
     throw new Error(error.message);
   }
 
-  const match =
-    (companies || []).find(
-      (company: any) => String(company.name || '').trim().toLowerCase() === lowered
-    ) ||
-    (companies || []).find(
-      (company: any) => String(company.code || '').trim().toLowerCase() === lowered
-    );
-
-  if (!match?.id) {
+  if (!data?.id) {
     throw new Error(`Fixed company "${FIXED_COMPANY_NAME}" could not be resolved.`);
   }
 
-  return String(match.id);
+  return String(data.id);
 }
 
 async function getCompanyBranding(companyId: string) {
@@ -120,8 +122,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null);
 
     const name = String(body?.name || '').trim();
-    const email = String(body?.email || '').trim().toLowerCase();
-    const role = String(body?.role || '').trim();
+    const email = normalizeEmail(body?.email);
+    const role = normalizeRole(body?.role);
     const password = String(body?.password || '').trim();
 
     if (!name || !email || !role || !password) {
@@ -131,8 +133,38 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (!ALLOWED_ROLES.has(role)) {
+      return NextResponse.json(
+        { error: 'Invalid role. Allowed roles are agent, admin, and super_admin.' },
+        { status: 400 }
+      );
+    }
+
     const companyId = await resolveFixedCompanyId();
     const branding = await getCompanyBranding(companyId);
+
+    const { data: existingProfile, error: existingProfileError } = await supabaseAdmin
+      .from(PROFILE_TABLE)
+      .select('id,email')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (existingProfileError) {
+      return NextResponse.json(
+        { error: existingProfileError.message || 'Failed to validate existing profiles.' },
+        { status: 500 }
+      );
+    }
+
+    if (existingProfile?.id) {
+      return NextResponse.json(
+        {
+          error:
+            'A user profile with this email already exists. Edit the existing user or use a different email.',
+        },
+        { status: 400 }
+      );
+    }
 
     const { data: createdUser, error: createError } = await supabaseAdmin.auth.admin.createUser({
       email,
@@ -148,30 +180,37 @@ export async function POST(req: NextRequest) {
     });
 
     if (createError || !createdUser?.user?.id) {
+      const message = String(createError?.message || 'Failed to create auth user.');
+
       return NextResponse.json(
-        { error: createError?.message || 'Failed to create auth user.' },
+        {
+          error: message.includes('already been registered')
+            ? 'A user with this email already exists in authentication. Use a different email or reset that user instead.'
+            : message,
+        },
         { status: 400 }
       );
     }
 
     const authUserId = createdUser.user.id;
 
-    const { error: profileError } = await supabaseAdmin.from(PROFILE_TABLE).upsert(
-      {
-        id: authUserId,
-        name,
-        email,
-        role,
-        company_id: companyId,
-      },
-      { onConflict: 'email' }
-    );
+    const { error: profileError } = await supabaseAdmin.from(PROFILE_TABLE).insert({
+      id: authUserId,
+      name,
+      email,
+      role,
+      company_id: companyId,
+    });
 
     if (profileError) {
       await supabaseAdmin.auth.admin.deleteUser(authUserId).catch(() => null);
 
       return NextResponse.json(
-        { error: profileError.message || 'Failed to save user profile.' },
+        {
+          error:
+            profileError.message ||
+            'Failed to save user profile. The auth user was rolled back automatically.',
+        },
         { status: 400 }
       );
     }

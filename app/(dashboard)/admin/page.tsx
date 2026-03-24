@@ -92,6 +92,36 @@ function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
 }
 
+function normalizeEmail(email: string | null | undefined) {
+  return String(email || '').trim().toLowerCase();
+}
+
+function isValidEmail(email: string) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizeEmail(email));
+}
+
+function formatUserApiError(message: string) {
+  const normalized = String(message || '').trim();
+
+  if (!normalized) return 'Failed to create user';
+
+  const lowered = normalized.toLowerCase();
+
+  if (lowered.includes('user profile with this email already exists')) {
+    return 'A Pezesha user with this email already exists. Edit the existing user or use a different email.';
+  }
+
+  if (lowered.includes('already exists in authentication')) {
+    return 'This email is already registered in authentication. Reset that user or use a different email.';
+  }
+
+  if (lowered.includes('already been registered')) {
+    return 'This email is already registered. Reset that user or use a different email.';
+  }
+
+  return normalized;
+}
+
 export default function AdminPage() {
   const usersTableRef = useRef<HTMLDivElement | null>(null);
 
@@ -260,12 +290,12 @@ export default function AdminPage() {
       }
 
       const list: DbCompany[] = (json?.companies ?? []).map((c: any) => ({
-  id: c.id,
-  name: c.name,
-  code: c.code,
-  themeColor: c.themeColor || '#2563eb',
-  logoUrl: c.logo_url ?? c.logoUrl ?? null,
-}));
+        id: c.id,
+        name: c.name,
+        code: c.code,
+        themeColor: c.themeColor || '#2563eb',
+        logoUrl: c.logo_url ?? c.logoUrl ?? null,
+      }));
 
       setDbCompanies(list);
 
@@ -589,13 +619,14 @@ export default function AdminPage() {
     setAddUserSuccess(null);
 
     const singleCompanyId = getSingleCompany()?.id || addUserForm.companyId;
+    const normalizedEmail = normalizeEmail(addUserForm.email);
 
     const payload = {
       name: addUserForm.name.trim(),
-      email: addUserForm.email.trim().toLowerCase(),
-      role: addUserForm.role,
+      email: normalizedEmail,
+      role: normalizeRole(addUserForm.role),
       companyId: singleCompanyId,
-      password: addUserForm.password,
+      password: String(addUserForm.password || '').trim(),
     };
 
     if (!canCreateUsers) {
@@ -605,6 +636,22 @@ export default function AdminPage() {
 
     if (!payload.name || !payload.email || !payload.role || !payload.companyId || !payload.password) {
       setAddUserError('Please fill name, email, role, and a temporary password.');
+      return;
+    }
+
+    if (!isValidEmail(payload.email)) {
+      setAddUserError('Please enter a valid email address.');
+      return;
+    }
+
+    const emailExistsLocally = dbUsers.some(
+      (user) => normalizeEmail(user?.email) === payload.email
+    );
+
+    if (emailExistsLocally) {
+      setAddUserError(
+        'A Pezesha user with this email already exists. Edit the existing user or use a different email.'
+      );
       return;
     }
 
@@ -619,14 +666,23 @@ export default function AdminPage() {
       const { json, text } = await readJsonSafe(res);
       if (!res.ok) {
         const msg = json?.error || (text ? text.slice(0, 180) : 'Failed to create user');
-        throw new Error(msg);
+        throw new Error(formatUserApiError(msg));
       }
 
       setAddUserSuccess(`User created: ${json?.user?.email || payload.email}`);
       await refreshUsers();
+
+      setAddUserForm({
+        name: '',
+        email: '',
+        role: 'agent',
+        companyId: singleCompanyId,
+        password: defaultUserPassword(),
+      });
+
       setIsAddUserOpen(false);
     } catch (err: any) {
-      setAddUserError(err?.message || 'Failed to create user');
+      setAddUserError(formatUserApiError(err?.message || 'Failed to create user'));
     } finally {
       setAddUserSaving(false);
     }
