@@ -132,6 +132,14 @@ type AccountRow = {
   customer_id: string | null;
 };
 
+type AdminUserRow = {
+  id: string;
+  name: string | null;
+  email: string | null;
+  role: string | null;
+  companyId: string | null;
+};
+
 type SearchField =
   | 'cfid'
   | 'phone'
@@ -166,6 +174,10 @@ function daysAgoDateString(days: number) {
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
+}
+
+function normalizeName(value: unknown) {
+  return String(value || '').trim();
 }
 
 function isToday(dateValue: string | null | undefined) {
@@ -372,6 +384,36 @@ export default function AccountsPage() {
   const canUseBulkActions =
     normalizedProfileRole === 'super_admin' || normalizedProfileRole === 'admin';
 
+  async function authHeaders(includeJson = false): Promise<Record<string, string>> {
+    const headers: Record<string, string> = {};
+
+    if (includeJson) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    if (supabase) {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+    }
+
+    return headers;
+  }
+
+  async function readJsonSafe(res: Response) {
+    const text = await res.text();
+    if (!text) return { json: null as any, text: '' };
+
+    try {
+      return { json: JSON.parse(text), text };
+    } catch {
+      return { json: null as any, text };
+    }
+  }
+
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(portfolioCacheKey);
@@ -539,22 +581,25 @@ export default function AccountsPage() {
           )
         ).sort();
 
-        const { data: agentRows, error: agentError } = await supabase
-          .from('user_profiles')
-          .select('name')
-          .eq('company_id', companyId)
-          .eq('role', 'agent')
-          .not('name', 'is', null)
-          .order('name', { ascending: true });
+        const usersRes = await fetch('/api/admin/users', {
+          headers: await authHeaders(),
+          cache: 'no-store',
+        });
 
-        if (agentError) {
-          throw new Error(agentError.message);
+        const { json: usersJson, text: usersText } = await readJsonSafe(usersRes);
+
+        if (!usersRes.ok) {
+          const msg =
+            usersJson?.error ||
+            (usersText ? usersText.slice(0, 180) : 'Failed to load users for reassignment.');
+          throw new Error(msg);
         }
 
         const agentList = Array.from(
           new Set(
-            (agentRows ?? [])
-              .map((row: any) => String(row?.name || '').trim())
+            ((usersJson?.users ?? []) as AdminUserRow[])
+              .filter((user) => normalizeRole(user.role) === 'agent')
+              .map((user) => normalizeName(user.name))
               .filter(Boolean)
           )
         ).sort((a, b) => a.localeCompare(b));
