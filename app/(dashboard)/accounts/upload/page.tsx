@@ -11,7 +11,6 @@ type PreviewStatus =
   | 'new'
   | 'duplicate_exact'
   | 'conflict_same_loan_diff_customer'
-  | 'same_customer_other_facility'
   | 'duplicate_in_file';
 
 type PreviewRow = ParsedRow & {
@@ -67,7 +66,7 @@ const EXPECTED_HEADERS = [
   'Officer Feedback 2',
 ] as const;
 
-const PREVIEW_CACHE_KEY = 'accounts-upload-preview-v2';
+const PREVIEW_CACHE_KEY = 'accounts-upload-preview-v3';
 const PEZESHA_FALLBACK_NAME = 'Pezesha';
 
 function padCfid(num: number) {
@@ -98,13 +97,11 @@ function normalizeStrategyProductCode() {
 
 function toneForStatus(status: PreviewStatus) {
   if (status === 'new') return 'bg-emerald-100 text-emerald-700';
-  if (status === 'same_customer_other_facility') return 'bg-amber-100 text-amber-700';
   return 'bg-rose-100 text-rose-700';
 }
 
 function labelForStatus(status: PreviewStatus) {
   if (status === 'new') return 'Will Import';
-  if (status === 'same_customer_other_facility') return 'Customer Has Another Facility';
   if (status === 'duplicate_exact') return 'Duplicate Existing Account';
   if (status === 'conflict_same_loan_diff_customer') return 'Loan Conflict';
   return 'Duplicate In File';
@@ -151,9 +148,6 @@ export default function UploadAccountsPage() {
   const summary = useMemo(() => {
     return {
       newCount: previewRows.filter((row) => row.__status === 'new').length,
-      sameCustomerOtherFacilityCount: previewRows.filter(
-        (row) => row.__status === 'same_customer_other_facility'
-      ).length,
       duplicateExactCount: previewRows.filter((row) => row.__status === 'duplicate_exact').length,
       conflictCount: previewRows.filter(
         (row) => row.__status === 'conflict_same_loan_diff_customer'
@@ -162,7 +156,7 @@ export default function UploadAccountsPage() {
     };
   }, [previewRows]);
 
-  const importableCount = summary.newCount + summary.sameCustomerOtherFacilityCount;
+  const importableCount = summary.newCount;
 
   useEffect(() => {
     if (hasRestoredCacheRef.current) return;
@@ -315,12 +309,6 @@ export default function UploadAccountsPage() {
     try {
       const client = supabase;
 
-      if (!client) {
-        setErrorMessage('Supabase is not configured.');
-        setLoadingPreview(false);
-        return;
-      }
-
       const { companyId, companyName } = await resolveCurrentCompany();
 
       setResolvedCompanyId(companyId);
@@ -367,39 +355,22 @@ export default function UploadAccountsPage() {
               .from('accounts')
               .select('id,account_no,customer_id,debtor_name');
 
-            let existingByCustomerQuery = client
-              .from('accounts')
-              .select('id,account_no,customer_id,debtor_name');
-
             if (companyId) {
               cfidQuery = cfidQuery.eq('company_id', companyId);
               existingByLoanQuery = existingByLoanQuery.eq('company_id', companyId);
-              existingByCustomerQuery = existingByCustomerQuery.eq('company_id', companyId);
             }
 
             const loanIds = Array.from(
               new Set(filteredRows.map((row) => String(row['loan_id'] || '').trim()).filter(Boolean))
             );
 
-            const customerIds = Array.from(
-              new Set(
-                filteredRows.map((row) => String(row['customer_id'] || '').trim()).filter(Boolean)
-              )
-            );
-
-            const [
-              { data: existingCfids, error: cfidError },
-              { data: existingByLoan, error: existingLoanError },
-              { data: existingByCustomer, error: existingCustomerError },
-            ] = await Promise.all([
-              cfidQuery,
-              loanIds.length > 0
-                ? existingByLoanQuery.in('account_no', loanIds)
-                : Promise.resolve({ data: [], error: null } as any),
-              customerIds.length > 0
-                ? existingByCustomerQuery.in('customer_id', customerIds)
-                : Promise.resolve({ data: [], error: null } as any),
-            ]);
+            const [{ data: existingCfids, error: cfidError }, { data: existingByLoan, error: existingLoanError }] =
+              await Promise.all([
+                cfidQuery,
+                loanIds.length > 0
+                  ? existingByLoanQuery.in('account_no', loanIds)
+                  : Promise.resolve({ data: [], error: null } as any),
+              ]);
 
             if (cfidError) {
               setErrorMessage(`Failed to read existing CFIDs: ${cfidError.message}`);
@@ -409,12 +380,6 @@ export default function UploadAccountsPage() {
 
             if (existingLoanError) {
               setErrorMessage(`Failed to read existing loans: ${existingLoanError.message}`);
-              setLoadingPreview(false);
-              return;
-            }
-
-            if (existingCustomerError) {
-              setErrorMessage(`Failed to read existing customers: ${existingCustomerError.message}`);
               setLoadingPreview(false);
               return;
             }
@@ -432,15 +397,6 @@ export default function UploadAccountsPage() {
               if (key) existingLoanMap.set(key, item);
             }
 
-            const existingCustomerMap = new Map<string, any[]>();
-            for (const item of existingByCustomer || []) {
-              const key = String(item.customer_id || '').trim();
-              if (!key) continue;
-              const current = existingCustomerMap.get(key) || [];
-              current.push(item);
-              existingCustomerMap.set(key, current);
-            }
-
             const seenCompoundKeys = new Set<string>();
             const seenLoanIds = new Set<string>();
 
@@ -455,9 +411,6 @@ export default function UploadAccountsPage() {
               const compoundKey = `${loanId}::${customerId}`;
 
               const existingLoan = loanId ? existingLoanMap.get(loanId) : null;
-              const existingCustomerFacilities = customerId
-                ? existingCustomerMap.get(customerId) || []
-                : [];
 
               let status: PreviewStatus = 'new';
               let statusMessage = '';
@@ -484,23 +437,6 @@ export default function UploadAccountsPage() {
                   status = 'conflict_same_loan_diff_customer';
                   statusMessage = 'This loan_id already exists under a different customer_id.';
                 }
-              } else if (
-                customerId &&
-                existingCustomerFacilities.some(
-                  (facility) => String(facility.account_no || '').trim() !== loanId
-                )
-              ) {
-                const otherFacility =
-                  existingCustomerFacilities.find(
-                    (facility) => String(facility.account_no || '').trim() !== loanId
-                  ) || null;
-
-                existingAccountNo = String(otherFacility?.account_no || '');
-                existingCustomerId = String(otherFacility?.customer_id || '');
-                existingDebtorName = String(otherFacility?.debtor_name || '');
-                status = 'same_customer_other_facility';
-                statusMessage =
-                  'This customer already has another facility in the system. This row can still be imported.';
               }
 
               if (loanId) seenLoanIds.add(loanId);
@@ -554,9 +490,7 @@ export default function UploadAccountsPage() {
       return;
     }
 
-    const importableRows = previewRows.filter(
-      (row) => row.__status === 'new' || row.__status === 'same_customer_other_facility'
-    );
+    const importableRows = previewRows.filter((row) => row.__status === 'new');
 
     if (!importableRows.length) {
       setErrorMessage('There are no importable rows. Remove duplicates or conflicts first.');
@@ -597,16 +531,12 @@ export default function UploadAccountsPage() {
       const failedCount = Number(result?.strategySummary?.failedCount || 0);
       const duplicateExactCount = Number(result?.duplicateSummary?.duplicateExactCount || 0);
       const conflictCount = Number(result?.duplicateSummary?.conflictCount || 0);
-      const sameCustomerOtherFacilityCount = Number(
-        result?.duplicateSummary?.sameCustomerOtherFacilityCount || 0
-      );
 
       setMessage(
         `Import complete for ${companyName || PEZESHA_FALLBACK_NAME}. ${importedCount} account(s) uploaded successfully. ` +
           `Notes: ${notesImportedCount}. ` +
           `Strategies: ${assignedCount} assigned, ${skippedCount} skipped, ${failedCount} failed. ` +
-          `Duplicates blocked: ${duplicateExactCount}. Conflicts blocked: ${conflictCount}. ` +
-          `Other facilities allowed: ${sameCustomerOtherFacilityCount}.`
+          `Duplicates blocked: ${duplicateExactCount}. Conflicts blocked: ${conflictCount}.`
       );
 
       setPreviewRows([]);
@@ -687,7 +617,7 @@ export default function UploadAccountsPage() {
 
           {previewRows.length > 0 ? (
             <>
-              <div className="grid gap-4 md:grid-cols-5">
+              <div className="grid gap-4 md:grid-cols-4">
                 <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <p className="text-xs uppercase tracking-wide text-slate-500">Rows Reviewed</p>
                   <p className="mt-2 text-2xl font-semibold text-slate-900">{previewCount}</p>
@@ -696,13 +626,6 @@ export default function UploadAccountsPage() {
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
                   <p className="text-xs uppercase tracking-wide text-emerald-700">Will Import</p>
                   <p className="mt-2 text-2xl font-semibold text-emerald-800">{summary.newCount}</p>
-                </div>
-
-                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4">
-                  <p className="text-xs uppercase tracking-wide text-amber-700">Other Facilities</p>
-                  <p className="mt-2 text-2xl font-semibold text-amber-800">
-                    {summary.sameCustomerOtherFacilityCount}
-                  </p>
                 </div>
 
                 <div className="rounded-xl border border-rose-200 bg-rose-50 p-4">
