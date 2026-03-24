@@ -35,7 +35,7 @@ type CachedPreviewState = {
   cachedAt: number;
 };
 
-const EXPECTED_HEADERS = [
+const REQUIRED_HEADERS = [
   'loan_id',
   'customer_id',
   'customer_names',
@@ -57,6 +57,9 @@ const EXPECTED_HEADERS = [
   'Outstanding_balance',
   'days_late',
   'officer',
+] as const;
+
+const OPTIONAL_HEADERS = [
   'PTP_offered',
   'PTP_due_date',
   'PTP_amount',
@@ -66,7 +69,7 @@ const EXPECTED_HEADERS = [
   'Officer Feedback 2',
 ] as const;
 
-const PREVIEW_CACHE_KEY = 'accounts-upload-preview-v3';
+const PREVIEW_CACHE_KEY = 'accounts-upload-preview-v4';
 const PEZESHA_FALLBACK_NAME = 'Pezesha';
 
 function padCfid(num: number) {
@@ -132,6 +135,7 @@ function clearCachedPreview() {
 export default function UploadAccountsPage() {
   const [fileName, setFileName] = useState('');
   const [missingHeaders, setMissingHeaders] = useState<string[]>([]);
+  const [optionalMissingHeaders, setOptionalMissingHeaders] = useState<string[]>([]);
   const [previewRows, setPreviewRows] = useState<PreviewRow[]>([]);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -274,6 +278,7 @@ export default function UploadAccountsPage() {
 
   function resetPreviewState(options?: { keepCompany?: boolean }) {
     setMissingHeaders([]);
+    setOptionalMissingHeaders([]);
     setPreviewRows([]);
     setMessage('');
     setErrorMessage('');
@@ -293,6 +298,7 @@ export default function UploadAccountsPage() {
     setMessage('');
     setPreviewRows([]);
     setMissingHeaders([]);
+    setOptionalMissingHeaders([]);
     setRestoredFromCache(false);
 
     if (!file) return;
@@ -321,12 +327,17 @@ export default function UploadAccountsPage() {
         complete: async (results) => {
           try {
             const headers = (results.meta.fields || []).map((header) => String(header).trim());
-            const missing = EXPECTED_HEADERS.filter((header) => !headers.includes(header));
 
-            setMissingHeaders(missing);
+            const missingRequired = REQUIRED_HEADERS.filter((header) => !headers.includes(header));
+            const missingOptional = OPTIONAL_HEADERS.filter((header) => !headers.includes(header));
 
-            if (missing.length > 0) {
-              setErrorMessage(`The CSV is missing these standard headers: ${missing.join(', ')}`);
+            setMissingHeaders(missingRequired);
+            setOptionalMissingHeaders(missingOptional);
+
+            if (missingRequired.length > 0) {
+              setErrorMessage(
+                `The CSV is missing these required headers: ${missingRequired.join(', ')}`
+              );
               setLoadingPreview(false);
               return;
             }
@@ -364,13 +375,15 @@ export default function UploadAccountsPage() {
               new Set(filteredRows.map((row) => String(row['loan_id'] || '').trim()).filter(Boolean))
             );
 
-            const [{ data: existingCfids, error: cfidError }, { data: existingByLoan, error: existingLoanError }] =
-              await Promise.all([
-                cfidQuery,
-                loanIds.length > 0
-                  ? existingByLoanQuery.in('account_no', loanIds)
-                  : Promise.resolve({ data: [], error: null } as any),
-              ]);
+            const [
+              { data: existingCfids, error: cfidError },
+              { data: existingByLoan, error: existingLoanError },
+            ] = await Promise.all([
+              cfidQuery,
+              loanIds.length > 0
+                ? existingByLoanQuery.in('account_no', loanIds)
+                : Promise.resolve({ data: [], error: null } as any),
+            ]);
 
             if (cfidError) {
               setErrorMessage(`Failed to read existing CFIDs: ${cfidError.message}`);
@@ -456,8 +469,14 @@ export default function UploadAccountsPage() {
             });
 
             setPreviewRows(generatedPreview);
+
+            const optionalNote =
+              missingOptional.length > 0
+                ? ` Optional headers not found but ignored: ${missingOptional.join(', ')}.`
+                : '';
+
             setMessage(
-              `Preview ready for ${companyName || PEZESHA_FALLBACK_NAME}. ${generatedPreview.length} row(s) reviewed.`
+              `Preview ready for ${companyName || PEZESHA_FALLBACK_NAME}. ${generatedPreview.length} row(s) reviewed.${optionalNote}`
             );
           } catch (error: any) {
             setErrorMessage(error?.message || 'Failed to prepare preview.');
@@ -542,6 +561,7 @@ export default function UploadAccountsPage() {
       setPreviewRows([]);
       setFileName('');
       setMissingHeaders([]);
+      setOptionalMissingHeaders([]);
       clearCachedPreview();
     } catch (error: any) {
       setImporting(false);
@@ -603,8 +623,7 @@ export default function UploadAccountsPage() {
 
           <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800">
             Required in practice: at least <strong>loan_id</strong> or <strong>customer_names</strong>.
-            Officer Feedback 1 and Officer Feedback 2 will be imported into notes. PTP fields will
-            be carried into account update context and notes.
+            Missing optional fields will be ignored, and blank optional cells will be skipped automatically.
           </div>
 
           {loadingPreview ? <p className="text-sm text-slate-500">Preparing preview...</p> : null}
@@ -612,7 +631,13 @@ export default function UploadAccountsPage() {
           {message ? <p className="text-sm text-emerald-700">{message}</p> : null}
 
           {missingHeaders.length > 0 ? (
-            <p className="text-sm text-red-600">Missing headers: {missingHeaders.join(', ')}</p>
+            <p className="text-sm text-red-600">Missing required headers: {missingHeaders.join(', ')}</p>
+          ) : null}
+
+          {optionalMissingHeaders.length > 0 ? (
+            <p className="text-sm text-amber-700">
+              Missing optional headers: {optionalMissingHeaders.join(', ')}. Upload will continue.
+            </p>
           ) : null}
 
           {previewRows.length > 0 ? (
