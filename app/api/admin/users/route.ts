@@ -164,11 +164,16 @@ export async function POST(req: NextRequest) {
         role,
         company_id: companyId,
       },
-      { onConflict: 'id' }
+      { onConflict: 'email' }
     );
 
     if (profileError) {
-      return NextResponse.json({ error: profileError.message }, { status: 400 });
+      await supabaseAdmin.auth.admin.deleteUser(authUserId).catch(() => null);
+
+      return NextResponse.json(
+        { error: profileError.message || 'Failed to save user profile.' },
+        { status: 400 }
+      );
     }
 
     return NextResponse.json({
@@ -177,7 +182,7 @@ export async function POST(req: NextRequest) {
         name,
         email,
         role,
-        companyId,
+        companyId: companyId,
         companyName: FIXED_COMPANY_NAME,
         companyLogoUrl: FIXED_COMPANY_LOGO_URL,
       },
