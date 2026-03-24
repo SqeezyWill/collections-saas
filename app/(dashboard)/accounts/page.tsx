@@ -354,6 +354,7 @@ export default function AccountsPage() {
   const [rows, setRows] = useState<AccountRow[]>([]);
   const [totalAccounts, setTotalAccounts] = useState(0);
   const [collectorOptions, setCollectorOptions] = useState<string[]>([]);
+  const [agentOptions, setAgentOptions] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [bulkAssignCollector, setBulkAssignCollector] = useState('');
@@ -371,7 +372,7 @@ export default function AccountsPage() {
   const canUseBulkActions =
     normalizedProfileRole === 'super_admin' || normalizedProfileRole === 'admin';
 
-    useEffect(() => {
+  useEffect(() => {
     try {
       const raw = sessionStorage.getItem(portfolioCacheKey);
 
@@ -385,6 +386,7 @@ export default function AccountsPage() {
       if (Array.isArray(parsed?.rows)) setRows(parsed.rows);
       if (typeof parsed?.totalAccounts === 'number') setTotalAccounts(parsed.totalAccounts);
       if (Array.isArray(parsed?.collectorOptions)) setCollectorOptions(parsed.collectorOptions);
+      if (Array.isArray(parsed?.agentOptions)) setAgentOptions(parsed.agentOptions);
       if (parsed?.profile) setProfile(parsed.profile);
 
       if (typeof parsed?.resolvedCompanyId === 'string' && parsed.resolvedCompanyId.trim()) {
@@ -467,7 +469,7 @@ export default function AccountsPage() {
 
     async function loadPage() {
       try {
-                if (rows.length === 0) {
+        if (rows.length === 0) {
           setLoading(true);
         } else {
           setIsRefreshing(true);
@@ -537,8 +539,29 @@ export default function AccountsPage() {
           )
         ).sort();
 
+        const { data: agentRows, error: agentError } = await supabase
+          .from('user_profiles')
+          .select('name')
+          .eq('company_id', companyId)
+          .eq('role', 'agent')
+          .not('name', 'is', null)
+          .order('name', { ascending: true });
+
+        if (agentError) {
+          throw new Error(agentError.message);
+        }
+
+        const agentList = Array.from(
+          new Set(
+            (agentRows ?? [])
+              .map((row: any) => String(row?.name || '').trim())
+              .filter(Boolean)
+          )
+        ).sort((a, b) => a.localeCompare(b));
+
         if (!mounted) return;
         setCollectorOptions(collectorList);
+        setAgentOptions(agentList);
 
         let matchedAccountIds: string[] | null = null;
 
@@ -650,9 +673,9 @@ export default function AccountsPage() {
         setTotalAccounts(count ?? 0);
       } catch (e: any) {
         if (!mounted) return;
-                setErrorMsg(e?.message || 'Failed to load accounts.');
+        setErrorMsg(e?.message || 'Failed to load accounts.');
       } finally {
-                if (mounted) {
+        if (mounted) {
           setLoading(false);
           setIsRefreshing(false);
         }
@@ -664,7 +687,7 @@ export default function AccountsPage() {
     return () => {
       mounted = false;
     };
-    }, [
+  }, [
     search,
     searchField,
     collector,
@@ -682,7 +705,7 @@ export default function AccountsPage() {
     cacheHydrated,
   ]);
 
-    useEffect(() => {
+  useEffect(() => {
     if (!cacheHydrated) return;
 
     try {
@@ -692,6 +715,7 @@ export default function AccountsPage() {
           rows,
           totalAccounts,
           collectorOptions,
+          agentOptions,
           profile,
           resolvedCompanyId,
           savedAt: Date.now(),
@@ -705,12 +729,13 @@ export default function AccountsPage() {
     rows,
     totalAccounts,
     collectorOptions,
+    agentOptions,
     profile,
     resolvedCompanyId,
     cacheHydrated,
   ]);
 
-    useEffect(() => {
+  useEffect(() => {
     function saveScroll() {
       try {
         sessionStorage.setItem(portfolioScrollKey, String(window.scrollY));
@@ -723,7 +748,7 @@ export default function AccountsPage() {
     return () => window.removeEventListener('scroll', saveScroll);
   }, [portfolioScrollKey]);
 
-    useEffect(() => {
+  useEffect(() => {
     if (!cacheHydrated) return;
 
     try {
@@ -919,7 +944,7 @@ export default function AccountsPage() {
 
     if (action === 'assign') {
       if (!bulkAssignCollector.trim()) {
-        setBulkMessage('Please choose a collector first.');
+        setBulkMessage('Please choose an agent first.');
         return;
       }
 
@@ -928,11 +953,12 @@ export default function AccountsPage() {
 
       try {
         const assignDate = todayDateString();
+        const selectedAgentName = bulkAssignCollector.trim();
 
         const { error: assignError } = await supabase
           .from('accounts')
           .update({
-            collector_name: bulkAssignCollector.trim(),
+            collector_name: selectedAgentName,
             last_action_date: assignDate,
           })
           .in('id', selectedIds);
@@ -947,7 +973,7 @@ export default function AccountsPage() {
             account_id: accountId,
             author_id: profile.id,
             created_by_name: profile.name || 'System User',
-            body: `Bulk action: Account reassigned to ${bulkAssignCollector.trim()}.`,
+            body: `Bulk action: Account reassigned to ${selectedAgentName}.`,
           }));
 
           const { error: notesError } = await supabase.from('notes').insert(noteRows);
@@ -957,7 +983,7 @@ export default function AccountsPage() {
         }
 
         setBulkMessage(
-          `Reassigned ${selectedIds.length} account(s) to ${bulkAssignCollector.trim()}.`
+          `Reassigned ${selectedIds.length} account(s) to ${selectedAgentName}.`
         );
         setSelectedIds([]);
         setBulkAssignCollector('');
@@ -1191,8 +1217,8 @@ export default function AccountsPage() {
                 disabled={actionLoading}
                 className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:opacity-50"
               >
-                <option value="">Select collector to reassign</option>
-                {collectorOptions.map((item) => (
+                <option value="">Select agent to reassign</option>
+                {agentOptions.map((item) => (
                   <option key={item} value={item}>
                     {item}
                   </option>
