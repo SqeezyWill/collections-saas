@@ -207,41 +207,20 @@ async function getMaxExistingCfid(
   admin: NonNullable<typeof supabaseAdmin>,
   companyId: string
 ) {
-  let from = 0;
-  const pageSize = 1000;
-  let maxCfid = 0;
+  const { data, error } = await admin
+    .from(ACCOUNTS_TABLE)
+    .select('cfid')
+    .eq('company_id', companyId)
+    .not('cfid', 'is', null)
+    .order('cfid', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  while (true) {
-    const to = from + pageSize - 1;
-
-    const { data, error } = await admin
-      .from(ACCOUNTS_TABLE)
-      .select('cfid')
-      .eq('company_id', companyId)
-      .not('cfid', 'is', null)
-      .range(from, to);
-
-    if (error) {
-      throw new Error(`Failed to read existing CFIDs: ${error.message}`);
-    }
-
-    const rows = data ?? [];
-
-    for (const row of rows) {
-      const numeric = getNumericCfid(row.cfid);
-      if (numeric != null && numeric > maxCfid) {
-        maxCfid = numeric;
-      }
-    }
-
-    if (rows.length < pageSize) {
-      break;
-    }
-
-    from += pageSize;
+  if (error) {
+    throw new Error(`Failed to read existing CFIDs: ${error.message}`);
   }
 
-  return maxCfid;
+  return getNumericCfid(data?.cfid) || 0;
 }
 
 async function resolveStrategyForAccount(
@@ -718,52 +697,10 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const strategyResults = [];
+  const strategyResults: any[] = [];
   let assignedCount = 0;
   let skippedCount = 0;
   let failedCount = 0;
-
-  for (const account of insertedAccounts || []) {
-    const result = await assignStrategyToAccount(admin, {
-      accountId: String(account.id),
-      productCode: account.product_code,
-      dpd: typeof account.dpd === 'number' ? account.dpd : toInteger(account.dpd),
-    });
-
-    if (result.ok && result.skipped) {
-      skippedCount += 1;
-      strategyResults.push({
-        accountId: account.id,
-        cfid: account.cfid,
-        status: 'skipped',
-        strategyId: result.strategyId,
-        strategyName: result.strategyName,
-        meta: result.meta,
-      });
-      continue;
-    }
-
-    if (result.ok) {
-      assignedCount += 1;
-      strategyResults.push({
-        accountId: account.id,
-        cfid: account.cfid,
-        status: 'assigned',
-        strategyId: result.strategyId,
-        strategyName: result.strategyName,
-        meta: result.meta,
-      });
-      continue;
-    }
-
-    failedCount += 1;
-    strategyResults.push({
-      accountId: account.id,
-      cfid: account.cfid,
-      status: 'failed',
-      error: result.error,
-    });
-  }
 
   return NextResponse.json({
     success: true,
