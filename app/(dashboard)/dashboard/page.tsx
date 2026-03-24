@@ -10,6 +10,15 @@ import { currency } from '@/lib/utils';
 const PAGE_SIZE = 1000;
 const DASHBOARD_CACHE_PREFIX = 'dashboard-cache:v1:';
 
+const DASHBOARD_TABLE_SELECTS = {
+  accounts:
+    'id,created_at,status,balance,amount_paid,last_action_date,next_action_date,collector_name,product,product_name',
+  payments: 'id,created_at,account_id,amount,paid_on,collector_name',
+  ptps: 'id,created_at,account_id,status,kept_amount,promised_date,promised_amount,collector_name',
+} as const;
+
+type DashboardTable = keyof typeof DASHBOARD_TABLE_SELECTS;
+
 type UserProfile = {
   id: string;
   name?: string | null;
@@ -124,7 +133,7 @@ function resolvePtpOutcomeFromPayments(
 }
 
 async function fetchAllRows(
-  table: 'accounts' | 'payments' | 'ptps',
+  table: DashboardTable,
   input: {
     companyId: string;
     collectorName?: string;
@@ -143,7 +152,7 @@ async function fetchAllRows(
 
     let query = supabase
       .from(table)
-      .select('*')
+      .select(DASHBOARD_TABLE_SELECTS[table])
       .eq('company_id', companyId)
       .order('created_at', { ascending: false })
       .range(from, to);
