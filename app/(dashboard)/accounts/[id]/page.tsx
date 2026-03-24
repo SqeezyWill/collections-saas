@@ -40,6 +40,10 @@ function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
 }
 
+function isClosedStatus(value: unknown) {
+  return normalize(value) === 'closed';
+}
+
 function parseNumber(value: unknown): number | null {
   if (value == null || value === '') return null;
   const num = Number(value);
@@ -506,6 +510,12 @@ async function resolveAutoStrategy(accountId: string) {
   };
 }
 
+function actionLinkClasses(disabled: boolean) {
+  return disabled
+    ? 'inline-flex min-w-[150px] cursor-not-allowed items-center justify-center rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-medium text-slate-400'
+    : 'inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50';
+}
+
 export default async function AccountDetailPage({ params }: PageProps) {
   const { id } = await params;
 
@@ -518,7 +528,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
     );
   }
 
-        const { data: accountOnly, error: accountOnlyError } = await supabaseAdmin
+  const { data: accountOnly, error: accountOnlyError } = await supabaseAdmin
     .from('accounts')
     .select('*')
     .eq('id', id)
@@ -530,7 +540,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
   const userId = 'single-company-bypass';
 
-      let profileData: UserProfile | null = {
+  let profileData: UserProfile | null = {
     id: userId,
     name: null,
     role: 'super_admin',
@@ -539,7 +549,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
   let resolvedCompanyId = String(profileData?.company_id || '').trim();
 
-    if (!resolvedCompanyId) {
+  if (!resolvedCompanyId) {
     resolvedCompanyId = String(accountOnly.company_id || '').trim();
 
     if (!resolvedCompanyId) {
@@ -571,6 +581,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
   const isAgent = normalizedRole === 'agent';
   const canManageAssignments =
     normalizedRole === 'super_admin' || normalizedRole === 'admin';
+  const canCloseOrReopen =
+    normalizedRole === 'super_admin' || normalizedRole === 'admin';
   const collectorScope = String(profile.name || '').trim();
 
   async function reEvaluateStrategy() {
@@ -582,6 +594,16 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
     if (!canManageAssignments) {
       throw new Error('You do not have permission to re-evaluate strategy.');
+    }
+
+    const currentAccount = await supabaseAdmin
+      .from('accounts')
+      .select('status')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (isClosedStatus(currentAccount.data?.status)) {
+      throw new Error('Closed accounts cannot be updated. Reopen the account first.');
     }
 
     const resolved = await resolveAutoStrategy(id);
@@ -628,7 +650,107 @@ export default async function AccountDetailPage({ params }: PageProps) {
     redirect(`/accounts/${id}`);
   }
 
-      let accountQuery = supabaseAdmin
+  async function closeAccount() {
+    'use server';
+
+    if (!supabaseAdmin) {
+      throw new Error('Supabase admin is not configured.');
+    }
+
+    if (!canCloseOrReopen) {
+      throw new Error('You do not have permission to close accounts.');
+    }
+
+    const { data: currentAccount, error: readError } = await supabaseAdmin
+      .from('accounts')
+      .select('id,status,company_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (readError || !currentAccount) {
+      throw new Error(readError?.message || 'Account not found.');
+    }
+
+    if (isClosedStatus(currentAccount.status)) {
+      redirect(`/accounts/${id}`);
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { error: updateError } = await supabaseAdmin
+      .from('accounts')
+      .update({
+        status: 'Closed',
+        last_action_date: today,
+      })
+      .eq('id', id);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    await supabaseAdmin.from('notes').insert({
+      company_id: currentAccount.company_id,
+      account_id: id,
+      author_id: '11111111-1111-1111-1111-111111111111',
+      created_by_name: 'System User',
+      body: 'Admin action: Account closed. Notes and account changes are now locked until reopened.',
+    });
+
+    redirect(`/accounts/${id}`);
+  }
+
+  async function reopenAccount() {
+    'use server';
+
+    if (!supabaseAdmin) {
+      throw new Error('Supabase admin is not configured.');
+    }
+
+    if (!canCloseOrReopen) {
+      throw new Error('You do not have permission to reopen accounts.');
+    }
+
+    const { data: currentAccount, error: readError } = await supabaseAdmin
+      .from('accounts')
+      .select('id,status,company_id')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (readError || !currentAccount) {
+      throw new Error(readError?.message || 'Account not found.');
+    }
+
+    if (!isClosedStatus(currentAccount.status)) {
+      redirect(`/accounts/${id}`);
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { error: updateError } = await supabaseAdmin
+      .from('accounts')
+      .update({
+        status: 'Open',
+        last_action_date: today,
+      })
+      .eq('id', id);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    await supabaseAdmin.from('notes').insert({
+      company_id: currentAccount.company_id,
+      account_id: id,
+      author_id: '11111111-1111-1111-1111-111111111111',
+      created_by_name: 'System User',
+      body: 'Admin action: Account reopened. Notes and account updates are enabled again.',
+    });
+
+    redirect(`/accounts/${id}`);
+  }
+
+  let accountQuery = supabaseAdmin
     .from('accounts')
     .select('*')
     .eq('id', id)
@@ -655,6 +777,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
   if (error || !account) {
     notFound();
   }
+
+  const isClosed = isClosedStatus(account.status);
 
   const phones = compactPhones([
     account.primary_phone,
@@ -683,7 +807,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
     .order('created_at', { ascending: false })
     .limit(10);
 
-    let relatedFacilitiesQuery = account.customer_id
+  let relatedFacilitiesQuery = account.customer_id
     ? supabaseAdmin
         .from('accounts')
         .select('id,debtor_name,account_no,product,portfolio_category,balance,status,dpd,collector_name')
@@ -694,7 +818,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
         .limit(10)
     : null;
 
-    if (relatedFacilitiesQuery && isAgent && collectorScope) {
+  if (relatedFacilitiesQuery && isAgent && collectorScope) {
     relatedFacilitiesQuery = relatedFacilitiesQuery.eq('collector_name', collectorScope);
   }
 
@@ -725,6 +849,10 @@ export default async function AccountDetailPage({ params }: PageProps) {
       ? 'bg-rose-100 text-rose-700'
       : account.status === 'Broken'
       ? 'bg-rose-100 text-rose-700'
+      : account.status === 'Closed'
+      ? 'bg-slate-900 text-white'
+      : account.status === 'Pending Closure Approval'
+      ? 'bg-blue-100 text-blue-700'
       : 'bg-slate-100 text-slate-700';
 
   const basicDetails = [
@@ -867,6 +995,16 @@ export default async function AccountDetailPage({ params }: PageProps) {
                 Agent view: only your allocated account details are visible
               </p>
             ) : null}
+            {isClosed ? (
+              <p className="mt-2 inline-flex rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">
+                This account is closed. Notes and changes are locked until reopened by an admin.
+              </p>
+            ) : null}
+            {!isClosed && account.status === 'Pending Closure Approval' ? (
+              <p className="mt-2 inline-flex rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
+                Awaiting admin close decision
+              </p>
+            ) : null}
           </div>
 
           <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-medium ${statusClasses}`}>
@@ -874,6 +1012,38 @@ export default async function AccountDetailPage({ params }: PageProps) {
           </span>
         </div>
       </div>
+
+      {canCloseOrReopen ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <div className="flex flex-wrap items-center gap-3">
+            {!isClosed ? (
+              <form action={closeAccount}>
+                <button
+                  type="submit"
+                  className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  Close Account
+                </button>
+              </form>
+            ) : (
+              <form action={reopenAccount}>
+                <button
+                  type="submit"
+                  className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  Reopen Account
+                </button>
+              </form>
+            )}
+
+            <p className="text-sm text-slate-500">
+              {isClosed
+                ? 'Reopening restores notes and account updates.'
+                : 'Closing locks notes, disposition updates, assignments, payments, PTPs and contact edits.'}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1013,18 +1183,27 @@ export default async function AccountDetailPage({ params }: PageProps) {
           </div>
 
           <div className="mt-4 flex flex-wrap gap-3">
-            <Link
-              href={`/accounts/${id}/status/update`}
-              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-            >
-              Update Follow-up
-            </Link>
-            <Link
-              href={`/accounts/${id}/notes/new`}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Add Note
-            </Link>
+            {isClosed ? (
+              <>
+                <span className={actionLinkClasses(true)}>Update Follow-up Locked</span>
+                <span className={actionLinkClasses(true)}>Add Note Locked</span>
+              </>
+            ) : (
+              <>
+                <Link
+                  href={`/accounts/${id}/status/update`}
+                  className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+                >
+                  Update Follow-up
+                </Link>
+                <Link
+                  href={`/accounts/${id}/notes/new`}
+                  className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Add Note
+                </Link>
+              </>
+            )}
           </div>
         </div>
 
@@ -1080,56 +1259,72 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap gap-3">
-          <Link
-            href={`/accounts/${id}/ptps/new`}
-            className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Book PTP
-          </Link>
+          {isClosed ? (
+            <>
+              <span className={actionLinkClasses(true)}>Book PTP Locked</span>
+              <span className={actionLinkClasses(true)}>Log Payment Locked</span>
+              <span className={actionLinkClasses(true)}>Update Disposition Locked</span>
+              <span className={actionLinkClasses(true)}>Notes History</span>
+              {canManageAssignments ? (
+                <span className={actionLinkClasses(true)}>Assign Collector Locked</span>
+              ) : null}
+              <span className={actionLinkClasses(true)}>Send SMS Locked</span>
+              <span className={actionLinkClasses(true)}>Update Contact Details Locked</span>
+            </>
+          ) : (
+            <>
+              <Link
+                href={`/accounts/${id}/ptps/new`}
+                className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Book PTP
+              </Link>
 
-          <Link
-            href={`/accounts/${id}/payments/new`}
-            className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Log Payment
-          </Link>
+              <Link
+                href={`/accounts/${id}/payments/new`}
+                className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Log Payment
+              </Link>
 
-          <Link
-            href={`/accounts/${id}/status/update`}
-            className="inline-flex min-w-[170px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Update Disposition
-          </Link>
+              <Link
+                href={`/accounts/${id}/status/update`}
+                className="inline-flex min-w-[170px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Update Disposition
+              </Link>
 
-          <Link
-            href={`/accounts/${id}/notes/new`}
-            className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Notes History
-          </Link>
+              <Link
+                href={`/accounts/${id}/notes/new`}
+                className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Notes History
+              </Link>
 
-          {canManageAssignments ? (
-            <Link
-              href={`/accounts/${id}/assign`}
-              className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Assign Collector
-            </Link>
-          ) : null}
+              {canManageAssignments ? (
+                <Link
+                  href={`/accounts/${id}/assign`}
+                  className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  Assign Collector
+                </Link>
+              ) : null}
 
-          <Link
-            href={`/accounts/${id}/sms/new`}
-            className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Send SMS
-          </Link>
+              <Link
+                href={`/accounts/${id}/sms/new`}
+                className="inline-flex min-w-[150px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Send SMS
+              </Link>
 
-          <Link
-            href={`/accounts/${id}/contact/update`}
-            className="inline-flex min-w-[180px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-          >
-            Update Contact Details
-          </Link>
+              <Link
+                href={`/accounts/${id}/contact/update`}
+                className="inline-flex min-w-[180px] items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Update Contact Details
+              </Link>
+            </>
+          )}
         </div>
       </div>
 
@@ -1142,7 +1337,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
             </p>
           </div>
 
-          {canManageAssignments ? <AccountStrategyActions accountId={id} /> : null}
+          {canManageAssignments && !isClosed ? <AccountStrategyActions accountId={id} /> : null}
         </div>
 
         <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -1194,12 +1389,16 @@ export default async function AccountDetailPage({ params }: PageProps) {
         <div className="space-y-4">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-semibold text-slate-900">Basic Details</h2>
-            <Link
-              href={`/accounts/${id}/contact/update`}
-              className="text-sm font-medium text-slate-600 hover:text-slate-900"
-            >
-              Edit contact & employer
-            </Link>
+            {isClosed ? (
+              <span className="text-sm font-medium text-slate-400">Edit locked</span>
+            ) : (
+              <Link
+                href={`/accounts/${id}/contact/update`}
+                className="text-sm font-medium text-slate-600 hover:text-slate-900"
+              >
+                Edit contact & employer
+              </Link>
+            )}
           </div>
 
           <DetailTable rows={basicDetails} />
@@ -1219,12 +1418,16 @@ export default async function AccountDetailPage({ params }: PageProps) {
               Unified chronological view of recent actions, payments, PTPs and notes.
             </p>
           </div>
-          <Link
-            href={`/accounts/${id}/notes/new`}
-            className="text-sm font-medium text-slate-600 hover:text-slate-900"
-          >
-            Add timeline note
-          </Link>
+          {isClosed ? (
+            <span className="text-sm font-medium text-slate-400">Add timeline note locked</span>
+          ) : (
+            <Link
+              href={`/accounts/${id}/notes/new`}
+              className="text-sm font-medium text-slate-600 hover:text-slate-900"
+            >
+              Add timeline note
+            </Link>
+          )}
         </div>
 
         <div className="mt-4 space-y-3">
@@ -1257,12 +1460,16 @@ export default async function AccountDetailPage({ params }: PageProps) {
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-semibold text-slate-900">Recent PTPs</h2>
-            <Link
-              href={`/accounts/${id}/ptps/new`}
-              className="text-sm font-medium text-slate-600 hover:text-slate-900"
-            >
-              Book PTP
-            </Link>
+            {isClosed ? (
+              <span className="text-sm font-medium text-slate-400">Book PTP locked</span>
+            ) : (
+              <Link
+                href={`/accounts/${id}/ptps/new`}
+                className="text-sm font-medium text-slate-600 hover:text-slate-900"
+              >
+                Book PTP
+              </Link>
+            )}
           </div>
 
           <div className="mt-4 space-y-3">
@@ -1299,12 +1506,16 @@ export default async function AccountDetailPage({ params }: PageProps) {
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="flex items-center justify-between gap-3">
             <h2 className="text-lg font-semibold text-slate-900">Recent Payments</h2>
-            <Link
-              href={`/accounts/${id}/payments/new`}
-              className="text-sm font-medium text-slate-600 hover:text-slate-900"
-            >
-              Log payment
-            </Link>
+            {isClosed ? (
+              <span className="text-sm font-medium text-slate-400">Log payment locked</span>
+            ) : (
+              <Link
+                href={`/accounts/${id}/payments/new`}
+                className="text-sm font-medium text-slate-600 hover:text-slate-900"
+              >
+                Log payment
+              </Link>
+            )}
           </div>
 
           <div className="mt-4 space-y-3">
