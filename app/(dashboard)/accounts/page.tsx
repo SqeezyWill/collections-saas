@@ -962,12 +962,11 @@ export default function AccountsPage() {
 
         if (profile?.company_id) {
           const noteRows = selectedIds.map((accountId) => ({
-            company_id: profile.company_id,
-            account_id: accountId,
-            author_id: profile.id,
-            created_by_name: profile.name || 'System User',
-            body: 'Bulk action: Account marked for management review and escalated.',
-          }));
+  company_id: profile.company_id,
+  account_id: accountId,
+  created_by_name: profile.name || 'System User',
+  body: 'Bulk action: Account marked for management review and escalated.',
+}));
 
           const { error: notesError } = await supabase.from('notes').insert(noteRows);
           if (notesError) {
@@ -1014,12 +1013,11 @@ export default function AccountsPage() {
 
         if (profile?.company_id) {
           const noteRows = selectedIds.map((accountId) => ({
-            company_id: profile.company_id,
-            account_id: accountId,
-            author_id: profile.id,
-            created_by_name: profile.name || 'System User',
-            body: `Bulk action: Account reassigned to ${selectedAgentName}.`,
-          }));
+  company_id: profile.company_id,
+  account_id: accountId,
+  created_by_name: profile.name || 'System User',
+  body: `Bulk action: Account reassigned to ${selectedAgentName}.`,
+}));
 
           const { error: notesError } = await supabase.from('notes').insert(noteRows);
           if (notesError) {
