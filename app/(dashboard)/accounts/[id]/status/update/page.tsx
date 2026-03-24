@@ -22,6 +22,10 @@ function normalize(value: unknown) {
   return String(value ?? '').trim().toLowerCase();
 }
 
+function isClosedStatus(value: unknown) {
+  return normalize(value) === 'closed';
+}
+
 function parseNumber(value: unknown): number | null {
   if (value == null || value === '') return null;
   const num = Number(value);
@@ -154,6 +158,10 @@ function deriveInteractionOutcome(values: {
   nextAction: string;
 }) {
   const { contactType, contactStatus, nonPaymentReason, nextAction } = values;
+
+  if (contactStatus === 'Debt Cleared') {
+    return 'Pending Closure Approval';
+  }
 
   if (contactStatus === 'Paid' || nonPaymentReason === 'Already Paid') {
     return 'Paid';
@@ -350,6 +358,8 @@ export default async function UpdateStatusPage({ params }: PageProps) {
     notFound();
   }
 
+  const isClosed = isClosedStatus(account.status);
+
   const initialInteractionOutcome = deriveInteractionOutcome({
     contactType: account.contact_type || '',
     contactStatus: account.contact_status || '',
@@ -364,6 +374,10 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       throw new Error('Supabase is not configured.');
     }
 
+    if (isClosedStatus(account.status)) {
+      throw new Error('Closed accounts cannot be updated. Reopen the account first.');
+    }
+
     const contactType = String(formData.get('contact_type') || '').trim();
     const contactStatus = String(formData.get('contact_status') || '').trim();
     const nonPaymentReason = String(formData.get('non_payment_reason') || '').trim();
@@ -376,6 +390,7 @@ export default async function UpdateStatusPage({ params }: PageProps) {
     const ptpDueDate = String(formData.get('ptp_due_date') || '').trim();
 
     const isPtp = contactStatus === 'Promise To Pay';
+    const isDebtCleared = contactStatus === 'Debt Cleared';
 
     if (isPtp) {
       if (!ptpAmountRaw) {
@@ -450,6 +465,9 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       effectiveNextActionDate ? `Next Action Date: ${effectiveNextActionDate}` : '',
       isPtp && ptpAmount ? `PTP Amount: ${ptpAmount}` : '',
       isPtp && ptpDueDate ? `PTP Due Date: ${ptpDueDate}` : '',
+      isDebtCleared
+        ? 'Admin Review: Account marked as Debt Cleared and awaiting admin close decision.'
+        : '',
       notes ? `Notes: ${notes}` : '',
     ].filter(Boolean);
 
@@ -483,20 +501,32 @@ export default async function UpdateStatusPage({ params }: PageProps) {
           Capture call outcome, follow-up details, and notes for{' '}
           <span className="font-medium">{account.debtor_name}</span>.
         </p>
+
+        {isClosed ? (
+          <p className="mt-3 inline-flex rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">
+            This account is closed. Disposition updates are locked until reopened by an admin.
+          </p>
+        ) : null}
       </div>
 
       <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <PTPDispositionForm
-          action={saveStatus}
-          accountId={id}
-          debtorName={account.debtor_name || null}
-          defaultContactType={account.contact_type || ''}
-          defaultContactStatus={account.contact_status || ''}
-          defaultNonPaymentReason={account.non_payment_reason || ''}
-          defaultNextActionDate={account.next_action_date || ''}
-          today={todayDateString()}
-          initialInteractionOutcome={initialInteractionOutcome}
-        />
+        {isClosed ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4 text-sm text-amber-700">
+            Closed accounts cannot be updated. Reopen the account first.
+          </div>
+        ) : (
+          <PTPDispositionForm
+            action={saveStatus}
+            accountId={id}
+            debtorName={account.debtor_name || null}
+            defaultContactType={account.contact_type || ''}
+            defaultContactStatus={account.contact_status || ''}
+            defaultNonPaymentReason={account.non_payment_reason || ''}
+            defaultNextActionDate={account.next_action_date || ''}
+            today={todayDateString()}
+            initialInteractionOutcome={initialInteractionOutcome}
+          />
+        )}
       </div>
     </div>
   );

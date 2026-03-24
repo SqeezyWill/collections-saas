@@ -21,6 +21,7 @@ const CONTACT_STATUS_OPTIONS = [
   'Not Contacted',
   'Promise To Pay',
   'Paid',
+  'Debt Cleared',
   'Disputing Debt',
   'Requested Callback',
   'Refused to Pay',
@@ -87,6 +88,10 @@ function deriveInteractionOutcome(values: {
 }) {
   const { contactType, contactStatus, nonPaymentReason, nextAction } = values;
 
+  if (contactStatus === 'Debt Cleared') {
+    return 'Pending Closure Approval';
+  }
+
   if (contactStatus === 'Paid' || nonPaymentReason === 'Already Paid') {
     return 'Paid';
   }
@@ -149,6 +154,7 @@ export default function PTPDispositionForm({
   const [ptpDueDate, setPtpDueDate] = useState('');
 
   const showPtpFields = contactStatus === 'Promise To Pay';
+  const isDebtCleared = contactStatus === 'Debt Cleared';
 
   const interactionOutcome = useMemo(
     () =>
@@ -329,6 +335,16 @@ export default function PTPDispositionForm({
                 />
               </div>
             </div>
+          </div>
+        ) : null}
+
+        {isDebtCleared ? (
+          <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5">
+            <h2 className="text-lg font-semibold text-slate-900">Debt Cleared Review Flow</h2>
+            <p className="mt-1 text-sm text-slate-600">
+              This disposition does not close the account immediately. It marks the account for
+              admin review so an admin can close or reopen it.
+            </p>
           </div>
         ) : null}
 

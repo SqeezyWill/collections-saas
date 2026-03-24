@@ -11,7 +11,7 @@ type PageProps = {
 
 type ProfileRow = {
   id: string;
-  full_name: string;
+  name: string;
   role: 'super_admin' | 'admin' | 'agent';
   company_id: string;
 };
@@ -21,7 +21,16 @@ type AccountRow = {
   debtor_name: string;
   collector_name: string | null;
   company_id: string;
+  status: string | null;
 };
+
+function normalizeRole(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isClosedStatus(status: unknown) {
+  return normalizeRole(status) === 'closed';
+}
 
 export default function AssignCollectorPage({ params }: PageProps) {
   const router = useRouter();
@@ -50,7 +59,7 @@ export default function AssignCollectorPage({ params }: PageProps) {
 
         const { data: accountData, error: accountError } = await supabase
           .from('accounts')
-          .select('id, debtor_name, collector_name, company_id')
+          .select('id, debtor_name, collector_name, company_id, status')
           .eq('id', id)
           .single();
 
@@ -63,11 +72,12 @@ export default function AssignCollectorPage({ params }: PageProps) {
         setAccount(accountData as AccountRow);
 
         const { data: profileData, error: profileError } = await supabase
-          .from('profiles')
-          .select('id, full_name, role, company_id')
+          .from('user_profiles')
+          .select('id, name, role, company_id')
           .eq('company_id', accountData.company_id)
           .in('role', ['agent', 'admin'])
-          .order('full_name', { ascending: true });
+          .not('name', 'is', null)
+          .order('name', { ascending: true });
 
         if (profileError) {
           setErrorMessage(profileError.message);
@@ -75,7 +85,15 @@ export default function AssignCollectorPage({ params }: PageProps) {
           return;
         }
 
-        setProfiles((profileData || []) as ProfileRow[]);
+        setProfiles(
+          (profileData || []).map((row: any) => ({
+            id: String(row.id),
+            name: String(row.name || '').trim(),
+            role: normalizeRole(row.role) as 'super_admin' | 'admin' | 'agent',
+            company_id: String(row.company_id || ''),
+          }))
+        );
+
         setLoading(false);
       } catch (error) {
         setErrorMessage(error instanceof Error ? error.message : 'Something went wrong.');
@@ -102,6 +120,11 @@ export default function AssignCollectorPage({ params }: PageProps) {
       return;
     }
 
+    if (isClosedStatus(account?.status)) {
+      setErrorMessage('Closed accounts cannot be reassigned.');
+      return;
+    }
+
     if (!selectedUser) {
       setErrorMessage('Please select a user to assign.');
       return;
@@ -120,7 +143,7 @@ export default function AssignCollectorPage({ params }: PageProps) {
 
     const { error } = await supabase
       .from('accounts')
-      .update({ collector_name: selectedProfile.full_name })
+      .update({ collector_name: selectedProfile.name })
       .eq('id', accountId);
 
     setSaving(false);
@@ -152,6 +175,8 @@ export default function AssignCollectorPage({ params }: PageProps) {
     );
   }
 
+  const closed = isClosedStatus(account?.status);
+
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
@@ -172,8 +197,18 @@ export default function AssignCollectorPage({ params }: PageProps) {
           <p className="text-sm text-slate-500">Account</p>
           <p className="mt-1 font-medium text-slate-900">{account?.debtor_name}</p>
           <p className="mt-3 text-sm text-slate-500">Current Assigned User</p>
-          <p className="mt-1 font-medium text-slate-900">{account?.collector_name || 'Unassigned'}</p>
+          <p className="mt-1 font-medium text-slate-900">
+            {account?.collector_name || 'Unassigned'}
+          </p>
+          <p className="mt-3 text-sm text-slate-500">Current Status</p>
+          <p className="mt-1 font-medium text-slate-900">{account?.status || 'Open'}</p>
         </div>
+
+        {closed ? (
+          <div className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+            This account is closed and cannot be reassigned unless it is reopened by an admin.
+          </div>
+        ) : null}
 
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
@@ -183,7 +218,8 @@ export default function AssignCollectorPage({ params }: PageProps) {
             <select
               value={assignmentType}
               onChange={(event) => setAssignmentType(event.target.value as 'agent' | 'admin')}
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              disabled={closed}
+              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
               <option value="agent">Agent</option>
               <option value="admin">Admin</option>
@@ -197,12 +233,13 @@ export default function AssignCollectorPage({ params }: PageProps) {
             <select
               value={selectedUser}
               onChange={(event) => setSelectedUser(event.target.value)}
-              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              disabled={closed}
+              className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:cursor-not-allowed disabled:bg-slate-100"
             >
               <option value="">Select a {assignmentType}</option>
               {filteredProfiles.map((profile) => (
                 <option key={profile.id} value={profile.id}>
-                  {profile.full_name}
+                  {profile.name}
                 </option>
               ))}
             </select>
@@ -219,7 +256,7 @@ export default function AssignCollectorPage({ params }: PageProps) {
             </Link>
             <button
               type="submit"
-              disabled={saving}
+              disabled={saving || closed}
               className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
             >
               {saving ? 'Saving...' : 'Save Assignment'}

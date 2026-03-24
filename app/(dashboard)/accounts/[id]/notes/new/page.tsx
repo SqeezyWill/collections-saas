@@ -28,6 +28,14 @@ function pickUser(row: any) {
   );
 }
 
+function normalizeStatus(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isClosedStatus(value: unknown) {
+  return normalizeStatus(value) === 'closed';
+}
+
 function getVisibleNoteText(body: string | null | undefined) {
   const text = String(body || '').trim();
   if (!text) return '-';
@@ -46,6 +54,7 @@ function getVisibleNoteText(body: string | null | undefined) {
     const lower = line.toLowerCase();
     return !(
       lower.startsWith('disposition:') ||
+      lower.startsWith('interaction outcome:') ||
       lower.startsWith('contact type:') ||
       lower.startsWith('contact status:') ||
       lower.startsWith('non payment reason:') ||
@@ -89,11 +98,17 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
     notFound();
   }
 
+  const isClosed = isClosedStatus(account.status);
+
   async function saveNote(formData: FormData) {
     'use server';
 
     if (!supabase) {
       throw new Error('Supabase is not configured.');
+    }
+
+    if (isClosedStatus(account.status)) {
+      throw new Error('Closed accounts cannot be updated. Reopen the account first.');
     }
 
     const noteDetails = String(formData.get('noteDetails') || '').trim();
@@ -192,15 +207,26 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
             <p className="mt-1 text-slate-500">
               Full account history for <span className="font-medium">{account.debtor_name}</span>
             </p>
+            {isClosed ? (
+              <p className="mt-2 inline-flex rounded-full bg-amber-50 px-3 py-1 text-sm font-medium text-amber-700">
+                This account is closed. Notes and changes are locked until reopened by an admin.
+              </p>
+            ) : null}
           </div>
 
           {!isAddMode ? (
-            <Link
-              href={`/accounts/${id}/notes/new?add=1`}
-              className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-            >
-              Add Note
-            </Link>
+            isClosed ? (
+              <span className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-slate-100 px-4 py-3 text-sm font-medium text-slate-500">
+                Add Note Disabled
+              </span>
+            ) : (
+              <Link
+                href={`/accounts/${id}/notes/new?add=1`}
+                className="inline-flex items-center justify-center rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                Add Note
+              </Link>
+            )
           ) : (
             <Link
               href={`/accounts/${id}/notes/new`}
@@ -213,90 +239,96 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
       </div>
 
       {isAddMode ? (
-        <div className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <form action={saveNote} className="space-y-5">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">
-                  Note Details
-                </label>
-                <textarea
-                  name="noteDetails"
-                  rows={6}
-                  placeholder="e.g. Customer confirmed salary date is Friday and requested callback tomorrow at 10:00 AM."
-                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                  required
-                />
-                <p className="mt-2 text-xs text-slate-500">
-                  Record clear next-step context such as commitment made, objection raised, preferred callback time, verification outcome, or supporting detail for the next collector action.
-                </p>
-              </div>
-
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-sm font-medium text-slate-800">Helpful note examples</p>
-                <div className="mt-3 space-y-2 text-sm text-slate-600">
-                  <p>• Debtor confirmed employment and requested callback on salary date.</p>
-                  <p>• Customer disputed balance and asked for statement before committing.</p>
-                  <p>• Third party answered and confirmed debtor is reachable after 5 PM.</p>
-                  <p>• Customer acknowledged debt and will pay part amount on a specific date.</p>
-                </div>
-              </div>
-
-              <div className="flex flex-wrap gap-3 pt-2">
-                <Link
-                  href={`/accounts/${id}/notes/new`}
-                  className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
-                  Cancel
-                </Link>
-
-                <button
-                  type="submit"
-                  className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-                >
-                  Save Note
-                </button>
-              </div>
-            </form>
+        isClosed ? (
+          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-6 text-sm text-amber-700">
+            This account is closed. Notes cannot be added unless the account is reopened by an admin.
           </div>
-
-          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-900">Recent Timeline Context</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Review recent activity before adding a fresh follow-up note.
-            </p>
-
-            <div className="mt-4 space-y-3">
-              {history.slice(0, 5).length > 0 ? (
-                history.slice(0, 5).map((item) => (
-                  <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-                          <span
-                            className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${badgeClasses(
-                              item.type
-                            )}`}
-                          >
-                            {item.badge}
-                          </span>
-                        </div>
-                        <p className="mt-1 text-sm text-slate-600">{item.text}</p>
-                        <p className="mt-2 text-xs text-slate-500">By: {item.user}</p>
-                      </div>
-                      <p className="text-xs text-slate-500">{formatDate(item.created_at)}</p>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-                  No recent history yet.
+        ) : (
+          <div className="space-y-6">
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <form action={saveNote} className="space-y-5">
+                <div>
+                  <label className="mb-2 block text-sm font-medium text-slate-700">
+                    Note Details
+                  </label>
+                  <textarea
+                    name="noteDetails"
+                    rows={6}
+                    placeholder="e.g. Customer confirmed salary date is Friday and requested callback tomorrow at 10:00 AM."
+                    className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                    required
+                  />
+                  <p className="mt-2 text-xs text-slate-500">
+                    Record clear next-step context such as commitment made, objection raised, preferred callback time, verification outcome, or supporting detail for the next collector action.
+                  </p>
                 </div>
-              )}
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-sm font-medium text-slate-800">Helpful note examples</p>
+                  <div className="mt-3 space-y-2 text-sm text-slate-600">
+                    <p>• Debtor confirmed employment and requested callback on salary date.</p>
+                    <p>• Customer disputed balance and asked for statement before committing.</p>
+                    <p>• Third party answered and confirmed debtor is reachable after 5 PM.</p>
+                    <p>• Customer acknowledged debt and will pay part amount on a specific date.</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-3 pt-2">
+                  <Link
+                    href={`/accounts/${id}/notes/new`}
+                    className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                  >
+                    Cancel
+                  </Link>
+
+                  <button
+                    type="submit"
+                    className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+                  >
+                    Save Note
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+              <h2 className="text-lg font-semibold text-slate-900">Recent Timeline Context</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Review recent activity before adding a fresh follow-up note.
+              </p>
+
+              <div className="mt-4 space-y-3">
+                {history.slice(0, 5).length > 0 ? (
+                  history.slice(0, 5).map((item) => (
+                    <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                            <span
+                              className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${badgeClasses(
+                                item.type
+                              )}`}
+                            >
+                              {item.badge}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-sm text-slate-600">{item.text}</p>
+                          <p className="mt-2 text-xs text-slate-500">By: {item.user}</p>
+                        </div>
+                        <p className="text-xs text-slate-500">{formatDate(item.created_at)}</p>
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                    No recent history yet.
+                  </div>
+                )}
+              </div>
             </div>
           </div>
-        </div>
+        )
       ) : (
         <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 px-5 py-4">
