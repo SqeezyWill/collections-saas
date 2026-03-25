@@ -245,8 +245,8 @@ function getDueState(dateValue: unknown) {
   return {
     label: `Due in ${delta} day(s)`,
     tone: 'bg-emerald-100 text-emerald-700',
-    delta,
-  };
+      delta,
+    };
 }
 
 function getPriorityMeta(account: any, effectiveDpd: number | null) {
@@ -583,6 +583,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
     normalizedRole === 'super_admin' || normalizedRole === 'admin';
   const canCloseOrReopen =
     normalizedRole === 'super_admin' || normalizedRole === 'admin';
+  const canEditBalances =
+    normalizedRole === 'super_admin' || normalizedRole === 'admin';
   const collectorScope = String(profile.name || '').trim();
 
   async function reEvaluateStrategy() {
@@ -748,6 +750,83 @@ export default async function AccountDetailPage({ params }: PageProps) {
     });
 
     redirect(`/accounts/${id}`);
+  }
+
+  async function saveBalanceCorrection(formData: FormData) {
+    'use server';
+
+    if (!supabaseAdmin) {
+      throw new Error('Supabase admin is not configured.');
+    }
+
+    if (!canEditBalances) {
+      throw new Error('You do not have permission to edit balances.');
+    }
+
+    const targetAccountId = String(formData.get('accountId') || '').trim();
+    const newBalanceRaw = String(formData.get('balance') || '').replace(/,/g, '').trim();
+    const newTotalDueRaw = String(formData.get('totalDue') || '').replace(/,/g, '').trim();
+    const reason = String(formData.get('reason') || '').trim();
+
+    const newBalance = Number(newBalanceRaw);
+    const newTotalDue = Number(newTotalDueRaw);
+
+    if (!targetAccountId) {
+      throw new Error('Missing account id.');
+    }
+
+    if (!Number.isFinite(newBalance) || newBalance < 0) {
+      throw new Error('Balance must be a valid number greater than or equal to 0.');
+    }
+
+    if (!Number.isFinite(newTotalDue) || newTotalDue < 0) {
+      throw new Error('Total due must be a valid number greater than or equal to 0.');
+    }
+
+    if (!reason) {
+      throw new Error('Please provide a reason for the balance correction.');
+    }
+
+    const { data: currentAccount, error: readError } = await supabaseAdmin
+      .from('accounts')
+      .select('id,company_id,balance,total_due')
+      .eq('id', targetAccountId)
+      .maybeSingle();
+
+    if (readError || !currentAccount) {
+      throw new Error(readError?.message || 'Account not found.');
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { error: updateError } = await supabaseAdmin
+      .from('accounts')
+      .update({
+        balance: newBalance,
+        total_due: newTotalDue,
+        last_action_date: today,
+      })
+      .eq('id', targetAccountId);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    await supabaseAdmin.from('notes').insert({
+      company_id: currentAccount.company_id,
+      account_id: targetAccountId,
+      created_by_name: 'System User',
+      body: [
+        'Admin balance correction applied.',
+        `Previous Balance: ${currency(Number(currentAccount.balance || 0))}`,
+        `New Balance: ${currency(newBalance)}`,
+        `Previous Total Due: ${currency(Number(currentAccount.total_due || 0))}`,
+        `New Total Due: ${currency(newTotalDue)}`,
+        `Reason: ${reason}`,
+      ].join(' | '),
+    });
+
+    redirect(`/accounts/${targetAccountId}`);
   }
 
   let accountQuery = supabaseAdmin
@@ -1042,6 +1121,72 @@ export default async function AccountDetailPage({ params }: PageProps) {
                 : 'Closing locks notes, disposition updates, assignments, payments, PTPs and contact edits.'}
             </p>
           </div>
+        </div>
+      ) : null}
+
+      {canEditBalances ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Admin Balance Correction</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Correct balance and total due when a payment was entered incorrectly. This does not close the account automatically.
+              </p>
+            </div>
+          </div>
+
+          <form action={saveBalanceCorrection} className="mt-5 space-y-4">
+            <input type="hidden" name="accountId" value={account.id} />
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Balance</label>
+                <input
+                  type="number"
+                  name="balance"
+                  step="0.01"
+                  min="0"
+                  defaultValue={Number(account.balance || 0)}
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Total Due</label>
+                <input
+                  type="number"
+                  name="totalDue"
+                  step="0.01"
+                  min="0"
+                  defaultValue={Number(account.total_due || 0)}
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-700">Reason for correction</label>
+              <textarea
+                name="reason"
+                required
+                rows={3}
+                placeholder="Explain why the balances are being corrected..."
+                className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              />
+            </div>
+
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="submit"
+                className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                Save Balance Correction
+              </button>
+              <p className="self-center text-xs text-slate-500">
+                A correction note will be written to the account timeline.
+              </p>
+            </div>
+          </form>
         </div>
       ) : null}
 
