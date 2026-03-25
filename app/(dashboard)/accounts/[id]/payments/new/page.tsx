@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { currency, formatDate } from '@/lib/utils';
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -8,6 +9,19 @@ type PageProps = {
 
 function todayDateString() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function normalizeStatus(value: unknown) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isClosedStatus(value: unknown) {
+  return normalizeStatus(value) === 'closed';
+}
+
+function toMoney(value: unknown) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) ? num : 0;
 }
 
 async function savePayment(formData: FormData) {
@@ -24,7 +38,6 @@ async function savePayment(formData: FormData) {
   const amountRaw = String(formData.get('amount') || '').replace(/,/g, '').trim();
   const paidOn = String(formData.get('paidOn') || '').trim();
 
-  // Captured for future schema/storage wiring
   const paymentChannel = String(formData.get('paymentChannel') || '').trim();
   const transactionCode = String(formData.get('transactionCode') || '').trim();
   const bankSlip = formData.get('bankSlip');
@@ -36,6 +49,61 @@ async function savePayment(formData: FormData) {
     throw new Error('Please provide a valid amount and payment date.');
   }
 
+  const { data: account, error: fetchError } = await supabase
+    .from('accounts')
+    .select(
+      'id, debtor_name, company_id, collector_name, product, balance, total_due, amount_paid, status'
+    )
+    .eq('id', accountId)
+    .single();
+
+  if (fetchError || !account) {
+    throw new Error(fetchError?.message || 'Failed to fetch account before payment save.');
+  }
+
+  if (isClosedStatus(account.status)) {
+    throw new Error('This account is closed. Reopen it before logging a payment.');
+  }
+
+  const currentAmountPaid = toMoney(account.amount_paid);
+  const currentBalance = Math.max(0, toMoney(account.balance));
+  const currentTotalDue = Math.max(0, toMoney((account as any).total_due));
+
+  const payableAmount = currentBalance > 0 ? currentBalance : currentTotalDue;
+
+  if (payableAmount <= 0) {
+    throw new Error(
+      'This account has no payable amount remaining. Payment cannot be logged unless an admin corrects the balances.'
+    );
+  }
+
+  if (amount > payableAmount) {
+    throw new Error(
+      `Payment cannot exceed the remaining payable amount of ${currency(payableAmount)}.`
+    );
+  }
+
+  let appliedToBalance = 0;
+  let appliedToTotalDue = 0;
+  let newBalance = currentBalance;
+  let newTotalDue = currentTotalDue;
+
+  if (currentBalance > 0) {
+    appliedToBalance = Math.min(amount, currentBalance);
+    newBalance = Math.max(0, currentBalance - appliedToBalance);
+
+    const remainingAfterBalance = amount - appliedToBalance;
+    if (remainingAfterBalance > 0) {
+      appliedToTotalDue = Math.min(remainingAfterBalance, currentTotalDue);
+      newTotalDue = Math.max(0, currentTotalDue - appliedToTotalDue);
+    }
+  } else {
+    appliedToTotalDue = Math.min(amount, currentTotalDue);
+    newTotalDue = Math.max(0, currentTotalDue - appliedToTotalDue);
+  }
+
+  const updatedAmountPaid = currentAmountPaid + amount;
+
   const { data: insertedPayment, error: insertError } = await supabase
     .from('payments')
     .insert({
@@ -45,6 +113,9 @@ async function savePayment(formData: FormData) {
       product,
       amount,
       paid_on: paidOn,
+      payment_channel: paymentChannel || null,
+      transaction_code: transactionCode || null,
+      bank_slip: bankSlip && typeof bankSlip !== 'string' ? null : null,
     })
     .select('*')
     .single();
@@ -52,21 +123,6 @@ async function savePayment(formData: FormData) {
   if (insertError || !insertedPayment) {
     throw new Error(insertError?.message || 'Failed to save payment.');
   }
-
-  const { data: account, error: fetchError } = await supabase
-    .from('accounts')
-    .select('*')
-    .eq('id', accountId)
-    .single();
-
-  if (fetchError || !account) {
-    throw new Error(fetchError?.message || 'Failed to fetch account after payment save.');
-  }
-
-  const currentAmountPaid = Number(account.amount_paid || 0);
-  const updatedAmountPaid = currentAmountPaid + amount;
-  const currentBalance = Number(account.balance || 0);
-  const remainingBalance = currentBalance - amount;
 
   const { data: earliestOpenPtp, error: ptpFetchError } = await supabase
     .from('ptps')
@@ -83,17 +139,15 @@ async function savePayment(formData: FormData) {
   }
 
   let ptpOutcomeNote = '';
-  let resolvedPtpStatus = '';
 
   if (earliestOpenPtp) {
     const ptpStatus = paidOn <= earliestOpenPtp.promised_date ? 'Kept' : 'Broken';
     const resolutionType = ptpStatus.toLowerCase();
-    resolvedPtpStatus = ptpStatus;
 
     const resolutionNotes =
       ptpStatus === 'Kept'
-        ? `Auto-resolved as kept by payment ${insertedPayment.id} made on ${paidOn}.`
-        : `Auto-resolved as broken by payment ${insertedPayment.id} made on ${paidOn}, after promised date ${earliestOpenPtp.promised_date}.`;
+        ? `Auto-resolved by payment of ${amount} posted on ${postedOn}.`
+        : `Auto-resolved late by payment of ${amount} posted on ${postedOn}.`;
 
     const { error: ptpUpdateError } = await supabase
       .from('ptps')
@@ -104,6 +158,7 @@ async function savePayment(formData: FormData) {
         resolved_by_payment_id: insertedPayment.id,
         resolution_notes: resolutionNotes,
         auto_resolved: true,
+        kept_amount: ptpStatus === 'Kept' ? amount : 0,
       })
       .eq('id', earliestOpenPtp.id);
 
@@ -125,18 +180,22 @@ async function savePayment(formData: FormData) {
     throw new Error(remainingOpenPtpsError.message);
   }
 
-  let derivedStatus = 'Open';
+  let derivedStatus = String(account.status || 'Open').trim() || 'Open';
 
-  if (remainingBalance <= 0) {
-    derivedStatus = 'Paid';
-  } else if ((remainingOpenPtps || []).length > 0) {
+  if ((remainingOpenPtps || []).length > 0) {
     derivedStatus = 'PTP';
+  } else if (normalizeStatus(account.status) === 'ptp' || normalizeStatus(account.status) === 'promise to pay') {
+    derivedStatus = 'Open';
+  } else if ((newBalance > 0 || newTotalDue > 0) && normalizeStatus(account.status) === 'paid') {
+    derivedStatus = 'Open';
   }
 
   const { error: accountUpdateError } = await supabase
     .from('accounts')
     .update({
       amount_paid: updatedAmountPaid,
+      balance: newBalance,
+      total_due: newTotalDue,
       last_pay_amount: amount,
       last_pay_date: paidOn,
       last_action_date: postedOn,
@@ -149,9 +208,13 @@ async function savePayment(formData: FormData) {
   }
 
   const noteParts = [
-    `Payment logged: ${amount}`,
+    `Payment logged: ${currency(amount)}`,
     `Payment made on: ${paidOn}`,
     `Posted on: ${postedOn}`,
+    appliedToBalance > 0 ? `Applied to Balance: ${currency(appliedToBalance)}` : '',
+    appliedToTotalDue > 0 ? `Applied to Total Due: ${currency(appliedToTotalDue)}` : '',
+    `New Balance: ${currency(newBalance)}`,
+    `New Total Due: ${currency(newTotalDue)}`,
     paymentChannel ? `Channel: ${paymentChannel}` : '',
     transactionCode ? `Transaction Code: ${transactionCode}` : '',
     ptpOutcomeNote,
@@ -160,7 +223,6 @@ async function savePayment(formData: FormData) {
   const { error: noteError } = await supabase.from('notes').insert({
     company_id: companyId,
     account_id: accountId,
-    author_id: '11111111-1111-1111-1111-111111111111',
     created_by_name: 'System User',
     body: noteParts.join(' | '),
   });
@@ -186,7 +248,9 @@ export default async function NewPaymentPage({ params }: PageProps) {
 
   const { data: account, error } = await supabase
     .from('accounts')
-    .select('id, debtor_name, company_id, collector_name, product')
+    .select(
+      'id, debtor_name, company_id, collector_name, product, balance, total_due, amount_paid, status, last_pay_date, last_pay_amount'
+    )
     .eq('id', id)
     .single();
 
@@ -194,8 +258,13 @@ export default async function NewPaymentPage({ params }: PageProps) {
     notFound();
   }
 
+  const balance = Math.max(0, toMoney(account.balance));
+  const totalDue = Math.max(0, toMoney((account as any).total_due));
+  const payableAmount = balance > 0 ? balance : totalDue;
+  const isClosed = isClosedStatus(account.status);
+
   return (
-    <div className="space-y-6">
+    <div className="mx-auto max-w-3xl space-y-6">
       <div>
         <Link
           href={`/accounts/${id}`}
@@ -206,119 +275,155 @@ export default async function NewPaymentPage({ params }: PageProps) {
 
         <h1 className="text-3xl font-semibold text-slate-900">Log Payment</h1>
         <p className="mt-1 text-slate-500">
-          Record customer payments for <span className="font-medium">{account.debtor_name}</span>.
+          Record a payment for <span className="font-medium">{account.debtor_name}</span>.
         </p>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-8 shadow-sm">
-        <form action={savePayment} className="space-y-6" encType="multipart/form-data">
-          <input type="hidden" name="accountId" value={account.id} />
-          <input type="hidden" name="companyId" value={account.company_id} />
-          <input type="hidden" name="collectorName" value={account.collector_name || ''} />
-          <input type="hidden" name="product" value={account.product || ''} />
+      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm text-slate-500">Current Balance</p>
+            <p className="mt-1 text-xl font-semibold text-slate-900">{currency(balance)}</p>
+          </div>
 
-          <div className="grid gap-6 md:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm text-slate-500">Current Total Due</p>
+            <p className="mt-1 text-xl font-semibold text-slate-900">{currency(totalDue)}</p>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm text-slate-500">Amount Paid To Date</p>
+            <p className="mt-1 text-xl font-semibold text-slate-900">
+              {currency(toMoney(account.amount_paid))}
+            </p>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-sm text-slate-500">Maximum Payable Right Now</p>
+            <p className="mt-1 text-xl font-semibold text-slate-900">
+              {currency(payableAmount)}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700">
+          Payment will reduce <span className="font-medium">Balance</span> first. If Balance is already zero,
+          it will reduce <span className="font-medium">Total Due</span>. The system will reject any payment
+          above the remaining payable amount.
+        </div>
+
+        {isClosed ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
+            This account is closed. Reopen it before logging a payment.
+          </div>
+        ) : null}
+
+        {payableAmount <= 0 && !isClosed ? (
+          <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
+            This account currently has no payable amount remaining. An admin must correct balances before a payment can be logged.
+          </div>
+        ) : null}
+
+        {!isClosed && payableAmount > 0 ? (
+          <form action={savePayment} className="mt-6 space-y-5">
+            <input type="hidden" name="accountId" value={account.id} />
+            <input type="hidden" name="companyId" value={account.company_id || ''} />
+            <input type="hidden" name="collectorName" value={account.collector_name || ''} />
+            <input type="hidden" name="product" value={account.product || ''} />
+
+            <div className="grid gap-5 md:grid-cols-2">
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Payment Amount
+                </label>
+                <input
+                  type="number"
+                  name="amount"
+                  min="0.01"
+                  max={payableAmount}
+                  step="0.01"
+                  required
+                  placeholder="Enter payment amount"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+                <p className="mt-2 text-xs text-slate-500">
+                  Maximum allowed: {currency(payableAmount)}
+                </p>
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Payment Made On
+                </label>
+                <input
+                  type="date"
+                  name="paidOn"
+                  defaultValue={todayDateString()}
+                  max={todayDateString()}
+                  required
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Payment Channel
+                </label>
+                <input
+                  type="text"
+                  name="paymentChannel"
+                  placeholder="e.g. M-Pesa, Bank, Cash"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
+
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">
+                  Transaction Code
+                </label>
+                <input
+                  type="text"
+                  name="transactionCode"
+                  placeholder="e.g. QWERTY123"
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-3 pt-2">
+              <Link
+                href={`/accounts/${id}`}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </Link>
+
+              <button
+                type="submit"
+                className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                Save Payment
+              </button>
+            </div>
+          </form>
+        ) : null}
+
+        <div className="mt-6 rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <h2 className="text-sm font-semibold text-slate-900">Recent payment context</h2>
+          <div className="mt-3 grid gap-3 md:grid-cols-2">
             <div>
-              <label className="mb-3 block text-sm font-medium text-slate-700">
-                Payment Amount
-              </label>
-              <input
-                type="number"
-                name="amount"
-                step="0.01"
-                min="0"
-                required
-                placeholder="Enter payment amount"
-                className="w-full rounded-xl border border-slate-300 px-4 py-4 text-lg text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              />
+              <p className="text-xs uppercase tracking-wide text-slate-500">Last Pay Date</p>
+              <p className="mt-1 text-sm text-slate-700">{formatDate(account.last_pay_date)}</p>
             </div>
 
             <div>
-              <label className="mb-3 block text-sm font-medium text-slate-700">
-                Payment Made On
-              </label>
-              <input
-                type="date"
-                name="paidOn"
-                required
-                className="w-full rounded-xl border border-slate-300 px-4 py-4 text-lg text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              />
-              <p className="mt-2 text-sm text-slate-500">
-                Posted on is recorded automatically by the system when you save this payment.
+              <p className="text-xs uppercase tracking-wide text-slate-500">Last Pay Amount</p>
+              <p className="mt-1 text-sm text-slate-700">
+                {currency(toMoney(account.last_pay_amount))}
               </p>
             </div>
           </div>
-
-          <div className="grid gap-6 md:grid-cols-2">
-            <div>
-              <label className="mb-3 block text-sm font-medium text-slate-700">
-                Payment Channel
-              </label>
-              <select
-                name="paymentChannel"
-                defaultValue=""
-                className="w-full rounded-xl border border-slate-300 px-4 py-4 text-lg text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              >
-                <option value="">Select Payment Channel</option>
-                <option value="M-Pesa">M-Pesa</option>
-                <option value="Bank">Bank</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="mb-3 block text-sm font-medium text-slate-700">
-                M-Pesa / Bank Transaction Code
-              </label>
-              <input
-                type="text"
-                name="transactionCode"
-                placeholder="Enter transaction code"
-                className="w-full rounded-xl border border-slate-300 px-4 py-4 text-lg text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="mb-3 block text-sm font-medium text-slate-700">
-              Upload Bank Slip (if available)
-            </label>
-            <input
-              type="file"
-              name="bankSlip"
-              accept=".pdf,.jpg,.jpeg,.png,.webp"
-              className="block w-full rounded-xl border border-slate-300 bg-white px-4 py-4 text-sm text-slate-700 file:mr-4 file:rounded-lg file:border-0 file:bg-slate-100 file:px-4 file:py-2 file:font-medium file:text-slate-700 hover:file:bg-slate-200"
-            />
-            <p className="mt-2 text-sm text-slate-500">
-              Upload support is ready in the form. Saving the file itself needs the storage path/schema we’ll wire next.
-            </p>
-          </div>
-
-          <div>
-            <label className="mb-3 block text-sm font-medium text-slate-700">Product</label>
-            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4 text-lg font-medium text-slate-900">
-              {account.product || '-'}
-            </div>
-            <p className="mt-2 text-sm text-slate-500">
-              Product is picked automatically from the selected account.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-4 pt-2">
-            <Link
-              href={`/accounts/${id}`}
-              className="rounded-xl border border-slate-300 bg-white px-7 py-4 text-lg font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Cancel
-            </Link>
-
-            <button
-              type="submit"
-              className="rounded-xl bg-slate-900 px-7 py-4 text-lg font-medium text-white hover:bg-slate-800"
-            >
-              Save Payment
-            </button>
-          </div>
-        </form>
+        </div>
       </div>
     </div>
   );
