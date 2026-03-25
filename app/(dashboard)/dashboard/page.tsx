@@ -17,8 +17,43 @@ type UserProfile = {
   company_id: string | null;
 };
 
+type DashboardAccountRow = {
+  id: string;
+  balance: number | null;
+  amount_paid: number | null;
+  status: string | null;
+  collector_name: string | null;
+  product: string | null;
+  product_name?: string | null;
+  next_action_date: string | null;
+  last_action_date: string | null;
+};
+
+type DashboardPaymentRow = {
+  id: string;
+  account_id: string | null;
+  amount: number | null;
+  paid_on: string | null;
+  collector_name?: string | null;
+};
+
+type DashboardPtpRow = {
+  id: string;
+  account_id: string | null;
+  collector_name: string | null;
+  promised_amount: number | null;
+  promised_date: string | null;
+  kept_amount: number | null;
+  status: string | null;
+  created_at: string | null;
+};
+
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
+}
+
+function normalizeName(value: string | null | undefined) {
+  return String(value || '').trim();
 }
 
 function isCurrentMonth(dateValue: string | null | undefined) {
@@ -97,7 +132,7 @@ function formatPercent(value: number) {
 }
 
 function resolvePtpOutcomeFromPayments(
-  ptp: any,
+  ptp: DashboardPtpRow,
   payments: Array<{ amount: number | null; paid_on: string | null }>
 ) {
   const bookedOn = toDateOnly(ptp.created_at);
@@ -134,19 +169,43 @@ async function fetchAllRows(
   if (!supabase) return [];
 
   const { companyId, collectorName, restrictToCollector } = input;
-
   const allRows: any[] = [];
   let from = 0;
 
   while (true) {
     const to = from + PAGE_SIZE - 1;
 
-    let query = supabase
-      .from(table)
-      .select('*')
-      .eq('company_id', companyId)
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    let query:
+      | ReturnType<typeof supabase.from<'accounts'>>
+      | ReturnType<typeof supabase.from<'payments'>>
+      | ReturnType<typeof supabase.from<'ptps'>>;
+
+    if (table === 'accounts') {
+      query = supabase
+        .from('accounts')
+        .select(
+          'id,balance,amount_paid,status,collector_name,product,product_name,next_action_date,last_action_date'
+        )
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+    } else if (table === 'payments') {
+      query = supabase
+        .from('payments')
+        .select('id,account_id,amount,paid_on,collector_name')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+    } else {
+      query = supabase
+        .from('ptps')
+        .select(
+          'id,account_id,collector_name,promised_amount,promised_date,kept_amount,status,created_at'
+        )
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+    }
 
     if (restrictToCollector && collectorName) {
       query = query.eq('collector_name', collectorName);
@@ -188,9 +247,9 @@ export default function DashboardPage() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [loadingProfile, setLoadingProfile] = useState(true);
-  const [accountList, setAccountList] = useState<any[]>([]);
-  const [payments, setPayments] = useState<any[]>([]);
-  const [ptps, setPtps] = useState<any[]>([]);
+  const [accountList, setAccountList] = useState<DashboardAccountRow[]>([]);
+  const [payments, setPayments] = useState<DashboardPaymentRow[]>([]);
+  const [ptps, setPtps] = useState<DashboardPtpRow[]>([]);
   const [dataError, setDataError] = useState<string | null>(null);
   const [loadingData, setLoadingData] = useState(true);
   const [cacheHydrated, setCacheHydrated] = useState(false);
@@ -200,7 +259,8 @@ export default function DashboardPage() {
   const [companyResolved, setCompanyResolved] = useState(false);
 
   const normalizedProfileRole = normalizeRole(profile?.role);
-  const normalizedProfileName = String(profile?.name || '').trim();
+  const normalizedProfileName = normalizeName(profile?.name);
+  const isAgent = normalizedProfileRole === 'agent';
 
   const dashboardCacheKey = useMemo(() => {
     const companyId =
@@ -489,7 +549,6 @@ export default function DashboardPage() {
 
         setDataError(null);
 
-        const isAgent = normalizedProfileRole === 'agent';
         const collectorScope = normalizedProfileName;
 
         const [accountsRows, paymentsRows, ptpRows] = await Promise.all([
@@ -511,9 +570,9 @@ export default function DashboardPage() {
         ]);
 
         if (mounted) {
-          setAccountList(accountsRows);
-          setPayments(paymentsRows);
-          setPtps(ptpRows);
+          setAccountList(accountsRows as DashboardAccountRow[]);
+          setPayments(paymentsRows as DashboardPaymentRow[]);
+          setPtps(ptpRows as DashboardPtpRow[]);
           setLoadingData(false);
           setIsRefreshing(false);
           setRestoredFromCache(false);
@@ -537,7 +596,7 @@ export default function DashboardPage() {
     cacheHydrated,
     companyResolved,
     resolvedCompanyId,
-    normalizedProfileRole,
+    isAgent,
     normalizedProfileName,
   ]);
 
@@ -608,8 +667,6 @@ export default function DashboardPage() {
       </div>
     );
   }
-
-  const isAgent = normalizedProfileRole === 'agent';
 
   const paymentsByAccountId = new Map<
     string,
