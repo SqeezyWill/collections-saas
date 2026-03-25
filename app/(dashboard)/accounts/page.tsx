@@ -22,6 +22,7 @@ const AVAILABLE_COLUMNS = [
   { key: 'balance', label: 'Balance' },
   { key: 'amount_paid', label: 'Amount paid' },
   { key: 'status', label: 'Status' },
+  { key: 'days_late', label: 'Days Late' },
   { key: 'last_action_date', label: 'Last action' },
   { key: 'identification', label: 'Identification' },
   { key: 'customer_id', label: 'Customer ID' },
@@ -38,6 +39,7 @@ const DEFAULT_COLUMNS = [
   'balance',
   'amount_paid',
   'status',
+  'days_late',
   'last_action_date',
 ];
 
@@ -126,6 +128,8 @@ type AccountRow = {
   balance: number | null;
   amount_paid: number | null;
   status: string | null;
+  days_late_lastinstallment?: number | string | null;
+  dpd?: number | string | null;
   last_action_date: string | null;
   next_action_date?: string | null;
   identification: string | null;
@@ -180,6 +184,20 @@ function normalizeName(value: unknown) {
   return String(value || '').trim();
 }
 
+function toNumberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function getDaysLate(row: Partial<AccountRow>) {
+  const lastInstallment = toNumberOrNull(row.days_late_lastinstallment);
+  if (lastInstallment !== null) return lastInstallment;
+  const dpd = toNumberOrNull(row.dpd);
+  if (dpd !== null) return dpd;
+  return 0;
+}
+
 function buildSearchClause(searchField: SearchField, safeSearch: string) {
   switch (searchField) {
     case 'cfid':
@@ -211,6 +229,8 @@ function buildPageUrl(params: {
   status?: string;
   minBalance?: string;
   maxBalance?: string;
+  daysLateMin?: string;
+  daysLateMax?: string;
   lastActionFrom?: string;
   lastActionTo?: string;
   limit?: string;
@@ -226,6 +246,8 @@ function buildPageUrl(params: {
   if (params.status) query.set('status', params.status);
   if (params.minBalance) query.set('minBalance', params.minBalance);
   if (params.maxBalance) query.set('maxBalance', params.maxBalance);
+  if (params.daysLateMin) query.set('daysLateMin', params.daysLateMin);
+  if (params.daysLateMax) query.set('daysLateMax', params.daysLateMax);
   if (params.lastActionFrom) query.set('lastActionFrom', params.lastActionFrom);
   if (params.lastActionTo) query.set('lastActionTo', params.lastActionTo);
   if (params.limit) query.set('limit', params.limit);
@@ -243,6 +265,8 @@ function buildExportUrl(params: {
   status?: string;
   minBalance?: string;
   maxBalance?: string;
+  daysLateMin?: string;
+  daysLateMax?: string;
   lastActionFrom?: string;
   lastActionTo?: string;
   columns?: string;
@@ -256,6 +280,8 @@ function buildExportUrl(params: {
   if (params.status) query.set('status', params.status);
   if (params.minBalance) query.set('minBalance', params.minBalance);
   if (params.maxBalance) query.set('maxBalance', params.maxBalance);
+  if (params.daysLateMin) query.set('daysLateMin', params.daysLateMin);
+  if (params.daysLateMax) query.set('daysLateMax', params.daysLateMax);
   if (params.lastActionFrom) query.set('lastActionFrom', params.lastActionFrom);
   if (params.lastActionTo) query.set('lastActionTo', params.lastActionTo);
   if (params.columns) query.set('columns', params.columns);
@@ -306,6 +332,8 @@ export default function AccountsPage() {
   const status = searchParams.get('status')?.trim() || '';
   const minBalance = searchParams.get('minBalance')?.trim() || '';
   const maxBalance = searchParams.get('maxBalance')?.trim() || '';
+  const daysLateMin = searchParams.get('daysLateMin')?.trim() || '';
+  const daysLateMax = searchParams.get('daysLateMax')?.trim() || '';
   const lastActionFrom = searchParams.get('lastActionFrom')?.trim() || '';
   const lastActionTo = searchParams.get('lastActionTo')?.trim() || '';
   const limitParam = searchParams.get('limit')?.trim() || '15';
@@ -496,6 +524,8 @@ export default function AccountsPage() {
       if (status) query = query.eq('status', status);
       if (minBalance) query = query.gte('balance', Number(minBalance));
       if (maxBalance) query = query.lte('balance', Number(maxBalance));
+      if (daysLateMin) query = query.gte('days_late_lastinstallment', Number(daysLateMin));
+      if (daysLateMax) query = query.lte('days_late_lastinstallment', Number(daysLateMax));
       if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
       if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
 
@@ -768,34 +798,34 @@ export default function AccountsPage() {
 
         let agentList: string[] = [];
 
-if (profileRole === 'super_admin' || profileRole === 'admin') {
-  const usersRes = await fetch('/api/admin/users', {
-    headers: await authHeaders(),
-    cache: 'no-store',
-  });
+        if (profileRole === 'super_admin' || profileRole === 'admin') {
+          const usersRes = await fetch('/api/admin/users', {
+            headers: await authHeaders(),
+            cache: 'no-store',
+          });
 
-  const { json: usersJson, text: usersText } = await readJsonSafe(usersRes);
+          const { json: usersJson, text: usersText } = await readJsonSafe(usersRes);
 
-  if (!usersRes.ok) {
-    const msg =
-      usersJson?.error ||
-      (usersText ? usersText.slice(0, 180) : 'Failed to load users for reassignment.');
-    throw new Error(msg);
-  }
+          if (!usersRes.ok) {
+            const msg =
+              usersJson?.error ||
+              (usersText ? usersText.slice(0, 180) : 'Failed to load users for reassignment.');
+            throw new Error(msg);
+          }
 
-  agentList = Array.from(
-    new Set(
-      ((usersJson?.users ?? []) as AdminUserRow[])
-        .filter((user) => normalizeRole(user.role) === 'agent')
-        .map((user) => normalizeName(user.name))
-        .filter(Boolean)
-    )
-  ).sort((a, b) => a.localeCompare(b));
-}
+          agentList = Array.from(
+            new Set(
+              ((usersJson?.users ?? []) as AdminUserRow[])
+                .filter((user) => normalizeRole(user.role) === 'agent')
+                .map((user) => normalizeName(user.name))
+                .filter(Boolean)
+            )
+          ).sort((a, b) => a.localeCompare(b));
+        }
 
-if (!mounted) return;
-setCollectorOptions(collectorList);
-setAgentOptions(agentList);
+        if (!mounted) return;
+        setCollectorOptions(collectorList);
+        setAgentOptions(agentList);
 
         let matchedAccountIds: string[] | null = null;
 
@@ -889,6 +919,8 @@ setAgentOptions(agentList);
         if (status) query = query.eq('status', status);
         if (minBalance) query = query.gte('balance', Number(minBalance));
         if (maxBalance) query = query.lte('balance', Number(maxBalance));
+        if (daysLateMin) query = query.gte('days_late_lastinstallment', Number(daysLateMin));
+        if (daysLateMax) query = query.lte('days_late_lastinstallment', Number(daysLateMax));
         if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
         if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
 
@@ -928,6 +960,8 @@ setAgentOptions(agentList);
     status,
     minBalance,
     maxBalance,
+    daysLateMin,
+    daysLateMax,
     lastActionFrom,
     lastActionTo,
     filter,
@@ -1008,6 +1042,8 @@ setAgentOptions(agentList);
     status,
     minBalance,
     maxBalance,
+    daysLateMin,
+    daysLateMax,
     lastActionFrom,
     lastActionTo,
     normalizedLimit,
@@ -1120,6 +1156,7 @@ setAgentOptions(agentList);
         Balance: Number(row.balance || 0),
         AmountPaid: Number(row.amount_paid || 0),
         Status: row.status || '',
+        DaysLate: getDaysLate(row),
         LastActionDate: row.last_action_date || '',
         Identification: row.identification || '',
         CustomerID: row.customer_id || '',
@@ -1297,6 +1334,8 @@ setAgentOptions(agentList);
               status,
               minBalance,
               maxBalance,
+              daysLateMin,
+              daysLateMax,
               lastActionFrom,
               lastActionTo,
               columns: finalColumns.join(','),
@@ -1589,6 +1628,23 @@ setAgentOptions(agentList);
               />
             </div>
 
+            <div className="grid grid-cols-2 gap-3">
+              <input
+                type="number"
+                name="daysLateMin"
+                defaultValue={daysLateMin}
+                placeholder="Min days late"
+                className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              />
+              <input
+                type="number"
+                name="daysLateMax"
+                defaultValue={daysLateMax}
+                placeholder="Max days late"
+                className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+              />
+            </div>
+
             <input
               type="date"
               name="lastActionFrom"
@@ -1601,25 +1657,25 @@ setAgentOptions(agentList);
               defaultValue={lastActionTo}
               className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
             />
+          </div>
 
-            <div className="flex flex-wrap items-center gap-3">
-              <input type="hidden" name="limit" value={normalizedLimit} />
-              <input type="hidden" name="page" value="1" />
+          <div className="flex flex-wrap items-center gap-3">
+            <input type="hidden" name="limit" value={normalizedLimit} />
+            <input type="hidden" name="page" value="1" />
 
-              <button
-                type="submit"
-                className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
-              >
-                Apply Filters
-              </button>
+            <button
+              type="submit"
+              className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
+            >
+              Apply Filters
+            </button>
 
-              <Link
-                href="/accounts"
-                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-              >
-                Reset
-              </Link>
-            </div>
+            <Link
+              href="/accounts"
+              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+            >
+              Reset
+            </Link>
           </div>
 
           <details className="rounded-xl border border-slate-200 bg-slate-50 p-4">
@@ -1715,6 +1771,9 @@ setAgentOptions(agentList);
             {finalColumns.includes('status') ? (
               <td className="px-4 py-3">{row.status || '-'}</td>
             ) : null}
+            {finalColumns.includes('days_late') ? (
+              <td className="px-4 py-3">{getDaysLate(row)}</td>
+            ) : null}
             {finalColumns.includes('last_action_date') ? (
               <td className="px-4 py-3">
                 {row.last_action_date ? formatDate(row.last_action_date) : '-'}
@@ -1738,6 +1797,8 @@ setAgentOptions(agentList);
           <input type="hidden" name="status" value={status} />
           <input type="hidden" name="minBalance" value={minBalance} />
           <input type="hidden" name="maxBalance" value={maxBalance} />
+          <input type="hidden" name="daysLateMin" value={daysLateMin} />
+          <input type="hidden" name="daysLateMax" value={daysLateMax} />
           <input type="hidden" name="lastActionFrom" value={lastActionFrom} />
           <input type="hidden" name="lastActionTo" value={lastActionTo} />
           <input type="hidden" name="columns" value={finalColumns.join(',')} />
@@ -1776,6 +1837,8 @@ setAgentOptions(agentList);
                 status,
                 minBalance,
                 maxBalance,
+                daysLateMin,
+                daysLateMax,
                 lastActionFrom,
                 lastActionTo,
                 limit: normalizedLimit,
@@ -1800,6 +1863,8 @@ setAgentOptions(agentList);
                 status,
                 minBalance,
                 maxBalance,
+                daysLateMin,
+                daysLateMax,
                 lastActionFrom,
                 lastActionTo,
                 limit: normalizedLimit,
