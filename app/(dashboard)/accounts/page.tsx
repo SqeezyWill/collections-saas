@@ -180,32 +180,6 @@ function normalizeName(value: unknown) {
   return String(value || '').trim();
 }
 
-function isToday(dateValue: string | null | undefined) {
-  if (!dateValue) return false;
-
-  const iso = dateValue.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  let date: Date;
-
-  if (iso) {
-    const year = Number(iso[1]);
-    const month = Number(iso[2]);
-    const day = Number(iso[3]);
-    date = new Date(year, month - 1, day);
-  } else {
-    date = new Date(dateValue);
-  }
-
-  if (Number.isNaN(date.getTime())) return false;
-
-  const now = new Date();
-
-  return (
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-  );
-}
-
 function buildSearchClause(searchField: SearchField, safeSearch: string) {
   switch (searchField) {
     case 'cfid':
@@ -371,6 +345,7 @@ export default function AccountsPage() {
   const [bulkMessage, setBulkMessage] = useState<string | null>(null);
   const [bulkAssignCollector, setBulkAssignCollector] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  const [bulkFilteredActionLoading, setBulkFilteredActionLoading] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
   const [resolvedCompanyId, setResolvedCompanyId] = useState('');
   const [companyResolved, setCompanyResolved] = useState(false);
@@ -411,6 +386,216 @@ export default function AccountsPage() {
       return { json: JSON.parse(text), text };
     } catch {
       return { json: null as any, text };
+    }
+  }
+
+  async function collectFilteredAccountIds(input: {
+    companyId: string;
+    restrictToCollector?: string;
+  }) {
+    if (!supabase) return [];
+
+    const { companyId, restrictToCollector } = input;
+    const PAGE_FETCH_SIZE = 1000;
+    const collectedIds: string[] = [];
+    const today = todayDateString();
+    const staleThreshold = daysAgoDateString(3);
+
+    let matchedAccountIds: string[] | null = null;
+
+    if (
+      filter === 'open-ptps' ||
+      filter === 'ptps-due-today' ||
+      filter === 'broken-ptps'
+    ) {
+      let ptpQuery = supabase
+        .from('ptps')
+        .select('account_id,status,promised_date')
+        .eq('company_id', companyId);
+
+      if (restrictToCollector) {
+        ptpQuery = ptpQuery.eq('collector_name', restrictToCollector);
+      }
+
+      if (filter === 'open-ptps') {
+        ptpQuery = ptpQuery.eq('status', 'Promise To Pay');
+      }
+
+      if (filter === 'ptps-due-today') {
+        ptpQuery = ptpQuery.eq('status', 'Promise To Pay').eq('promised_date', today);
+      }
+
+      const { data: ptpRows, error: ptpError } = await ptpQuery;
+
+      if (ptpError) {
+        throw new Error(`Failed to load PTP filter data: ${ptpError.message}`);
+      }
+
+      const filteredPtps =
+        filter === 'broken-ptps'
+          ? (ptpRows ?? []).filter(
+              (ptp: any) =>
+                ptp.status === 'Broken' ||
+                (ptp.status === 'Promise To Pay' &&
+                  ptp.promised_date &&
+                  toDateOnly(ptp.promised_date) < today)
+            )
+          : ptpRows ?? [];
+
+      matchedAccountIds = Array.from(
+        new Set(
+          filteredPtps
+            .map((ptp: any) => ptp.account_id)
+            .filter((value: unknown): value is string => Boolean(value))
+        )
+      );
+    }
+
+    let from = 0;
+
+    while (true) {
+      let query = supabase
+        .from('accounts')
+        .select('id')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false });
+
+      if (restrictToCollector) {
+        query = query.eq('collector_name', restrictToCollector);
+      }
+
+      if (matchedAccountIds) {
+        query =
+          matchedAccountIds.length > 0
+            ? query.in('id', matchedAccountIds)
+            : query.eq('id', EMPTY_UUID);
+      }
+
+      if (filter === 'callbacks-due-today') {
+        query = query.eq('status', 'Callback Requested').eq('next_action_date', today);
+      }
+
+      if (filter === 'overdue-callbacks') {
+        query = query.eq('status', 'Callback Requested').lt('next_action_date', today);
+      }
+
+      if (filter === 'next-actions-today') {
+        query = query.eq('next_action_date', today);
+      }
+
+      if (filter === 'stale-accounts') {
+        query = query.or(`last_action_date.is.null,last_action_date.lte.${staleThreshold}`);
+      }
+
+      if (search) {
+        const safeSearch = search.replace(/,/g, '').replace(/[%_]/g, '');
+        query = query.or(buildSearchClause(searchField, safeSearch));
+      }
+
+      if (collector && !restrictToCollector) query = query.eq('collector_name', collector);
+      if (status) query = query.eq('status', status);
+      if (minBalance) query = query.gte('balance', Number(minBalance));
+      if (maxBalance) query = query.lte('balance', Number(maxBalance));
+      if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
+      if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
+
+      const { data, error } = await query.range(from, from + PAGE_FETCH_SIZE - 1);
+
+      if (error) {
+        throw new Error(error.message);
+      }
+
+      const batch = data ?? [];
+      collectedIds.push(...batch.map((row: any) => String(row.id)).filter(Boolean));
+
+      if (batch.length < PAGE_FETCH_SIZE) {
+        break;
+      }
+
+      from += PAGE_FETCH_SIZE;
+    }
+
+    return collectedIds;
+  }
+
+  async function handleBulkFilteredReassign() {
+    if (!supabase) {
+      setBulkMessage('Supabase is not configured.');
+      return;
+    }
+
+    if (!canUseBulkActions) {
+      setBulkMessage('You do not have permission to use bulk actions.');
+      return;
+    }
+
+    if (!profile?.company_id) {
+      setBulkMessage('Unable to resolve company context.');
+      return;
+    }
+
+    if (!bulkAssignCollector.trim()) {
+      setBulkMessage('Please choose an agent first.');
+      return;
+    }
+
+    setBulkFilteredActionLoading(true);
+    setBulkMessage(null);
+
+    try {
+      const restrictToCollector = isAgent ? String(profile?.name || '').trim() : '';
+      const allMatchingIds = await collectFilteredAccountIds({
+        companyId: profile.company_id,
+        restrictToCollector,
+      });
+
+      if (allMatchingIds.length === 0) {
+        setBulkMessage('No accounts match the current filters.');
+        return;
+      }
+
+      const selectedAgentName = bulkAssignCollector.trim();
+      const assignDate = todayDateString();
+      const UPDATE_CHUNK = 500;
+
+      for (let i = 0; i < allMatchingIds.length; i += UPDATE_CHUNK) {
+        const chunk = allMatchingIds.slice(i, i + UPDATE_CHUNK);
+
+        const { error: assignError } = await supabase
+          .from('accounts')
+          .update({
+            collector_name: selectedAgentName,
+            last_action_date: assignDate,
+          })
+          .in('id', chunk);
+
+        if (assignError) {
+          throw new Error(assignError.message);
+        }
+
+        const noteRows = chunk.map((accountId) => ({
+          company_id: profile.company_id,
+          account_id: accountId,
+          created_by_name: profile.name || 'System User',
+          body: `Bulk action: Account reassigned to ${selectedAgentName} using filtered bulk reallocation.`,
+        }));
+
+        const { error: notesError } = await supabase.from('notes').insert(noteRows);
+        if (notesError) {
+          throw new Error(notesError.message);
+        }
+      }
+
+      setBulkMessage(
+        `Reassigned ${allMatchingIds.length} filtered account(s) to ${selectedAgentName}.`
+      );
+      setSelectedIds([]);
+      setBulkAssignCollector('');
+      setReloadKey((prev) => prev + 1);
+    } catch (error: any) {
+      setBulkMessage(error?.message || 'Failed to reassign filtered accounts.');
+    } finally {
+      setBulkFilteredActionLoading(false);
     }
   }
 
@@ -962,11 +1147,11 @@ export default function AccountsPage() {
 
         if (profile?.company_id) {
           const noteRows = selectedIds.map((accountId) => ({
-  company_id: profile.company_id,
-  account_id: accountId,
-  created_by_name: profile.name || 'System User',
-  body: 'Bulk action: Account marked for management review and escalated.',
-}));
+            company_id: profile.company_id,
+            account_id: accountId,
+            created_by_name: profile.name || 'System User',
+            body: 'Bulk action: Account marked for management review and escalated.',
+          }));
 
           const { error: notesError } = await supabase.from('notes').insert(noteRows);
           if (notesError) {
@@ -1013,11 +1198,11 @@ export default function AccountsPage() {
 
         if (profile?.company_id) {
           const noteRows = selectedIds.map((accountId) => ({
-  company_id: profile.company_id,
-  account_id: accountId,
-  created_by_name: profile.name || 'System User',
-  body: `Bulk action: Account reassigned to ${selectedAgentName}.`,
-}));
+            company_id: profile.company_id,
+            account_id: accountId,
+            created_by_name: profile.name || 'System User',
+            body: `Bulk action: Account reassigned to ${selectedAgentName}.`,
+          }));
 
           const { error: notesError } = await supabase.from('notes').insert(noteRows);
           if (notesError) {
@@ -1219,7 +1404,7 @@ export default function AccountsPage() {
               <button
                 type="button"
                 onClick={toggleSelectPage}
-                disabled={actionLoading}
+                disabled={actionLoading || bulkFilteredActionLoading}
                 className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 {allCurrentPageSelected ? 'Unselect Page' : 'Select Page'}
@@ -1228,7 +1413,7 @@ export default function AccountsPage() {
               <button
                 type="button"
                 onClick={clearSelection}
-                disabled={actionLoading}
+                disabled={actionLoading || bulkFilteredActionLoading}
                 className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Clear Selection
@@ -1237,7 +1422,7 @@ export default function AccountsPage() {
               <button
                 type="button"
                 onClick={() => handleBulkAction('export')}
-                disabled={actionLoading}
+                disabled={actionLoading || bulkFilteredActionLoading}
                 className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Bulk Export
@@ -1246,7 +1431,7 @@ export default function AccountsPage() {
               <button
                 type="button"
                 onClick={() => handleBulkAction('mark_review')}
-                disabled={actionLoading}
+                disabled={actionLoading || bulkFilteredActionLoading}
                 className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               >
                 Mark for Review
@@ -1257,7 +1442,7 @@ export default function AccountsPage() {
               <select
                 value={bulkAssignCollector}
                 onChange={(e) => setBulkAssignCollector(e.target.value)}
-                disabled={actionLoading}
+                disabled={actionLoading || bulkFilteredActionLoading}
                 className="rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-700 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200 disabled:opacity-50"
               >
                 <option value="">Select agent to reassign</option>
@@ -1271,10 +1456,21 @@ export default function AccountsPage() {
               <button
                 type="button"
                 onClick={() => handleBulkAction('assign')}
-                disabled={actionLoading}
+                disabled={actionLoading || bulkFilteredActionLoading}
                 className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800 disabled:opacity-50"
               >
                 {actionLoading ? 'Processing...' : 'Reassign Selected'}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleBulkFilteredReassign}
+                disabled={actionLoading || bulkFilteredActionLoading}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {bulkFilteredActionLoading
+                  ? 'Reallocating Filtered Accounts...'
+                  : `Reassign All Filtered (${totalAccounts})`}
               </button>
             </div>
 
