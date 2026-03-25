@@ -766,32 +766,36 @@ export default function AccountsPage() {
           )
         ).sort();
 
-        const usersRes = await fetch('/api/admin/users', {
-          headers: await authHeaders(),
-          cache: 'no-store',
-        });
+        let agentList: string[] = [];
 
-        const { json: usersJson, text: usersText } = await readJsonSafe(usersRes);
+if (profileRole === 'super_admin' || profileRole === 'admin') {
+  const usersRes = await fetch('/api/admin/users', {
+    headers: await authHeaders(),
+    cache: 'no-store',
+  });
 
-        if (!usersRes.ok) {
-          const msg =
-            usersJson?.error ||
-            (usersText ? usersText.slice(0, 180) : 'Failed to load users for reassignment.');
-          throw new Error(msg);
-        }
+  const { json: usersJson, text: usersText } = await readJsonSafe(usersRes);
 
-        const agentList = Array.from(
-          new Set(
-            ((usersJson?.users ?? []) as AdminUserRow[])
-              .filter((user) => normalizeRole(user.role) === 'agent')
-              .map((user) => normalizeName(user.name))
-              .filter(Boolean)
-          )
-        ).sort((a, b) => a.localeCompare(b));
+  if (!usersRes.ok) {
+    const msg =
+      usersJson?.error ||
+      (usersText ? usersText.slice(0, 180) : 'Failed to load users for reassignment.');
+    throw new Error(msg);
+  }
 
-        if (!mounted) return;
-        setCollectorOptions(collectorList);
-        setAgentOptions(agentList);
+  agentList = Array.from(
+    new Set(
+      ((usersJson?.users ?? []) as AdminUserRow[])
+        .filter((user) => normalizeRole(user.role) === 'agent')
+        .map((user) => normalizeName(user.name))
+        .filter(Boolean)
+    )
+  ).sort((a, b) => a.localeCompare(b));
+}
+
+if (!mounted) return;
+setCollectorOptions(collectorList);
+setAgentOptions(agentList);
 
         let matchedAccountIds: string[] | null = null;
 
