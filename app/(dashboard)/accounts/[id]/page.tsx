@@ -753,82 +753,199 @@ export default async function AccountDetailPage({ params }: PageProps) {
   }
 
   async function saveBalanceCorrection(formData: FormData) {
-    'use server';
+  'use server';
 
-    if (!supabaseAdmin) {
-      throw new Error('Supabase admin is not configured.');
-    }
-
-    if (!canEditBalances) {
-      throw new Error('You do not have permission to edit balances.');
-    }
-
-    const targetAccountId = String(formData.get('accountId') || '').trim();
-    const newBalanceRaw = String(formData.get('balance') || '').replace(/,/g, '').trim();
-    const newTotalDueRaw = String(formData.get('totalDue') || '').replace(/,/g, '').trim();
-    const reason = String(formData.get('reason') || '').trim();
-
-    const newBalance = Number(newBalanceRaw);
-    const newTotalDue = Number(newTotalDueRaw);
-
-    if (!targetAccountId) {
-      throw new Error('Missing account id.');
-    }
-
-    if (!Number.isFinite(newBalance) || newBalance < 0) {
-      throw new Error('Balance must be a valid number greater than or equal to 0.');
-    }
-
-    if (!Number.isFinite(newTotalDue) || newTotalDue < 0) {
-      throw new Error('Total due must be a valid number greater than or equal to 0.');
-    }
-
-    if (!reason) {
-      throw new Error('Please provide a reason for the balance correction.');
-    }
-
-    const { data: currentAccount, error: readError } = await supabaseAdmin
-      .from('accounts')
-      .select('id,company_id,balance,total_due')
-      .eq('id', targetAccountId)
-      .maybeSingle();
-
-    if (readError || !currentAccount) {
-      throw new Error(readError?.message || 'Account not found.');
-    }
-
-    const today = new Date().toISOString().slice(0, 10);
-
-    const { error: updateError } = await supabaseAdmin
-      .from('accounts')
-      .update({
-        balance: newBalance,
-        total_due: newTotalDue,
-        last_action_date: today,
-      })
-      .eq('id', targetAccountId);
-
-    if (updateError) {
-      throw new Error(updateError.message);
-    }
-
-    await supabaseAdmin.from('notes').insert({
-      company_id: currentAccount.company_id,
-      account_id: targetAccountId,
-      created_by_name: 'System User',
-      body: [
-        'Admin balance correction applied.',
-        `Previous Balance: ${currency(Number(currentAccount.balance || 0))}`,
-        `New Balance: ${currency(newBalance)}`,
-        `Previous Total Due: ${currency(Number(currentAccount.total_due || 0))}`,
-        `New Total Due: ${currency(newTotalDue)}`,
-        `Reason: ${reason}`,
-      ].join(' | '),
-    });
-
-    redirect(`/accounts/${targetAccountId}`);
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin is not configured.');
   }
 
+  if (!canEditBalances) {
+    throw new Error('You do not have permission to edit balances.');
+  }
+
+  const targetAccountId = String(formData.get('accountId') || '').trim();
+  const newBalanceRaw = String(formData.get('balance') || '').replace(/,/g, '').trim();
+  const newTotalDueRaw = String(formData.get('totalDue') || '').replace(/,/g, '').trim();
+  const newAmountPaidRaw = String(formData.get('amountPaid') || '').replace(/,/g, '').trim();
+  const reason = String(formData.get('reason') || '').trim();
+
+  const newBalance = Number(newBalanceRaw);
+  const newTotalDue = Number(newTotalDueRaw);
+  const newAmountPaid = Number(newAmountPaidRaw);
+
+  if (!targetAccountId) {
+    throw new Error('Missing account id.');
+  }
+
+  if (!Number.isFinite(newBalance) || newBalance < 0) {
+    throw new Error('Balance must be a valid number greater than or equal to 0.');
+  }
+
+  if (!Number.isFinite(newTotalDue) || newTotalDue < 0) {
+    throw new Error('Total due must be a valid number greater than or equal to 0.');
+  }
+
+  if (!Number.isFinite(newAmountPaid) || newAmountPaid < 0) {
+    throw new Error('Amount paid must be a valid number greater than or equal to 0.');
+  }
+
+  if (!reason) {
+    throw new Error('Please provide a reason for the account correction.');
+  }
+
+  const { data: currentAccount, error: readError } = await supabaseAdmin
+    .from('accounts')
+    .select('id,company_id,balance,total_due,amount_paid')
+    .eq('id', targetAccountId)
+    .maybeSingle();
+
+  if (readError || !currentAccount) {
+    throw new Error(readError?.message || 'Account not found.');
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { error: updateError } = await supabaseAdmin
+    .from('accounts')
+    .update({
+      balance: newBalance,
+      total_due: newTotalDue,
+      amount_paid: newAmountPaid,
+      last_action_date: today,
+    })
+    .eq('id', targetAccountId);
+
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  await supabaseAdmin.from('notes').insert({
+    company_id: currentAccount.company_id,
+    account_id: targetAccountId,
+    created_by_name: 'System User',
+    body: [
+      'Admin account totals correction applied.',
+      `Previous Balance: ${currency(Number(currentAccount.balance || 0))}`,
+      `New Balance: ${currency(newBalance)}`,
+      `Previous Total Due: ${currency(Number(currentAccount.total_due || 0))}`,
+      `New Total Due: ${currency(newTotalDue)}`,
+      `Previous Amount Paid: ${currency(Number(currentAccount.amount_paid || 0))}`,
+      `New Amount Paid: ${currency(newAmountPaid)}`,
+      `Reason: ${reason}`,
+    ].join(' | '),
+  });
+
+  redirect(`/accounts/${targetAccountId}`);
+}
+
+async function reversePayment(formData: FormData) {
+  'use server';
+
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin is not configured.');
+  }
+
+  if (!canEditBalances) {
+    throw new Error('You do not have permission to reverse payments.');
+  }
+
+  const targetAccountId = String(formData.get('accountId') || '').trim();
+  const paymentId = String(formData.get('paymentId') || '').trim();
+  const reason = String(formData.get('reason') || '').trim();
+
+  if (!targetAccountId || !paymentId) {
+    throw new Error('Missing account or payment id.');
+  }
+
+  if (!reason) {
+    throw new Error('Please provide a reason for unlogging the payment.');
+  }
+
+  const { data: payment, error: paymentError } = await supabaseAdmin
+    .from('payments')
+    .select('id, account_id, amount, paid_on, product')
+    .eq('id', paymentId)
+    .eq('account_id', targetAccountId)
+    .maybeSingle();
+
+  if (paymentError || !payment) {
+    throw new Error(paymentError?.message || 'Payment not found.');
+  }
+
+  const { data: currentAccount, error: accountError } = await supabaseAdmin
+    .from('accounts')
+    .select('id, company_id, balance, total_due, amount_paid, last_action_date')
+    .eq('id', targetAccountId)
+    .maybeSingle();
+
+  if (accountError || !currentAccount) {
+    throw new Error(accountError?.message || 'Account not found.');
+  }
+
+  const paymentAmount = Number(payment.amount || 0);
+  const currentBalance = Number(currentAccount.balance || 0);
+  const currentTotalDue = Number(currentAccount.total_due || 0);
+  const currentAmountPaid = Number(currentAccount.amount_paid || 0);
+
+  const updatedAmountPaid = Math.max(0, currentAmountPaid - paymentAmount);
+
+  // Safe restoration rule:
+  // If balance currently has value, restore there first.
+  // If balance is already zero, restore into total_due.
+  // Admin can still fine-tune all totals from the correction section if needed.
+  let newBalance = currentBalance;
+  let newTotalDue = currentTotalDue;
+
+  if (currentBalance > 0) {
+    newBalance = currentBalance + paymentAmount;
+  } else {
+    newTotalDue = currentTotalDue + paymentAmount;
+  }
+
+  const { error: deleteError } = await supabaseAdmin
+    .from('payments')
+    .delete()
+    .eq('id', paymentId);
+
+  if (deleteError) {
+    throw new Error(deleteError.message);
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { error: updateError } = await supabaseAdmin
+    .from('accounts')
+    .update({
+      amount_paid: updatedAmountPaid,
+      balance: newBalance,
+      total_due: newTotalDue,
+      last_action_date: today,
+    })
+    .eq('id', targetAccountId);
+
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  await supabaseAdmin.from('notes').insert({
+    company_id: currentAccount.company_id,
+    account_id: targetAccountId,
+    created_by_name: 'System User',
+    body: [
+      'Admin payment reversal applied.',
+      `Removed Payment: ${currency(paymentAmount)}`,
+      `Payment Date: ${payment.paid_on || '-'}`,
+      `Product: ${payment.product || '-'}`,
+      `New Amount Paid: ${currency(updatedAmountPaid)}`,
+      `New Balance: ${currency(newBalance)}`,
+      `New Total Due: ${currency(newTotalDue)}`,
+      `Reason: ${reason}`,
+    ].join(' | '),
+  });
+
+  redirect(`/accounts/${targetAccountId}`);
+}
+  
   let accountQuery = supabaseAdmin
     .from('accounts')
     .select('*')
@@ -1138,31 +1255,43 @@ export default async function AccountDetailPage({ params }: PageProps) {
           <form action={saveBalanceCorrection} className="mt-5 space-y-4">
             <input type="hidden" name="accountId" value={account.id} />
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Balance</label>
-                <input
-                  type="number"
-                  name="balance"
-                  step="0.01"
-                  min="0"
-                  defaultValue={Number(account.balance || 0)}
-                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                />
-              </div>
+            <div className="grid gap-4 md:grid-cols-3">
+  <div>
+    <label className="mb-2 block text-sm font-medium text-slate-700">Balance</label>
+    <input
+      type="number"
+      name="balance"
+      step="0.01"
+      min="0"
+      defaultValue={Number(account.balance || 0)}
+      className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+    />
+  </div>
 
-              <div>
-                <label className="mb-2 block text-sm font-medium text-slate-700">Total Due</label>
-                <input
-                  type="number"
-                  name="totalDue"
-                  step="0.01"
-                  min="0"
-                  defaultValue={Number(account.total_due || 0)}
-                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-                />
-              </div>
-            </div>
+  <div>
+    <label className="mb-2 block text-sm font-medium text-slate-700">Total Due</label>
+    <input
+      type="number"
+      name="totalDue"
+      step="0.01"
+      min="0"
+      defaultValue={Number(account.total_due || 0)}
+      className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+    />
+  </div>
+
+  <div>
+    <label className="mb-2 block text-sm font-medium text-slate-700">Amount Paid</label>
+    <input
+      type="number"
+      name="amountPaid"
+      step="0.01"
+      min="0"
+      defaultValue={Number(account.amount_paid || 0)}
+      className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+    />
+  </div>
+</div>
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Reason for correction</label>
@@ -1665,20 +1794,43 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
           <div className="mt-4 space-y-3">
             {payments && payments.length > 0 ? (
-              payments.slice(0, 3).map((payment) => (
-                <div key={payment.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <p className="text-sm font-semibold text-slate-900">
-                      {currency(Number(payment.amount || 0))}
-                    </p>
-                    <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
-                      {payment.product || '-'}
-                    </span>
-                  </div>
-                  <p className="mt-2 text-sm text-slate-600">Paid on: {formatDate(payment.paid_on)}</p>
-                </div>
-              ))
-            ) : (
+  payments.slice(0, 3).map((payment) => (
+    <div key={payment.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-900">
+          {currency(Number(payment.amount || 0))}
+        </p>
+        <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+          {payment.product || '-'}
+        </span>
+      </div>
+
+      <p className="mt-2 text-sm text-slate-600">Paid on: {formatDate(payment.paid_on)}</p>
+
+      {canEditBalances ? (
+        <form action={reversePayment} className="mt-4 space-y-3">
+          <input type="hidden" name="accountId" value={account.id} />
+          <input type="hidden" name="paymentId" value={payment.id} />
+
+          <textarea
+            name="reason"
+            required
+            rows={2}
+            placeholder="Reason for unlogging this payment..."
+            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+          />
+
+          <button
+            type="submit"
+            className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+          >
+            Unlog Payment
+          </button>
+        </form>
+      ) : null}
+    </div>
+  ))
+) : (
               <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
                 No payments yet.
               </div>
