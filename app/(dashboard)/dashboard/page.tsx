@@ -180,8 +180,8 @@ async function fetchAllRows(
       query = supabase
         .from('accounts')
         .select(
-          'id,balance,amount_paid,status,collector_name,product,product_name,next_action_date,last_action_date'
-        )
+  'id,balance,amount_paid,status,collector_name,product,next_action_date,last_action_date'
+)
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .range(from, to);
@@ -824,14 +824,14 @@ export default function DashboardPage() {
   const accountProducts = Array.from(
     new Set(
       accountList
-        .map((item) => String(item.product || item.product_name || '').trim())
+        .map((item) => String(item.product || '').trim())
         .filter(Boolean)
     )
   );
 
   const accountCoverage = accountProducts.map((product) => {
     const productAccounts = accountList.filter((item) => {
-      const productName = String(item.product || item.product_name || '').trim();
+      const productName = String(item.product || '').trim();
       return productName === product;
     });
 
@@ -844,7 +844,7 @@ export default function DashboardPage() {
 
   const paymentCoverage = accountProducts.map((product) => {
     const productAccounts = accountList.filter((item) => {
-      const productName = String(item.product || item.product_name || '').trim();
+      const productName = String(item.product || '').trim();
       return productName === product;
     });
 
