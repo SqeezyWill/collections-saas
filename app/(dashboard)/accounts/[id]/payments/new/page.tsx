@@ -182,13 +182,18 @@ async function savePayment(formData: FormData) {
 
   let derivedStatus = String(account.status || 'Open').trim() || 'Open';
 
-  if ((remainingOpenPtps || []).length > 0) {
-    derivedStatus = 'PTP';
-  } else if (normalizeStatus(account.status) === 'ptp' || normalizeStatus(account.status) === 'promise to pay') {
-    derivedStatus = 'Open';
-  } else if ((newBalance > 0 || newTotalDue > 0) && normalizeStatus(account.status) === 'paid') {
-    derivedStatus = 'Open';
-  }
+if (newBalance <= 0 && newTotalDue <= 0) {
+  derivedStatus = 'Closed';
+} else if ((remainingOpenPtps || []).length > 0) {
+  derivedStatus = 'PTP';
+} else if (
+  normalizeStatus(account.status) === 'ptp' ||
+  normalizeStatus(account.status) === 'promise to pay' ||
+  normalizeStatus(account.status) === 'paid' ||
+  normalizeStatus(account.status) === 'closed'
+) {
+  derivedStatus = 'Open';
+}
 
   const { error: accountUpdateError } = await supabase
     .from('accounts')

@@ -134,13 +134,14 @@ function getEffectiveDpd(account: any): number | null {
   return baseDpd + daysElapsed;
 }
 
-function getBucketLabel(dpd: number | null) {
+function getBucketLabel(account: any, dpd: number | null) {
+  if (isClosedStatus(account?.status)) return 'Closed';
   if (dpd == null) return 'Unknown';
   if (dpd <= 0) return 'Current';
-  if (dpd >= 1 && dpd <= 30) return '1–30';
-  if (dpd >= 31 && dpd <= 60) return '31–60';
-  if (dpd >= 61 && dpd <= 90) return '61–90';
-  if (dpd >= 91 && dpd <= 120) return '91–120';
+  if (dpd >= 1 && dpd <= 30) return '1-30';
+  if (dpd >= 31 && dpd <= 60) return '31-60';
+  if (dpd >= 61 && dpd <= 90) return '61-90';
+  if (dpd >= 91 && dpd <= 120) return '91-120';
   return '121+';
 }
 
@@ -1029,7 +1030,7 @@ async function reversePayment(formData: FormData) {
   const strategyAssignment = strategyResp?.assignment ?? null;
 
   const effectiveDpd = getEffectiveDpd(account);
-  const bucketLabel = getBucketLabel(effectiveDpd);
+  const bucketLabel = getBucketLabel(account, effectiveDpd);
   const storedDpd = parseNumber(account.dpd);
   const stepsCount = Array.isArray(assignedStrategy?.steps) ? assignedStrategy.steps.length : 0;
   const dueMeta = getDueState(account.next_action_date);
@@ -1121,7 +1122,10 @@ async function reversePayment(formData: FormData) {
     { label: 'Balance', value: currency(Number(account.balance || 0)) },
     { label: 'Amount Paid', value: currency(Number(account.amount_paid || 0)) },
     { label: 'Status', value: detailValue(account.status) },
-    { label: 'Current / Effective DPD', value: detailValue(effectiveDpd) },
+    {
+  label: 'Current / Effective DPD',
+  value: isClosed ? 'Closed' : detailValue(effectiveDpd),
+},
     { label: 'Current Bucket', value: bucketLabel },
     { label: 'Last Pay Date', value: formatDate(account.last_pay_date) },
     { label: 'Last Payment Amount', value: currency(Number(account.last_pay_amount || 0)) },
