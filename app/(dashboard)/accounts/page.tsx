@@ -180,6 +180,10 @@ function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
 }
 
+function isClosedStatus(value: unknown) {
+  return String(value || '').trim().toLowerCase() === 'closed';
+}
+
 function normalizeName(value: unknown) {
   return String(value || '').trim();
 }
@@ -483,10 +487,11 @@ export default function AccountsPage() {
 
     while (true) {
       let query = supabase
-        .from('accounts')
-        .select('id')
-        .eq('company_id', companyId)
-        .order('created_at', { ascending: false });
+  .from('accounts')
+  .select('id')
+  .eq('company_id', companyId)
+  .neq('status', 'Closed')
+  .order('created_at', { ascending: false });
 
       if (restrictToCollector) {
         query = query.eq('collector_name', restrictToCollector);
@@ -878,10 +883,25 @@ export default function AccountsPage() {
         }
 
         let query = supabase
-          .from('accounts')
-          .select('*', { count: 'exact' })
-          .eq('company_id', companyId)
-          .order('created_at', { ascending: false });
+  .from('accounts')
+  .select('*', { count: 'exact' })
+  .eq('company_id', companyId)
+  .order('created_at', { ascending: false });
+
+const shouldExcludeClosedByDefault =
+  !status &&
+  (filter === '' ||
+    filter === 'open-ptps' ||
+    filter === 'ptps-due-today' ||
+    filter === 'broken-ptps' ||
+    filter === 'callbacks-due-today' ||
+    filter === 'overdue-callbacks' ||
+    filter === 'next-actions-today' ||
+    filter === 'stale-accounts');
+
+if (shouldExcludeClosedByDefault) {
+  query = query.neq('status', 'Closed');
+}
 
         if (restrictToCollector) {
           query = query.eq('collector_name', restrictToCollector);
@@ -1062,9 +1082,9 @@ export default function AccountsPage() {
   );
 
   const openCases = useMemo(
-    () => rows.filter((row) => row.status !== 'Paid').length,
-    [rows]
-  );
+  () => rows.filter((row) => !isClosedStatus(row.status) && row.status !== 'Paid').length,
+  [rows]
+);
 
   const totalPages = totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
 
@@ -1607,6 +1627,7 @@ export default function AccountsPage() {
               <option value="Promise To Pay">Promise To Pay</option>
               <option value="Broken">Broken</option>
               <option value="Callback Requested">Callback Requested</option>
+              <option value="Closed">Closed</option>
             </select>
           </div>
 
