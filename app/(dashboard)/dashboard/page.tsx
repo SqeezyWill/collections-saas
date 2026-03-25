@@ -174,11 +174,7 @@ async function fetchAllRows(
 
   while (true) {
     const to = from + PAGE_SIZE - 1;
-
-    let query:
-      | ReturnType<typeof supabase.from<'accounts'>>
-      | ReturnType<typeof supabase.from<'payments'>>
-      | ReturnType<typeof supabase.from<'ptps'>>;
+    let query: any;
 
     if (table === 'accounts') {
       query = supabase
@@ -720,9 +716,7 @@ export default function DashboardPage() {
   });
 
   const totalAccounts = accountList.length;
-
   const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
-
   const totalCollected = accountList.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const collectedThisMonthFromPayments = payments
