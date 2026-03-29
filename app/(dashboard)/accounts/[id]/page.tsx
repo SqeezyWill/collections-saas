@@ -23,6 +23,95 @@ const STRATEGIES_TABLE = 'strategies';
 const MAP_TABLE = 'strategy_products';
 const PRODUCTS_TABLE = 'products';
 
+const ACCOUNT_ACCESS_SELECT = `
+  id,
+  company_id,
+  status
+`;
+
+const ACCOUNT_DETAIL_SELECT = `
+  id,
+  company_id,
+  debtor_name,
+  identification,
+  account_no,
+  customer_id,
+  cfid,
+  collector_name,
+  primary_phone,
+  secondary_phone,
+  tertiary_phone,
+  contacts,
+  employment_status,
+  employer_name,
+  employer_details,
+  product,
+  product_code,
+  portfolio_category,
+  region,
+  score,
+  risk_segment,
+  installment_type,
+  funded_date,
+  loan_taken_date,
+  due_date,
+  loan_due_date,
+  last_installment_date,
+  duration,
+  days_late_lastinstallment,
+  total_due,
+  balance,
+  amount_paid,
+  status,
+  dpd,
+  last_pay_date,
+  last_pay_amount,
+  last_action_date,
+  next_action_date,
+  created_at,
+  uploaded_at,
+  outsource_date
+`;
+
+const RECENT_PTPS_SELECT = `
+  id,
+  account_id,
+  promised_amount,
+  promised_date,
+  kept_amount,
+  status,
+  created_at
+`;
+
+const RECENT_PAYMENTS_SELECT = `
+  id,
+  account_id,
+  amount,
+  paid_on,
+  product,
+  created_at
+`;
+
+const RECENT_NOTES_SELECT = `
+  id,
+  account_id,
+  created_at,
+  created_by_name,
+  body
+`;
+
+const RELATED_FACILITIES_SELECT = `
+  id,
+  debtor_name,
+  account_no,
+  product,
+  portfolio_category,
+  balance,
+  status,
+  dpd,
+  collector_name
+`;
+
 function compactPhones(values: Array<string | null | undefined>) {
   return values.map((v) => String(v || '').trim()).filter(Boolean);
 }
@@ -438,7 +527,7 @@ async function resolveAutoStrategy(accountId: string) {
 
   const { data: acct, error: acctErr } = await supabaseAdmin
     .from(ACCOUNTS_TABLE)
-    .select('id,product_code,dpd')
+    .select('id,product_code,dpd,created_at,uploaded_at,outsource_date')
     .eq('id', accountId)
     .maybeSingle();
 
@@ -532,7 +621,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
   const { data: accountOnly, error: accountOnlyError } = await supabaseAdmin
     .from('accounts')
-    .select('*')
+    .select(ACCOUNT_ACCESS_SELECT)
     .eq('id', id)
     .maybeSingle();
 
@@ -571,7 +660,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
     }
   }
 
-    const profile: UserProfile =
+  const profile: UserProfile =
     'error' in authResult
       ? {
           id: 'account-fallback-view',
@@ -953,7 +1042,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
   let accountQuery = supabaseAdmin
     .from('accounts')
-    .select('*')
+    .select(ACCOUNT_DETAIL_SELECT)
     .eq('id', id)
     .eq('company_id', String(profile.company_id || resolvedCompanyId));
 
@@ -966,7 +1055,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
   if ((!account || error) && isAgent) {
     const fallback = await supabaseAdmin
       .from('accounts')
-      .select('*')
+      .select(ACCOUNT_DETAIL_SELECT)
       .eq('id', id)
       .eq('company_id', String(profile.company_id || resolvedCompanyId))
       .maybeSingle();
@@ -981,37 +1070,10 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
   const isClosed = isClosedStatus(account.status);
 
-  const phones = compactPhones([
-    account.primary_phone,
-    account.secondary_phone,
-    account.tertiary_phone,
-  ]);
-
-  const { data: ptps } = await supabaseAdmin
-    .from('ptps')
-    .select('*')
-    .eq('account_id', id)
-    .order('created_at', { ascending: false })
-    .limit(10);
-
-  const { data: payments } = await supabaseAdmin
-    .from('payments')
-    .select('*')
-    .eq('account_id', id)
-    .order('paid_on', { ascending: false })
-    .limit(10);
-
-  const { data: notes } = await supabaseAdmin
-    .from('notes')
-    .select('*')
-    .eq('account_id', id)
-    .order('created_at', { ascending: false })
-    .limit(10);
-
   let relatedFacilitiesQuery = account.customer_id
     ? supabaseAdmin
         .from('accounts')
-        .select('id,debtor_name,account_no,product,portfolio_category,balance,status,dpd,collector_name')
+        .select(RELATED_FACILITIES_SELECT)
         .eq('customer_id', account.customer_id)
         .eq('company_id', String(profile.company_id || resolvedCompanyId))
         .neq('id', id)
@@ -1023,15 +1085,50 @@ export default async function AccountDetailPage({ params }: PageProps) {
     relatedFacilitiesQuery = relatedFacilitiesQuery.eq('collector_name', collectorScope);
   }
 
-  const relatedFacilitiesResult = relatedFacilitiesQuery
-    ? await relatedFacilitiesQuery
-    : { data: [] as any[] };
+  const [
+    ptpsResult,
+    paymentsResult,
+    notesResult,
+    relatedFacilitiesResult,
+    strategyResp,
+  ] = await Promise.all([
+    supabaseAdmin
+      .from('ptps')
+      .select(RECENT_PTPS_SELECT)
+      .eq('account_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    supabaseAdmin
+      .from('payments')
+      .select(RECENT_PAYMENTS_SELECT)
+      .eq('account_id', id)
+      .order('paid_on', { ascending: false })
+      .limit(10),
+    supabaseAdmin
+      .from('notes')
+      .select(RECENT_NOTES_SELECT)
+      .eq('account_id', id)
+      .order('created_at', { ascending: false })
+      .limit(10),
+    relatedFacilitiesQuery
+      ? relatedFacilitiesQuery
+      : Promise.resolve({ data: [] as any[] }),
+    fetchAccountStrategy(id),
+  ]);
 
+  const ptps = ptpsResult.data ?? [];
+  const payments = paymentsResult.data ?? [];
+  const notes = notesResult.data ?? [];
   const relatedFacilities = relatedFacilitiesResult.data ?? [];
 
-  const strategyResp = await fetchAccountStrategy(id);
   const assignedStrategy = strategyResp?.strategy ?? null;
   const strategyAssignment = strategyResp?.assignment ?? null;
+
+  const phones = compactPhones([
+    account.primary_phone,
+    account.secondary_phone,
+    account.tertiary_phone,
+  ]);
 
   const effectiveDpd = getEffectiveDpd(account);
   const bucketLabel = getBucketLabel(account, effectiveDpd);
@@ -1138,30 +1235,30 @@ export default async function AccountDetailPage({ params }: PageProps) {
   ];
 
   const timeline = [
-    ...(ptps ?? []).map((ptp) => ({
+    ...ptps.map((ptp) => ({
       id: `ptp-${ptp.id}`,
       type: 'PTP',
       date: ptp.created_at || ptp.promised_date || '',
-      title: `Promise to Pay booked`,
+      title: 'Promise to Pay booked',
       subtitle: `${currency(Number(ptp.promised_amount || 0))} due ${formatDate(ptp.promised_date)}`,
       badge: ptp.status || 'Promise To Pay',
       tone:
         ptp.status === 'Kept'
           ? 'bg-emerald-100 text-emerald-700'
           : ptp.status === 'Broken'
-          ? 'bg-rose-100 text-rose-700'
-          : 'bg-amber-100 text-amber-700',
+            ? 'bg-rose-100 text-rose-700'
+            : 'bg-amber-100 text-amber-700',
     })),
-    ...(payments ?? []).map((payment) => ({
+    ...payments.map((payment) => ({
       id: `payment-${payment.id}`,
       type: 'Payment',
       date: payment.paid_on || payment.created_at || '',
-      title: `Payment logged`,
+      title: 'Payment logged',
       subtitle: `${currency(Number(payment.amount || 0))}${payment.product ? ` · ${payment.product}` : ''}`,
       badge: 'Payment',
       tone: 'bg-emerald-100 text-emerald-700',
     })),
-    ...(notes ?? []).map((note) => ({
+    ...notes.map((note) => ({
       id: `note-${note.id}`,
       type: 'Note',
       date: note.created_at || '',
@@ -1760,7 +1857,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
           </div>
 
           <div className="mt-4 space-y-3">
-            {ptps && ptps.length > 0 ? (
+            {ptps.length > 0 ? (
               ptps.slice(0, 3).map((ptp) => (
                 <div key={ptp.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between gap-3">
@@ -1772,8 +1869,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
                         ptp.status === 'Kept'
                           ? 'bg-emerald-100 text-emerald-700'
                           : ptp.status === 'Broken'
-                          ? 'bg-rose-100 text-rose-700'
-                          : 'bg-amber-100 text-amber-700'
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-amber-100 text-amber-700'
                       }`}
                     >
                       {ptp.status}
@@ -1806,7 +1903,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
           </div>
 
           <div className="mt-4 space-y-3">
-            {payments && payments.length > 0 ? (
+            {payments.length > 0 ? (
               payments.slice(0, 3).map((payment) => (
                 <div key={payment.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between gap-3">

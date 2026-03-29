@@ -9,7 +9,7 @@ import { currency } from '@/lib/utils';
 
 const PAGE_SIZE = 1000;
 const COLLECTOR_PAGE_SIZE = 15;
-const REPORTS_CACHE_PREFIX = 'reports-cache:v2:';
+const REPORTS_CACHE_PREFIX = 'reports-cache:v3:';
 
 type AuthProfile = {
   id: string;
@@ -488,13 +488,34 @@ async function fetchAllRows(
 
   while (true) {
     const to = from + PAGE_SIZE - 1;
+    let query: any;
 
-    let query = supabase
-      .from(table)
-      .select('*')
-      .eq('company_id', companyId)
-      .order('created_at', { ascending: false })
-      .range(from, to);
+    if (table === 'accounts') {
+      query = supabase
+        .from('accounts')
+        .select(
+          'id,cfid,debtor_name,account_no,balance,amount_paid,status,collector_name,product,due_date,loan_due_date,next_action_date,last_action_date,dpd,contactability,reachability,created_at,updated_at'
+        )
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+    } else if (table === 'payments') {
+      query = supabase
+        .from('payments')
+        .select('id,account_id,amount,paid_on,collector_name,created_at')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+    } else {
+      query = supabase
+        .from('ptps')
+        .select(
+          'id,account_id,collector_name,promised_amount,promised_date,kept_amount,status,created_at,updated_at,is_rebooked'
+        )
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .range(from, to);
+    }
 
     if (restrictToCollector && collectorName) {
       query = query.eq('collector_name', collectorName);
@@ -803,6 +824,10 @@ function ReportsPageClient() {
     }
   }, [drilldownRows]);
 
+  useEffect(() => {
+    setCollectorPage(1);
+  }, [activeTab]);
+
   const { accounts, payments, ptps } = reportData;
 
   const paymentsByAccountId = useMemo(() => {
@@ -860,41 +885,13 @@ function ReportsPageClient() {
     });
   }, [ptps, paymentsByAccountId]);
 
-  const totalBalance = accounts.reduce((sum, item) => sum + Number(item.balance || 0), 0);
-
-  const totalCollected = accounts.reduce(
-    (sum, item) => sum + Number(item.amount_paid || 0),
-    0
+  const accountProducts = useMemo(
+    () =>
+      Array.from(
+        new Set(accounts.map((item) => normalizeText(item.product)).filter(Boolean))
+      ).sort((a, b) => String(a).localeCompare(String(b))),
+    [accounts]
   );
-
-  const collectedThisMonth = accounts
-    .filter((item) =>
-      isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
-    )
-    .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
-
-  const openPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Promise To Pay').length;
-  const keptPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Kept').length;
-  const brokenPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Broken').length;
-
-  const resolvedPtps = normalizedPtps.filter(
-    (item) => item.effectiveStatus === 'Kept' || item.effectiveStatus === 'Broken'
-  ).length;
-
-  const ptpKeptRate = resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
-  const ptpConversionRate = normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
-
-  const callbackAccounts = accounts.filter(
-    (item) => item.status === 'Callback Requested'
-  ).length;
-
-  const accountProducts = Array.from(
-    new Set(
-      accounts
-        .map((item) => normalizeText(item.product || item.product_name))
-        .filter(Boolean)
-    )
-  ).sort((a, b) => String(a).localeCompare(String(b)));
 
   const selectedProductSet = useMemo(() => {
     if (selectedProducts.length === 0) {
@@ -904,112 +901,220 @@ function ReportsPageClient() {
   }, [selectedProducts, accountProducts]);
 
   const filteredAccountsByProduct = useMemo(() => {
-    return accounts.filter((item) =>
-      selectedProductSet.has(normalizeText(item.product || item.product_name))
-    );
-  }, [accounts, selectedProductSet]);
+    if (
+      activeTab !== 'early_warning' &&
+      activeTab !== 'roll_rates' &&
+      activeTab !== 'conversion_rates'
+    ) {
+      return [];
+    }
 
-  const productRows = accountProducts.map((product) => {
-    const productAccounts = accounts.filter(
-      (item) => normalizeText(item.product || item.product_name) === product
-    );
+    return accounts.filter((item) => selectedProductSet.has(normalizeText(item.product)));
+  }, [accounts, selectedProductSet, activeTab]);
 
-    return {
-      product,
-      accounts: productAccounts.length,
-      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-      collected: productAccounts.reduce(
-        (sum, item) => sum + Number(item.amount_paid || 0),
-        0
-      ),
-      collectedThisMonth: productAccounts
-        .filter((item) =>
-          isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
-        )
-        .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
-    };
-  });
+  const overviewData = useMemo(() => {
+    if (activeTab !== 'overview') {
+      return {
+        totalBalance: 0,
+        totalCollected: 0,
+        collectedThisMonth: 0,
+        openPtps: 0,
+        keptPtps: 0,
+        brokenPtps: 0,
+        resolvedPtps: 0,
+        ptpKeptRate: 0,
+        ptpConversionRate: 0,
+        callbackAccounts: 0,
+        productRows: [] as Array<{
+          product: string;
+          accounts: number;
+          balance: number;
+          collected: number;
+          collectedThisMonth: number;
+        }>,
+        statusRows: [] as Array<{ status: string; count: number; balance: number }>,
+        collectorRows: [] as Array<{
+          collector: string;
+          accounts: number;
+          balance: number;
+          collected: number;
+          collectedThisMonth: number;
+          openPtps: number;
+          keptPtps: number;
+          brokenPtps: number;
+          ptpKeptRate: string;
+          callbacks: number;
+          avgCollectedPerAccount: number;
+        }>,
+      };
+    }
 
-  const statuses = Array.from(
-    new Set(accounts.map((item) => item.status).filter(Boolean))
-  ).sort((a, b) => String(a).localeCompare(String(b)));
+    const totalBalance = accounts.reduce((sum, item) => sum + Number(item.balance || 0), 0);
 
-  const statusRows = statuses.map((status) => {
-    const filtered = accounts.filter((item) => item.status === status);
-
-    return {
-      status,
-      count: filtered.length,
-      balance: filtered.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-    };
-  });
-
-  const collectors = Array.from(
-    new Set(accounts.map((item) => normalizeCollectorName(item.collector_name)).filter(Boolean))
-  ).sort((a, b) => String(a).localeCompare(String(b)));
-
-  const collectorRows = collectors.map((collector) => {
-    const collectorAccounts = accounts.filter(
-      (item) => normalizeCollectorName(item.collector_name) === collector
-    );
-
-    const collectorCollected = collectorAccounts.reduce(
+    const totalCollected = accounts.reduce(
       (sum, item) => sum + Number(item.amount_paid || 0),
       0
     );
 
-    const collectorPtps = normalizedPtps.filter(
-      (item) => normalizeCollectorName(item.collector_name) === collector
-    );
+    const collectedThisMonth = accounts
+      .filter((item) =>
+        isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+      )
+      .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
-    const collectorKeptPtps = collectorPtps.filter(
-      (item) => item.effectiveStatus === 'Kept'
-    ).length;
+    const openPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Promise To Pay').length;
+    const keptPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Kept').length;
+    const brokenPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Broken').length;
 
-    const collectorBrokenPtps = collectorPtps.filter(
-      (item) => item.effectiveStatus === 'Broken'
-    ).length;
-
-    const collectorResolvedPtps = collectorPtps.filter(
+    const resolvedPtps = normalizedPtps.filter(
       (item) => item.effectiveStatus === 'Kept' || item.effectiveStatus === 'Broken'
     ).length;
 
-    const accountsCount = collectorAccounts.length;
+    const ptpKeptRate = resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
+    const ptpConversionRate =
+      normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
+
+    const callbackAccounts = accounts.filter(
+      (item) => item.status === 'Callback Requested'
+    ).length;
+
+    const productRows = accountProducts.map((product) => {
+      const productAccounts = accounts.filter((item) => normalizeText(item.product) === product);
+
+      return {
+        product,
+        accounts: productAccounts.length,
+        balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+        collected: productAccounts.reduce(
+          (sum, item) => sum + Number(item.amount_paid || 0),
+          0
+        ),
+        collectedThisMonth: productAccounts
+          .filter((item) =>
+            isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+          )
+          .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+      };
+    });
+
+    const statuses = Array.from(
+      new Set(accounts.map((item) => item.status).filter(Boolean))
+    ).sort((a, b) => String(a).localeCompare(String(b)));
+
+    const statusRows = statuses.map((status) => {
+      const filtered = accounts.filter((item) => item.status === status);
+
+      return {
+        status,
+        count: filtered.length,
+        balance: filtered.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+      };
+    });
+
+    const collectors = Array.from(
+      new Set(accounts.map((item) => normalizeCollectorName(item.collector_name)).filter(Boolean))
+    ).sort((a, b) => String(a).localeCompare(String(b)));
+
+    const collectorRows = collectors.map((collector) => {
+      const collectorAccounts = accounts.filter(
+        (item) => normalizeCollectorName(item.collector_name) === collector
+      );
+
+      const collectorCollected = collectorAccounts.reduce(
+        (sum, item) => sum + Number(item.amount_paid || 0),
+        0
+      );
+
+      const collectorPtps = normalizedPtps.filter(
+        (item) => normalizeCollectorName(item.collector_name) === collector
+      );
+
+      const collectorKeptPtps = collectorPtps.filter(
+        (item) => item.effectiveStatus === 'Kept'
+      ).length;
+
+      const collectorBrokenPtps = collectorPtps.filter(
+        (item) => item.effectiveStatus === 'Broken'
+      ).length;
+
+      const collectorResolvedPtps = collectorPtps.filter(
+        (item) => item.effectiveStatus === 'Kept' || item.effectiveStatus === 'Broken'
+      ).length;
+
+      const accountsCount = collectorAccounts.length;
+
+      return {
+        collector,
+        accounts: accountsCount,
+        balance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+        collected: collectorCollected,
+        collectedThisMonth: collectorAccounts
+          .filter((item) =>
+            isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
+          )
+          .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+        openPtps: collectorPtps.filter((item) => item.effectiveStatus === 'Promise To Pay').length,
+        keptPtps: collectorKeptPtps,
+        brokenPtps: collectorBrokenPtps,
+        ptpKeptRate:
+          collectorResolvedPtps > 0
+            ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+            : '0.0%',
+        callbacks: collectorAccounts.filter(
+          (item) => item.status === 'Callback Requested'
+        ).length,
+        avgCollectedPerAccount:
+          accountsCount > 0 ? collectorCollected / accountsCount : 0,
+      };
+    });
 
     return {
-      collector,
-      accounts: accountsCount,
-      balance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-      collected: collectorCollected,
-      collectedThisMonth: collectorAccounts
-        .filter((item) =>
-          isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
-        )
-        .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
-      openPtps: collectorPtps.filter((item) => item.effectiveStatus === 'Promise To Pay').length,
-      keptPtps: collectorKeptPtps,
-      brokenPtps: collectorBrokenPtps,
-      ptpKeptRate:
-        collectorResolvedPtps > 0
-          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-          : '0.0%',
-      callbacks: collectorAccounts.filter(
-        (item) => item.status === 'Callback Requested'
-      ).length,
-      avgCollectedPerAccount:
-        accountsCount > 0 ? collectorCollected / accountsCount : 0,
+      totalBalance,
+      totalCollected,
+      collectedThisMonth,
+      openPtps,
+      keptPtps,
+      brokenPtps,
+      resolvedPtps,
+      ptpKeptRate,
+      ptpConversionRate,
+      callbackAccounts,
+      productRows,
+      statusRows,
+      collectorRows,
     };
-  });
+  }, [activeTab, accounts, normalizedPtps, accountProducts]);
 
-  const totalCollectorPages = Math.max(1, Math.ceil(collectorRows.length / COLLECTOR_PAGE_SIZE));
-
-  const pagedCollectorRows = collectorRows.slice(
-    (collectorPage - 1) * COLLECTOR_PAGE_SIZE,
-    collectorPage * COLLECTOR_PAGE_SIZE
+  const totalCollectorPages = useMemo(
+    () => Math.max(1, Math.ceil(overviewData.collectorRows.length / COLLECTOR_PAGE_SIZE)),
+    [overviewData.collectorRows.length]
   );
 
-  const earlyWarningRows = useMemo(() => {
-    return accounts
+  const pagedCollectorRows = useMemo(
+    () =>
+      overviewData.collectorRows.slice(
+        (collectorPage - 1) * COLLECTOR_PAGE_SIZE,
+        collectorPage * COLLECTOR_PAGE_SIZE
+      ),
+    [overviewData.collectorRows, collectorPage]
+  );
+
+  useEffect(() => {
+    setCollectorPage(1);
+  }, [overviewData.collectorRows.length]);
+
+  const earlyWarningData = useMemo(() => {
+    if (activeTab !== 'early_warning') {
+      return {
+        rows: [] as EarlyWarningRow[],
+        criticalWarningCount: 0,
+        warningDueTomorrow: 0,
+        unreachableNearDue: 0,
+        brokenPtpNearDue: 0,
+      };
+    }
+
+    const earlyWarningRows = accounts
       .map((account): EarlyWarningRow | null => {
         const dueDate =
           normalizeText(account.due_date) ||
@@ -1037,7 +1142,7 @@ function ReportsPageClient() {
           cfid: normalizeText(account.cfid) || '-',
           debtorName: normalizeText(account.debtor_name) || '-',
           collector: normalizeCollectorName(account.collector_name),
-          product: normalizeText(account.product || account.product_name) || '-',
+          product: normalizeText(account.product) || '-',
           currentBucket,
           nextBucket,
           daysToRollover,
@@ -1058,59 +1163,71 @@ function ReportsPageClient() {
         if (a.daysToRollover !== b.daysToRollover) return a.daysToRollover - b.daysToRollover;
         return b.balance - a.balance;
       });
-  }, [accounts, normalizedPtps]);
 
-  const filteredEarlyWarningRows = useMemo(() => {
-    return earlyWarningRows.filter((row) => {
+    const filteredRows = earlyWarningRows.filter((row) => {
       if (priorityFilter !== 'all' && row.priority !== priorityFilter) return false;
       if (rolloverFilter !== 'all' && row.daysToRollover !== Number(rolloverFilter)) return false;
       if (collectorFilter !== 'all' && row.collector !== collectorFilter) return false;
       if (!selectedProductSet.has(row.product)) return false;
       return true;
     });
-  }, [earlyWarningRows, priorityFilter, rolloverFilter, collectorFilter, selectedProductSet]);
 
-  const criticalWarningCount = filteredEarlyWarningRows.filter(
-    (row) => row.priority === 'Critical'
-  ).length;
+    return {
+      rows: filteredRows,
+      criticalWarningCount: filteredRows.filter((row) => row.priority === 'Critical').length,
+      warningDueTomorrow: filteredRows.filter((row) => row.daysToRollover === 1).length,
+      unreachableNearDue: filteredRows.filter(
+        (row) => row.daysToRollover <= 2 && row.disposition.toLowerCase().includes('unreach')
+      ).length,
+      brokenPtpNearDue: filteredRows.filter(
+        (row) => row.daysToRollover <= 2 && row.ptpStatus === 'Broken'
+      ).length,
+    };
+  }, [
+    activeTab,
+    accounts,
+    normalizedPtps,
+    priorityFilter,
+    rolloverFilter,
+    collectorFilter,
+    selectedProductSet,
+  ]);
 
-  const warningDueTomorrow = filteredEarlyWarningRows.filter(
-    (row) => row.daysToRollover === 1
-  ).length;
-
-  const unreachableNearDue = filteredEarlyWarningRows.filter(
-    (row) => row.daysToRollover <= 2 && row.disposition.toLowerCase().includes('unreach')
-  ).length;
-
-  const brokenPtpNearDue = filteredEarlyWarningRows.filter(
-    (row) => row.daysToRollover <= 2 && row.ptpStatus === 'Broken'
-  ).length;
-
-  const computedRange = useMemo(() => {
-    const now = new Date();
-
-    if (periodWindow === 'current_month') {
+  const rollRatesData = useMemo(() => {
+    if (activeTab !== 'roll_rates') {
       return {
-        start: startOfMonth(now),
-        end: endOfMonth(now),
+        rollRateProductRows: [] as Array<{
+          product: string;
+          accountsAtRisk: number;
+          valueAtRisk: number;
+          rows: any[];
+        }>,
+        rollRateAgentRows: [] as RollRateAgentRow[],
+        rollRateAccountsInRange: [] as any[],
+        highRiskAgentCount: 0,
+        totalAccountsAtRisk: 0,
+        totalValueAtRisk: 0,
       };
     }
 
-    if (periodWindow === 'last_30_days') {
-      const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const start = new Date(end);
-      start.setDate(start.getDate() - 29);
-      return { start, end };
-    }
+    const now = new Date();
+    const computedRange =
+      periodWindow === 'current_month'
+        ? { start: startOfMonth(now), end: endOfMonth(now) }
+        : periodWindow === 'last_30_days'
+          ? (() => {
+              const end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+              const start = new Date(end);
+              start.setDate(start.getDate() - 29);
+              return { start, end };
+            })()
+          : (() => {
+              const parsedStart = parseInputDate(periodStartDate) || startOfMonth(now);
+              const parsedEnd = parseInputDate(periodEndDate) || endOfMonth(now);
+              return clampRangeToNinetyDays(parsedStart, parsedEnd);
+            })();
 
-    const parsedStart = parseInputDate(periodStartDate) || startOfMonth(now);
-    const parsedEnd = parseInputDate(periodEndDate) || endOfMonth(now);
-
-    return clampRangeToNinetyDays(parsedStart, parsedEnd);
-  }, [periodWindow, periodStartDate, periodEndDate]);
-
-  const rollRateAccountsInRange = useMemo(() => {
-    return filteredAccountsByProduct.filter((account) => {
+    const rollRateAccountsInRange = filteredAccountsByProduct.filter((account) => {
       const dueDate =
         normalizeText(account.due_date) ||
         normalizeText(account.loan_due_date) ||
@@ -1121,36 +1238,12 @@ function ReportsPageClient() {
 
       return parsed >= computedRange.start && parsed <= computedRange.end;
     });
-  }, [filteredAccountsByProduct, computedRange]);
 
-  const weekRanges = useMemo(() => {
-    const ranges: Record<RollRateWeek, { start: Date | null; end: Date | null }> = {
-      'Week 1': { start: null, end: null },
-      'Week 2': { start: null, end: null },
-      'Week 3': { start: null, end: null },
-      'Week 4': { start: null, end: null },
-      'Week 5': { start: null, end: null },
-    };
-
-    const cursor = new Date(computedRange.start);
-    while (cursor <= computedRange.end) {
-      const key = getWeekOfMonth(toDateInputValue(cursor));
-      if (key) {
-        if (!ranges[key].start) ranges[key].start = new Date(cursor);
-        ranges[key].end = new Date(cursor);
-      }
-      cursor.setDate(cursor.getDate() + 1);
-    }
-
-    return ranges;
-  }, [computedRange]);
-
-  const rollRateProductRows = useMemo(() => {
     const products = Array.from(selectedProductSet).sort((a, b) => a.localeCompare(b));
 
-    return products.map((product) => {
+    const rollRateProductRows = products.map((product) => {
       const rows = rollRateAccountsInRange.filter(
-        (account) => normalizeText(account.product || account.product_name) === product
+        (account) => normalizeText(account.product) === product
       );
 
       const atRisk = rows.filter(
@@ -1161,15 +1254,14 @@ function ReportsPageClient() {
         product,
         accountsAtRisk: atRisk.length,
         valueAtRisk: atRisk.reduce(
-          (sum, item) => sum + Math.max(Number(item.balance || 0) - Number(item.amount_paid || 0), 0),
+          (sum, item) =>
+            sum + Math.max(Number(item.balance || 0) - Number(item.amount_paid || 0), 0),
           0
         ),
         rows: atRisk,
       };
     });
-  }, [rollRateAccountsInRange, selectedProductSet]);
 
-  const rollRateAgentRows = useMemo(() => {
     const grouped = new Map<string, RollRateAgentRow>();
 
     for (const account of rollRateAccountsInRange) {
@@ -1235,7 +1327,7 @@ function ReportsPageClient() {
       }
     }
 
-    return Array.from(grouped.values())
+    const rollRateAgentRows = Array.from(grouped.values())
       .map((row) => {
         const countRate = row.accountsHeld > 0 ? (row.totalAtRiskCount / row.accountsHeld) * 100 : 0;
         const valueRate = row.portfolioValue > 0 ? (row.totalAtRiskValue / row.portfolioValue) * 100 : 0;
@@ -1251,23 +1343,44 @@ function ReportsPageClient() {
         if (b.countRate !== a.countRate) return b.countRate - a.countRate;
         return b.totalAtRiskValue - a.totalAtRiskValue;
       });
-  }, [rollRateAccountsInRange]);
 
-  const highRiskAgentCount = new Set(
-    rollRateAgentRows.filter((row) => row.highRiskAgent).map((row) => row.collector)
-  ).size;
+    return {
+      rollRateProductRows,
+      rollRateAgentRows,
+      rollRateAccountsInRange,
+      highRiskAgentCount: new Set(
+        rollRateAgentRows.filter((row) => row.highRiskAgent).map((row) => row.collector)
+      ).size,
+      totalAccountsAtRisk: rollRateAgentRows.reduce((sum, row) => sum + row.totalAtRiskCount, 0),
+      totalValueAtRisk: rollRateAgentRows.reduce((sum, row) => sum + row.totalAtRiskValue, 0),
+    };
+  }, [
+    activeTab,
+    filteredAccountsByProduct,
+    selectedProductSet,
+    periodWindow,
+    periodStartDate,
+    periodEndDate,
+  ]);
 
-  const totalAccountsAtRisk = rollRateAgentRows.reduce(
-    (sum, row) => sum + row.totalAtRiskCount,
-    0
-  );
+  const conversionData = useMemo(() => {
+    if (activeTab !== 'conversion_rates') {
+      return {
+        conversionRows: [] as ConversionRow[],
+        totalConvertedAccounts: 0,
+        totalConvertedValue: 0,
+        overallConversionCountRate: 0,
+        overallConversionValueRate: 0,
+        productSummaryRows: [] as Array<{
+          product: string;
+          totalAccounts: number;
+          totalValue: number;
+          convertedAccounts: number;
+          convertedValue: number;
+        }>,
+      };
+    }
 
-  const totalValueAtRisk = rollRateAgentRows.reduce(
-    (sum, row) => sum + row.totalAtRiskValue,
-    0
-  );
-
-  const conversionRows = useMemo(() => {
     const grouped = new Map<string, ConversionRow>();
 
     for (const account of filteredAccountsByProduct) {
@@ -1304,7 +1417,7 @@ function ReportsPageClient() {
       }
     }
 
-    return Array.from(grouped.values())
+    const conversionRows = Array.from(grouped.values())
       .map((row) => {
         const countConversionRate =
           row.totalAccountsHeld > 0 ? (row.convertedAccounts / row.totalAccountsHeld) * 100 : 0;
@@ -1325,47 +1438,55 @@ function ReportsPageClient() {
         }
         return b.convertedValue - a.convertedValue;
       });
-  }, [filteredAccountsByProduct]);
 
-  const totalConvertedAccounts = conversionRows.reduce(
-    (sum, row) => sum + row.convertedAccounts,
-    0
-  );
+    const totalConvertedAccounts = conversionRows.reduce(
+      (sum, row) => sum + row.convertedAccounts,
+      0
+    );
 
-  const totalConvertedValue = conversionRows.reduce(
-    (sum, row) => sum + row.convertedValue,
-    0
-  );
+    const totalConvertedValue = conversionRows.reduce(
+      (sum, row) => sum + row.convertedValue,
+      0
+    );
 
-  const overallConversionCountRate =
-    filteredAccountsByProduct.length > 0
-      ? (totalConvertedAccounts / filteredAccountsByProduct.length) * 100
-      : 0;
+    const totalBalanceHeld = filteredAccountsByProduct.reduce(
+      (sum, item) => sum + Number(item.balance || 0),
+      0
+    );
 
-  const overallConversionValueRate =
-    filteredAccountsByProduct.reduce((sum, item) => sum + Number(item.balance || 0), 0) > 0
-      ? (totalConvertedValue /
-          filteredAccountsByProduct.reduce((sum, item) => sum + Number(item.balance || 0), 0)) *
-        100
-      : 0;
-
-  const productSummaryRows = useMemo(() => {
-    return Array.from(selectedProductSet)
+    const productSummaryRows = Array.from(selectedProductSet)
       .sort((a, b) => a.localeCompare(b))
       .map((product) => {
         const productAccounts = filteredAccountsByProduct.filter(
-          (item) => normalizeText(item.product || item.product_name) === product
+          (item) => normalizeText(item.product) === product
         );
 
         return {
           product,
           totalAccounts: productAccounts.length,
           totalValue: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-          convertedAccounts: productAccounts.filter((item) => Number(item.amount_paid || 0) > 0).length,
-          convertedValue: productAccounts.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
+          convertedAccounts: productAccounts.filter((item) => Number(item.amount_paid || 0) > 0)
+            .length,
+          convertedValue: productAccounts.reduce(
+            (sum, item) => sum + Number(item.amount_paid || 0),
+            0
+          ),
         };
       });
-  }, [selectedProductSet, filteredAccountsByProduct]);
+
+    return {
+      conversionRows,
+      totalConvertedAccounts,
+      totalConvertedValue,
+      overallConversionCountRate:
+        filteredAccountsByProduct.length > 0
+          ? (totalConvertedAccounts / filteredAccountsByProduct.length) * 100
+          : 0,
+      overallConversionValueRate:
+        totalBalanceHeld > 0 ? (totalConvertedValue / totalBalanceHeld) * 100 : 0,
+      productSummaryRows,
+    };
+  }, [activeTab, filteredAccountsByProduct, selectedProductSet]);
 
   const currentMonthKey = useMemo(() => monthKeyFromDate(new Date().toISOString()), []);
   const activePtpExportMonth = periodWindow === 'current_month' ? currentMonthKey : '';
@@ -1415,7 +1536,7 @@ function ReportsPageClient() {
         normalizeText(account.next_action_date) ||
         '-';
 
-      const product = normalizeText(account.product || account.product_name) || '-';
+      const product = normalizeText(account.product) || '-';
       const collector = normalizeCollectorName(account.collector_name);
       const paid = Number(account.amount_paid || 0) > 0 ? 'yes' : 'no';
 
@@ -1456,8 +1577,7 @@ function ReportsPageClient() {
         return next.length === 0 ? [] : next;
       }
 
-      const next = [...prev, product].sort((a, b) => a.localeCompare(b));
-      return next;
+      return [...prev, product].sort((a, b) => a.localeCompare(b));
     });
   }
 
@@ -1468,7 +1588,7 @@ function ReportsPageClient() {
   function handleDownloadCollectorReport() {
     downloadCsv(
       'collector-performance-report.csv',
-      collectorRows.map((row) => ({
+      overviewData.collectorRows.map((row) => ({
         Collector: row.collector,
         Accounts: row.accounts,
         Balance: row.balance,
@@ -1487,7 +1607,7 @@ function ReportsPageClient() {
   function handleDownloadProductReport() {
     downloadCsv(
       'product-breakdown-report.csv',
-      productRows.map((row) => ({
+      overviewData.productRows.map((row) => ({
         Product: row.product,
         Accounts: row.accounts,
         Balance: row.balance,
@@ -1500,7 +1620,7 @@ function ReportsPageClient() {
   function handleDownloadStatusReport() {
     downloadCsv(
       'status-breakdown-report.csv',
-      statusRows.map((row) => ({
+      overviewData.statusRows.map((row) => ({
         Status: row.status,
         Accounts: row.count,
         Balance: row.balance,
@@ -1511,7 +1631,7 @@ function ReportsPageClient() {
   function handleDownloadEarlyWarningReport() {
     downloadCsv(
       'early-warning-report.csv',
-      filteredEarlyWarningRows.map((row) => ({
+      earlyWarningData.rows.map((row) => ({
         CFID: row.cfid,
         Debtor: row.debtorName,
         Collector: row.collector,
@@ -1534,7 +1654,7 @@ function ReportsPageClient() {
   function handleDownloadRollRatesReport() {
     downloadCsv(
       'roll-rates-report.csv',
-      rollRateAgentRows.map((row) => ({
+      rollRatesData.rollRateAgentRows.map((row) => ({
         Collector: row.collector,
         'Accounts Held': row.accountsHeld,
         'Portfolio Value': row.portfolioValue,
@@ -1560,7 +1680,7 @@ function ReportsPageClient() {
   function handleDownloadConversionReport() {
     downloadCsv(
       'conversion-rates-report.csv',
-      conversionRows.map((row) => ({
+      conversionData.conversionRows.map((row) => ({
         Collector: row.collector,
         'Accounts Held': row.totalAccountsHeld,
         'Converted Accounts': row.convertedAccounts,
@@ -1831,7 +1951,7 @@ function ReportsPageClient() {
         </button>
       </div>
 
-      {(activeTab === 'roll_rates' || activeTab === 'conversion_rates' || activeTab === 'early_warning') ? (
+      {activeTab !== 'overview' ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
             <div>
@@ -1913,43 +2033,53 @@ function ReportsPageClient() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-7">
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Portfolio Balance</p>
-              <p className={getKpiValueClass(currency(totalBalance))}>{currency(totalBalance)}</p>
+              <p className={getKpiValueClass(currency(overviewData.totalBalance))}>
+                {currency(overviewData.totalBalance)}
+              </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Collected to Date</p>
-              <p className={getKpiValueClass(currency(totalCollected))}>{currency(totalCollected)}</p>
+              <p className={getKpiValueClass(currency(overviewData.totalCollected))}>
+                {currency(overviewData.totalCollected)}
+              </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Collected This Month</p>
-              <p className={getKpiValueClass(currency(collectedThisMonth))}>
-                {currency(collectedThisMonth)}
+              <p className={getKpiValueClass(currency(overviewData.collectedThisMonth))}>
+                {currency(overviewData.collectedThisMonth)}
               </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Open PTPs</p>
-              <p className={getKpiValueClass(String(openPtps))}>{openPtps}</p>
+              <p className={getKpiValueClass(String(overviewData.openPtps))}>
+                {overviewData.openPtps}
+              </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Kept PTPs</p>
-              <p className={getKpiValueClass(String(keptPtps))}>{keptPtps}</p>
+              <p className={getKpiValueClass(String(overviewData.keptPtps))}>
+                {overviewData.keptPtps}
+              </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Broken PTPs</p>
-              <p className={getKpiValueClass(String(brokenPtps))}>{brokenPtps}</p>
+              <p className={getKpiValueClass(String(overviewData.brokenPtps))}>
+                {overviewData.brokenPtps}
+              </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">PTP Kept Rate</p>
-              <p className={getKpiValueClass(formatPercent(ptpKeptRate))}>
-                {formatPercent(ptpKeptRate)}
+              <p className={getKpiValueClass(formatPercent(overviewData.ptpKeptRate))}>
+                {formatPercent(overviewData.ptpKeptRate)}
               </p>
               <p className="mt-1 text-sm text-slate-500">
-                Conversion: {formatPercent(ptpConversionRate)}
+                Conversion: {formatPercent(overviewData.ptpConversionRate)}
               </p>
             </div>
           </div>
@@ -1967,7 +2097,7 @@ function ReportsPageClient() {
                 'Collected This Month',
               ]}
             >
-              {productRows.map((row) => (
+              {overviewData.productRows.map((row) => (
                 <tr key={row.product}>
                   <td className="px-4 py-3 font-medium">{row.product}</td>
                   <td className="px-4 py-3">{row.accounts}</td>
@@ -1985,7 +2115,7 @@ function ReportsPageClient() {
                 <h2 className="section-title">Status Breakdown</h2>
               </div>
               <DataTable headers={['Status', 'Accounts', 'Balance']}>
-                {statusRows.map((row) => (
+                {overviewData.statusRows.map((row) => (
                   <tr key={row.status}>
                     <td className="px-4 py-3 font-medium">{row.status}</td>
                     <td className="px-4 py-3">{row.count}</td>
@@ -2000,8 +2130,8 @@ function ReportsPageClient() {
                 <h2 className="section-title">Collector Performance</h2>
                 <p className="text-sm text-slate-500">
                   Showing {(collectorPage - 1) * COLLECTOR_PAGE_SIZE + 1}-
-                  {Math.min(collectorPage * COLLECTOR_PAGE_SIZE, collectorRows.length)} of{' '}
-                  {collectorRows.length} agents
+                  {Math.min(collectorPage * COLLECTOR_PAGE_SIZE, overviewData.collectorRows.length)} of{' '}
+                  {overviewData.collectorRows.length} agents
                 </p>
               </div>
 
@@ -2078,14 +2208,20 @@ function ReportsPageClient() {
             <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
               <div>
                 <p className="text-sm text-slate-500">Callback Accounts</p>
-                <p className="mt-1 text-xl font-semibold text-slate-900">{callbackAccounts}</p>
+                <p className="mt-1 text-xl font-semibold text-slate-900">
+                  {overviewData.callbackAccounts}
+                </p>
               </div>
 
               <div>
                 <p className="text-sm text-slate-500">Portfolio Collection Rate</p>
                 <p className="mt-1 text-xl font-semibold text-slate-900">
-                  {totalBalance + totalCollected > 0
-                    ? formatPercent((totalCollected / (totalBalance + totalCollected)) * 100)
+                  {overviewData.totalBalance + overviewData.totalCollected > 0
+                    ? formatPercent(
+                        (overviewData.totalCollected /
+                          (overviewData.totalBalance + overviewData.totalCollected)) *
+                          100
+                      )
                     : '0.0%'}
                 </p>
               </div>
@@ -2093,8 +2229,10 @@ function ReportsPageClient() {
               <div>
                 <p className="text-sm text-slate-500">PTP Resolution Rate</p>
                 <p className="mt-1 text-xl font-semibold text-slate-900">
-                  {resolvedPtps > 0
-                    ? formatPercent((resolvedPtps / normalizedPtps.length) * 100)
+                  {overviewData.resolvedPtps > 0
+                    ? formatPercent(
+                        (overviewData.resolvedPtps / normalizedPtps.length) * 100
+                      )
                     : '0.0%'}
                 </p>
               </div>
@@ -2102,7 +2240,7 @@ function ReportsPageClient() {
               <div>
                 <p className="text-sm text-slate-500">Collectors in Report</p>
                 <p className="mt-1 text-xl font-semibold text-slate-900">
-                  {collectorRows.length}
+                  {overviewData.collectorRows.length}
                 </p>
               </div>
             </div>
@@ -2113,29 +2251,29 @@ function ReportsPageClient() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-sm">
               <p className="text-sm text-rose-700">Critical Warnings</p>
-              <p className={getKpiValueClass(String(criticalWarningCount))}>
-                {criticalWarningCount}
+              <p className={getKpiValueClass(String(earlyWarningData.criticalWarningCount))}>
+                {earlyWarningData.criticalWarningCount}
               </p>
             </div>
 
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 shadow-sm">
               <p className="text-sm text-amber-700">Rolling in 1 Day</p>
-              <p className={getKpiValueClass(String(warningDueTomorrow))}>
-                {warningDueTomorrow}
+              <p className={getKpiValueClass(String(earlyWarningData.warningDueTomorrow))}>
+                {earlyWarningData.warningDueTomorrow}
               </p>
             </div>
 
             <div className="rounded-2xl border border-red-200 bg-red-50 p-5 shadow-sm">
               <p className="text-sm text-red-700">Unreachable Near Due</p>
-              <p className={getKpiValueClass(String(unreachableNearDue))}>
-                {unreachableNearDue}
+              <p className={getKpiValueClass(String(earlyWarningData.unreachableNearDue))}>
+                {earlyWarningData.unreachableNearDue}
               </p>
             </div>
 
             <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5 shadow-sm">
               <p className="text-sm text-orange-700">Broken PTP Near Due</p>
-              <p className={getKpiValueClass(String(brokenPtpNearDue))}>
-                {brokenPtpNearDue}
+              <p className={getKpiValueClass(String(earlyWarningData.brokenPtpNearDue))}>
+                {earlyWarningData.brokenPtpNearDue}
               </p>
             </div>
           </div>
@@ -2196,11 +2334,15 @@ function ReportsPageClient() {
                     className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
                   >
                     <option value="all">All collectors</option>
-                    {collectors.map((collector) => (
-                      <option key={collector} value={collector}>
-                        {collector}
-                      </option>
-                    ))}
+                    {Array.from(
+                      new Set(accounts.map((item) => normalizeCollectorName(item.collector_name)).filter(Boolean))
+                    )
+                      .sort((a, b) => String(a).localeCompare(String(b)))
+                      .map((collector) => (
+                        <option key={collector} value={collector}>
+                          {collector}
+                        </option>
+                      ))}
                   </select>
                 </div>
               </div>
@@ -2225,7 +2367,7 @@ function ReportsPageClient() {
                   'Suggested Action',
                 ]}
               >
-                {filteredEarlyWarningRows.map((row) => (
+                {earlyWarningData.rows.map((row) => (
                   <tr key={row.id}>
                     <td className="px-4 py-3">
                       <span
@@ -2259,7 +2401,7 @@ function ReportsPageClient() {
                 ))}
               </DataTable>
 
-              {filteredEarlyWarningRows.length === 0 ? (
+              {earlyWarningData.rows.length === 0 ? (
                 <div className="rounded-b-2xl border-x border-b border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
                   No accounts match the current early warning filters.
                 </div>
@@ -2273,8 +2415,8 @@ function ReportsPageClient() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-rose-200 bg-rose-50 p-5 shadow-sm">
               <p className="text-sm text-rose-700">High Roll-Risk Agents</p>
-              <p className={getKpiValueClass(String(highRiskAgentCount))}>
-                {highRiskAgentCount}
+              <p className={getKpiValueClass(String(rollRatesData.highRiskAgentCount))}>
+                {rollRatesData.highRiskAgentCount}
               </p>
             </div>
 
@@ -2282,8 +2424,8 @@ function ReportsPageClient() {
               type="button"
               onClick={() =>
                 openDrilldown(
-                  `All Accounts At Risk (${totalAccountsAtRisk})`,
-                  rollRateAccountsInRange.filter(
+                  `All Accounts At Risk (${rollRatesData.totalAccountsAtRisk})`,
+                  rollRatesData.rollRateAccountsInRange.filter(
                     (account) => Number(account.balance || 0) > Number(account.amount_paid || 0)
                   )
                 )
@@ -2291,16 +2433,16 @@ function ReportsPageClient() {
               className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-left shadow-sm"
             >
               <p className="text-sm text-amber-700">Accounts At Risk</p>
-              <p className={getKpiValueClass(String(totalAccountsAtRisk))}>
-                {totalAccountsAtRisk}
+              <p className={getKpiValueClass(String(rollRatesData.totalAccountsAtRisk))}>
+                {rollRatesData.totalAccountsAtRisk}
               </p>
               <p className="mt-1 text-sm text-amber-700">Click to open affected accounts</p>
             </button>
 
             <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5 shadow-sm">
               <p className="text-sm text-orange-700">Value At Risk</p>
-              <p className={getKpiValueClass(currency(totalValueAtRisk))}>
-                {currency(totalValueAtRisk)}
+              <p className={getKpiValueClass(currency(rollRatesData.totalValueAtRisk))}>
+                {currency(rollRatesData.totalValueAtRisk)}
               </p>
             </div>
 
@@ -2323,7 +2465,7 @@ function ReportsPageClient() {
             </div>
 
             <DataTable headers={['Product', 'Accounts At Risk', 'Value At Risk', 'Action']}>
-              {rollRateProductRows.map((row) => (
+              {rollRatesData.rollRateProductRows.map((row) => (
                 <tr key={row.product}>
                   <td className="px-4 py-3 font-medium">{row.product}</td>
                   <td className="px-4 py-3">
@@ -2389,8 +2531,8 @@ function ReportsPageClient() {
                   'Action',
                 ]}
               >
-                {rollRateAgentRows.map((row) => {
-                  const collectorAccounts = rollRateAccountsInRange.filter(
+                {rollRatesData.rollRateAgentRows.map((row) => {
+                  const collectorAccounts = rollRatesData.rollRateAccountsInRange.filter(
                     (account) => normalizeCollectorName(account.collector_name) === row.collector
                   );
 
@@ -2510,7 +2652,7 @@ function ReportsPageClient() {
                 })}
               </DataTable>
 
-              {rollRateAgentRows.length === 0 ? (
+              {rollRatesData.rollRateAgentRows.length === 0 ? (
                 <div className="rounded-b-2xl border-x border-b border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
                   No roll-rate rows match the selected period and products.
                 </div>
@@ -2524,29 +2666,29 @@ function ReportsPageClient() {
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 shadow-sm">
               <p className="text-sm text-emerald-700">Converted Accounts</p>
-              <p className={getKpiValueClass(String(totalConvertedAccounts))}>
-                {totalConvertedAccounts}
+              <p className={getKpiValueClass(String(conversionData.totalConvertedAccounts))}>
+                {conversionData.totalConvertedAccounts}
               </p>
             </div>
 
             <div className="rounded-2xl border border-blue-200 bg-blue-50 p-5 shadow-sm">
               <p className="text-sm text-blue-700">Converted Value</p>
-              <p className={getKpiValueClass(currency(totalConvertedValue))}>
-                {currency(totalConvertedValue)}
+              <p className={getKpiValueClass(currency(conversionData.totalConvertedValue))}>
+                {currency(conversionData.totalConvertedValue)}
               </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Count Conversion Rate</p>
-              <p className={getKpiValueClass(formatPercent(overallConversionCountRate))}>
-                {formatPercent(overallConversionCountRate)}
+              <p className={getKpiValueClass(formatPercent(conversionData.overallConversionCountRate))}>
+                {formatPercent(conversionData.overallConversionCountRate)}
               </p>
             </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <p className="text-sm text-slate-500">Value Conversion Rate</p>
-              <p className={getKpiValueClass(formatPercent(overallConversionValueRate))}>
-                {formatPercent(overallConversionValueRate)}
+              <p className={getKpiValueClass(formatPercent(conversionData.overallConversionValueRate))}>
+                {formatPercent(conversionData.overallConversionValueRate)}
               </p>
             </div>
           </div>
@@ -2570,7 +2712,7 @@ function ReportsPageClient() {
                 'Converted Value',
               ]}
             >
-              {productSummaryRows.map((row) => (
+              {conversionData.productSummaryRows.map((row) => (
                 <tr key={row.product}>
                   <td className="px-4 py-3 font-medium">{row.product}</td>
                   <td className="px-4 py-3">{row.totalAccounts}</td>
@@ -2607,7 +2749,7 @@ function ReportsPageClient() {
                 'Action',
               ]}
             >
-              {conversionRows.map((row) => {
+              {conversionData.conversionRows.map((row) => {
                 const collectorAccounts = filteredAccountsByProduct.filter(
                   (account) => normalizeCollectorName(account.collector_name) === row.collector
                 );
@@ -2670,7 +2812,7 @@ function ReportsPageClient() {
               })}
             </DataTable>
 
-            {conversionRows.length === 0 ? (
+            {conversionData.conversionRows.length === 0 ? (
               <div className="rounded-b-2xl border-x border-b border-slate-200 bg-white px-4 py-6 text-sm text-slate-500">
                 No conversion rows match the selected products.
               </div>

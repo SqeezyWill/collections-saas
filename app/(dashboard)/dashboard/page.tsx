@@ -8,7 +8,7 @@ import { supabase } from '@/lib/supabase';
 import { currency } from '@/lib/utils';
 
 const PAGE_SIZE = 1000;
-const DASHBOARD_CACHE_PREFIX = 'dashboard-cache:v1:';
+const DASHBOARD_CACHE_PREFIX = 'dashboard-cache:v3:';
 
 type UserProfile = {
   id: string;
@@ -48,6 +48,64 @@ type DashboardPtpRow = {
   created_at: string | null;
 };
 
+type PrimaryDashboardState = {
+  totalAccounts: number;
+  outstanding: number;
+  totalCollected: number;
+  collectedThisMonth: number;
+  openPtps: number;
+  ptpsDueToday: number;
+  keptPtps: number;
+  brokenPtps: number;
+  activeCollectors: number;
+  todayWorkQueue: Array<{
+    title: string;
+    count: number;
+    href: string;
+    helper: string;
+  }>;
+  alerts: Array<{
+    title: string;
+    count: number;
+    tone: string;
+    href: string;
+  }>;
+  quickViews: Array<{
+    label: string;
+    href: string;
+    helper: string;
+  }>;
+};
+
+type SecondaryDashboardState = {
+  collectorPerformance: Array<{
+    collector: string;
+    assignedAccounts: number;
+    totalBalance: number;
+    totalCollected: number;
+    openPtps: number;
+    keptPtps: number;
+    brokenPtps: number;
+    ptpKeptRate: string;
+    callbacks: number;
+  }>;
+  accountCoverage: Array<{
+    product: string;
+    accounts: number;
+    balance: number;
+  }>;
+  paymentCoverage: Array<{
+    product: string;
+    paymentsCount: number;
+    collected: number;
+    hasPayments: boolean;
+  }>;
+  portfolioAnalysisGroups: Array<{
+    category: string;
+    rows: Array<{ metric: string; value: string }>;
+  }>;
+};
+
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
 }
@@ -62,7 +120,11 @@ function isCurrentMonth(dateValue: string | null | undefined) {
   const date = new Date(dateValue);
   const now = new Date();
 
-  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+  return (
+    !Number.isNaN(date.getTime()) &&
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth()
+  );
 }
 
 function isToday(dateValue: string | null | undefined) {
@@ -269,483 +331,13 @@ function alertClasses(tone: string) {
   return 'border-slate-200 bg-slate-50 text-slate-700';
 }
 
-export default function DashboardPage() {
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [sessionError, setSessionError] = useState<string | null>(null);
-  const [loadingProfile, setLoadingProfile] = useState(true);
-  const [accountList, setAccountList] = useState<DashboardAccountRow[]>([]);
-  const [payments, setPayments] = useState<DashboardPaymentRow[]>([]);
-  const [ptps, setPtps] = useState<DashboardPtpRow[]>([]);
-  const [dataError, setDataError] = useState<string | null>(null);
-  const [loadingData, setLoadingData] = useState(true);
-  const [cacheHydrated, setCacheHydrated] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [restoredFromCache, setRestoredFromCache] = useState(false);
-  const [resolvedCompanyId, setResolvedCompanyId] = useState('');
-  const [companyResolved, setCompanyResolved] = useState(false);
-
-  const normalizedProfileRole = normalizeRole(profile?.role);
-  const normalizedProfileName = normalizeName(profile?.name);
-  const isAgent = normalizedProfileRole === 'agent';
-
-  const dashboardCacheKey = useMemo(() => {
-    const companyId =
-      String(resolvedCompanyId || profile?.company_id || '').trim() || 'pending-company';
-    const role = normalizedProfileRole || 'unknown-role';
-    const name = normalizedProfileName || 'unknown-user';
-    return `${DASHBOARD_CACHE_PREFIX}${companyId}:${role}:${name}`;
-  }, [resolvedCompanyId, profile?.company_id, normalizedProfileRole, normalizedProfileName]);
-
-  useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(dashboardCacheKey);
-
-      if (!raw) {
-        setCacheHydrated(true);
-        return;
-      }
-
-      const parsed = JSON.parse(raw);
-
-      if (parsed?.profile) setProfile(parsed.profile);
-      if (Array.isArray(parsed?.accountList)) setAccountList(parsed.accountList);
-      if (Array.isArray(parsed?.payments)) setPayments(parsed.payments);
-      if (Array.isArray(parsed?.ptps)) setPtps(parsed.ptps);
-
-      if (typeof parsed?.resolvedCompanyId === 'string' && parsed.resolvedCompanyId.trim()) {
-        setResolvedCompanyId(parsed.resolvedCompanyId);
-        setCompanyResolved(true);
-      }
-
-      if (
-        parsed?.profile ||
-        Array.isArray(parsed?.accountList) ||
-        Array.isArray(parsed?.payments) ||
-        Array.isArray(parsed?.ptps)
-      ) {
-        setRestoredFromCache(true);
-        setLoadingData(false);
-      }
-    } catch {
-      // ignore cache errors
-    } finally {
-      setCacheHydrated(true);
-    }
-  }, [dashboardCacheKey]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function loadCompanyContext() {
-      try {
-        if (!supabase) {
-          if (mounted) {
-            if (!restoredFromCache) {
-              setSessionError('Supabase client is not configured.');
-            }
-            setCompanyResolved(true);
-            setLoadingProfile(false);
-          }
-          return;
-        }
-
-        const firstSessionResult = await supabase.auth.getSession();
-
-        let session = firstSessionResult.data.session;
-        let sessionLoadError = firstSessionResult.error;
-
-        if (!session && !sessionLoadError) {
-          await new Promise((resolve) => window.setTimeout(resolve, 250));
-
-          const secondSessionResult = await supabase.auth.getSession();
-          session = secondSessionResult.data.session;
-          sessionLoadError = secondSessionResult.error;
-        }
-
-        if (!mounted) return;
-
-        if (sessionLoadError) {
-          if (!restoredFromCache) {
-            setSessionError('Unable to load user session.');
-          }
-          setCompanyResolved(true);
-          setLoadingProfile(false);
-          return;
-        }
-
-        const userId = session?.user?.id;
-        if (!userId) {
-          if (!restoredFromCache) {
-            setSessionError('Unable to load user session.');
-          }
-          setCompanyResolved(true);
-          setLoadingProfile(false);
-          return;
-        }
-
-        const { data: profileData, error: profileError } = await supabase
-          .from('user_profiles')
-          .select('company_id')
-          .eq('id', userId)
-          .maybeSingle();
-
-        if (!mounted) return;
-
-        if (profileError) {
-          if (!restoredFromCache) {
-            setSessionError(profileError.message || 'Unable to resolve company context.');
-          }
-          setCompanyResolved(true);
-          setLoadingProfile(false);
-          return;
-        }
-
-        let companyId = String(profileData?.company_id || '').trim();
-
-        if (!companyId) {
-          const { data: fixedCompany, error: fixedCompanyError } = await supabase
-            .from('companies')
-            .select('id,name,code')
-            .or('name.eq.Pezesha,code.eq.Pezesha')
-            .limit(1)
-            .maybeSingle();
-
-          if (!mounted) return;
-
-          if (fixedCompanyError || !fixedCompany?.id) {
-            if (!restoredFromCache) {
-              setSessionError('Unable to resolve Pezesha company.');
-            }
-            setCompanyResolved(true);
-            setLoadingProfile(false);
-            return;
-          }
-
-          companyId = String(fixedCompany.id);
-        }
-
-        if (!mounted) return;
-
-        setResolvedCompanyId(companyId);
-        setCompanyResolved(true);
-        setSessionError(null);
-      } catch (error: any) {
-        if (!mounted) return;
-
-        if (!restoredFromCache) {
-          setSessionError(error?.message || 'Unable to resolve company context.');
-        }
-        setCompanyResolved(true);
-        setLoadingProfile(false);
-      }
-    }
-
-    loadCompanyContext();
-
-    return () => {
-      mounted = false;
-    };
-  }, [restoredFromCache]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function loadProfile() {
-      try {
-        if (!cacheHydrated || !companyResolved) {
-          return;
-        }
-
-        if (!supabase) {
-          if (mounted) {
-            if (!profile && !restoredFromCache) {
-              setSessionError('Supabase client is not configured.');
-            }
-            setLoadingProfile(false);
-          }
-          return;
-        }
-
-        if (!resolvedCompanyId) {
-          if (mounted) {
-            if (!profile && !restoredFromCache) {
-              setSessionError('Unable to resolve Pezesha company.');
-            }
-            setLoadingProfile(false);
-          }
-          return;
-        }
-
-        const firstSessionResult = await supabase.auth.getSession();
-
-        let session = firstSessionResult.data.session;
-        let sessionLoadError = firstSessionResult.error;
-
-        if (!session && !sessionLoadError) {
-          await new Promise((resolve) => window.setTimeout(resolve, 250));
-
-          const secondSessionResult = await supabase.auth.getSession();
-          session = secondSessionResult.data.session;
-          sessionLoadError = secondSessionResult.error;
-        }
-
-        if (!mounted) return;
-
-        if (sessionLoadError) {
-          if (!profile && !restoredFromCache) {
-            setSessionError('Unable to load user session.');
-          }
-          setLoadingProfile(false);
-          return;
-        }
-
-        const userId = session?.user?.id;
-        if (!userId) {
-          if (!profile && !restoredFromCache) {
-            setSessionError('Unable to load user session.');
-          }
-          setLoadingProfile(false);
-          return;
-        }
-
-        const { data: profileData, error: profileError } = await supabase
-          .from('user_profiles')
-          .select('id,name,role,company_id')
-          .eq('id', userId)
-          .maybeSingle();
-
-        if (!mounted) return;
-
-        if (profileError || !profileData?.id) {
-          if (!profile && !restoredFromCache) {
-            setSessionError('Unable to load user session.');
-          }
-          setLoadingProfile(false);
-          return;
-        }
-
-        setProfile({
-          id: String(profileData.id),
-          name: profileData.name ?? null,
-          role: profileData.role ?? null,
-          company_id: resolvedCompanyId,
-        });
-        setSessionError(null);
-        setLoadingProfile(false);
-      } catch (error: any) {
-        if (!mounted) return;
-
-        if (!profile && !restoredFromCache) {
-          setSessionError(error?.message || 'Unable to load user session.');
-        }
-        setLoadingProfile(false);
-      }
-    }
-
-    loadProfile();
-
-    return () => {
-      mounted = false;
-    };
-  }, [cacheHydrated, companyResolved, resolvedCompanyId, restoredFromCache]);
-
-  useEffect(() => {
-    let mounted = true;
-
-    async function loadDashboardData() {
-      if (loadingProfile || !cacheHydrated || !companyResolved) return;
-
-      if (!resolvedCompanyId) {
-        if (mounted) {
-          if (accountList.length === 0 && ptps.length === 0) {
-            setLoadingData(false);
-          } else {
-            setIsRefreshing(false);
-          }
-        }
-        return;
-      }
-
-      try {
-        if (accountList.length === 0 && ptps.length === 0) {
-          setLoadingData(true);
-        } else {
-          setIsRefreshing(true);
-        }
-
-        setDataError(null);
-
-        const collectorScope = normalizedProfileName;
-
-        const [accountsRows, paymentsRows, ptpRows] = await Promise.all([
-          fetchAllRows('accounts', {
-            companyId: resolvedCompanyId,
-            collectorName: collectorScope,
-            restrictToCollector: isAgent,
-          }),
-          fetchAllRows('payments', {
-            companyId: resolvedCompanyId,
-            collectorName: collectorScope,
-            restrictToCollector: isAgent,
-          }),
-          fetchAllRows('ptps', {
-            companyId: resolvedCompanyId,
-            collectorName: collectorScope,
-            restrictToCollector: isAgent,
-          }),
-        ]);
-
-        if (mounted) {
-          setAccountList(accountsRows as DashboardAccountRow[]);
-          setPayments(paymentsRows as DashboardPaymentRow[]);
-          setPtps(ptpRows as DashboardPtpRow[]);
-          setLoadingData(false);
-          setIsRefreshing(false);
-          setRestoredFromCache(false);
-        }
-      } catch (error: any) {
-        if (mounted) {
-          setDataError(error?.message || 'Unknown error');
-          setLoadingData(false);
-          setIsRefreshing(false);
-        }
-      }
-    }
-
-    loadDashboardData();
-
-    return () => {
-      mounted = false;
-    };
-  }, [
-    loadingProfile,
-    cacheHydrated,
-    companyResolved,
-    resolvedCompanyId,
-    isAgent,
-    normalizedProfileName,
-  ]);
-
-  useEffect(() => {
-    if (!cacheHydrated) return;
-
-    try {
-      sessionStorage.setItem(
-        dashboardCacheKey,
-        JSON.stringify({
-          profile,
-          resolvedCompanyId,
-          accountList,
-          payments,
-          ptps,
-          savedAt: Date.now(),
-        })
-      );
-    } catch {
-      // ignore storage errors
-    }
-  }, [dashboardCacheKey, profile, resolvedCompanyId, accountList, payments, ptps, cacheHydrated]);
-
-  if (
-    (loadingProfile || loadingData) &&
-    !restoredFromCache &&
-    !profile &&
-    accountList.length === 0 &&
-    ptps.length === 0
-  ) {
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-          {isRefreshing ? (
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-              Refreshing…
-            </span>
-          ) : null}
-        </div>
-
-        <p className="text-slate-500">Loading dashboard...</p>
-      </div>
-    );
-  }
-
-  if (sessionError && !profile && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
-    return (
-      <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-          {isRefreshing ? (
-            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-              Refreshing…
-            </span>
-          ) : null}
-        </div>
-        <p className="text-red-600">{sessionError}</p>
-      </div>
-    );
-  }
-
-  if (!resolvedCompanyId && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
-    return (
-      <div className="space-y-4">
-        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
-        <p className="text-red-600">Unable to load user session.</p>
-      </div>
-    );
-  }
-
-  const paymentsByAccountId = new Map<
-    string,
-    Array<{ amount: number | null; paid_on: string | null; collector_name?: string | null }>
-  >();
-
-  for (const payment of payments) {
-    const key = String(payment.account_id || '');
-    if (!key) continue;
-
-    const current = paymentsByAccountId.get(key) || [];
-    current.push({
-      amount: payment.amount ?? null,
-      paid_on: payment.paid_on ?? null,
-      collector_name: payment.collector_name ?? null,
-    });
-    paymentsByAccountId.set(key, current);
-  }
-
-  const dedupedPtps = dedupeOperationalPtps(ptps);
-
-  const normalizedPtps = dedupedPtps.map((ptp) => {
-    const accountPayments = ptp.account_id
-      ? paymentsByAccountId.get(String(ptp.account_id)) || []
-      : [];
-
-    let effectiveStatus = ptp.status || '-';
-    let effectiveKeptAmount = Number(ptp.kept_amount || 0);
-
-    const needsDerivedOutcome =
-      ptp.status === 'Promise To Pay' && isPastDue(ptp.promised_date);
-
-    const needsDerivedKeptAmount =
-      ptp.status === 'Kept' && Number(ptp.kept_amount || 0) <= 0;
-
-    if (needsDerivedOutcome || needsDerivedKeptAmount) {
-      const derived = resolvePtpOutcomeFromPayments(ptp, accountPayments);
-
-      if (needsDerivedOutcome) {
-        effectiveStatus = derived.effectiveStatus;
-      }
-
-      if (ptp.status === 'Kept' || derived.effectiveStatus === 'Kept') {
-        effectiveKeptAmount = derived.effectiveKeptAmount;
-      }
-    }
-
-    return {
-      ...ptp,
-      effectiveStatus,
-      effectiveKeptAmount,
-    };
-  });
+function buildPrimaryDashboardState(input: {
+  accountList: DashboardAccountRow[];
+  payments: DashboardPaymentRow[];
+  normalizedPtps: Array<DashboardPtpRow & { effectiveStatus: string; effectiveKeptAmount: number }>;
+  isAgent: boolean;
+}): PrimaryDashboardState {
+  const { accountList, payments, normalizedPtps, isAgent } = input;
 
   const totalAccounts = accountList.length;
   const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
@@ -785,115 +377,9 @@ export default function DashboardPage() {
   const keptPtps = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Kept').length;
   const brokenPtps = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Broken').length;
 
-  const resolvedPtps = normalizedPtps.filter(
-    (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
-  ).length;
-
-  const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
-  const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
-  const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
-
   const activeCollectors = new Set(
     accountList.map((item) => item.collector_name).filter(Boolean)
   ).size;
-
-  const totalAssignedValue = outstanding + totalCollected;
-  const collectionRate = totalAssignedValue > 0 ? (totalCollected / totalAssignedValue) * 100 : 0;
-
-  const ptpKeptRate = resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
-  const ptpConversionRate =
-    normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
-
-  const collectors = Array.from(
-    new Set(accountList.map((item) => item.collector_name).filter(Boolean))
-  );
-
-  const collectorPerformance = collectors.map((collector) => {
-    const collectorAccounts = accountList.filter((item) => item.collector_name === collector);
-
-    const collectorCollected = collectorAccounts.reduce(
-      (sum, item) => sum + Number(item.amount_paid || 0),
-      0
-    );
-
-    const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
-
-    const collectorOpenPtpAccounts = new Set(
-      collectorPtps
-        .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
-        .map((ptp) => ptp.account_id)
-    );
-
-    const collectorKeptPtps = collectorPtps.filter(
-      (ptp) => ptp.effectiveStatus === 'Kept'
-    ).length;
-
-    const collectorBrokenPtps = collectorPtps.filter(
-      (ptp) => ptp.effectiveStatus === 'Broken'
-    ).length;
-
-    const collectorResolvedPtps = collectorPtps.filter(
-      (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
-    ).length;
-
-    return {
-      collector,
-      assignedAccounts: collectorAccounts.length,
-      totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-      totalCollected: collectorCollected,
-      openPtps: collectorOpenPtpAccounts.size,
-      keptPtps: collectorKeptPtps,
-      brokenPtps: collectorBrokenPtps,
-      ptpKeptRate:
-        collectorResolvedPtps > 0
-          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-          : '0.0%',
-      callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
-        .length,
-    };
-  });
-
-  const accountProducts = Array.from(
-    new Set(
-      accountList
-        .map((item) => String(item.product || '').trim())
-        .filter(Boolean)
-    )
-  );
-
-  const accountCoverage = accountProducts.map((product) => {
-    const productAccounts = accountList.filter((item) => {
-      const productName = String(item.product || '').trim();
-      return productName === product;
-    });
-
-    return {
-      product,
-      accounts: productAccounts.length,
-      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-    };
-  });
-
-  const paymentCoverage = accountProducts.map((product) => {
-    const productAccounts = accountList.filter((item) => {
-      const productName = String(item.product || '').trim();
-      return productName === product;
-    });
-
-    const paidProductAccounts = productAccounts.filter(
-      (item) => Number(item.amount_paid || 0) > 0
-    );
-
-    return {
-      product,
-      paymentsCount: paidProductAccounts.length,
-      collected: paidProductAccounts.reduce(
-        (sum, item) => sum + Number(item.amount_paid || 0),
-        0
-      ),
-      hasPayments: paidProductAccounts.length > 0,
-    };
-  });
 
   const callbacksToday = accountList.filter(
     (item) =>
@@ -1039,6 +525,162 @@ export default function DashboardPage() {
     },
   ];
 
+  return {
+    totalAccounts,
+    outstanding,
+    totalCollected,
+    collectedThisMonth,
+    openPtps,
+    ptpsDueToday,
+    keptPtps,
+    brokenPtps,
+    activeCollectors,
+    todayWorkQueue,
+    alerts,
+    quickViews,
+  };
+}
+
+function buildSecondaryDashboardState(input: {
+  accountList: DashboardAccountRow[];
+  normalizedPtps: Array<DashboardPtpRow & { effectiveStatus: string; effectiveKeptAmount: number }>;
+  isAgent: boolean;
+}): SecondaryDashboardState {
+  const { accountList, normalizedPtps, isAgent } = input;
+
+  const totalAccounts = accountList.length;
+  const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
+  const totalCollected = accountList.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
+
+  const keptPtps = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Kept').length;
+  const brokenPtps = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Broken').length;
+  const resolvedPtps = normalizedPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
+  ).length;
+
+  const openPtpAccountIds = new Set(
+    normalizedPtps
+      .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
+      .map((ptp) => ptp.account_id)
+  );
+
+  const dueTodayPtpAccountIds = new Set(
+    normalizedPtps
+      .filter(
+        (ptp) =>
+          ptp.effectiveStatus === 'Promise To Pay' &&
+          ptp.account_id &&
+          isToday(ptp.promised_date)
+      )
+      .map((ptp) => ptp.account_id)
+  );
+
+  const openPtps = openPtpAccountIds.size;
+  const ptpsDueToday = dueTodayPtpAccountIds.size;
+
+  const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
+  const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
+  const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
+
+  const totalAssignedValue = outstanding + totalCollected;
+  const collectionRate = totalAssignedValue > 0 ? (totalCollected / totalAssignedValue) * 100 : 0;
+  const ptpKeptRate = resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
+  const ptpConversionRate =
+    normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
+
+  const collectors = Array.from(
+  new Set(accountList.map((item) => normalizeName(item.collector_name) || 'Unassigned'))
+);
+
+const collectorPerformance = collectors.map((collector) => {
+  const collectorAccounts = accountList.filter(
+    (item) => (normalizeName(item.collector_name) || 'Unassigned') === collector
+  );
+
+    const collectorCollected = collectorAccounts.reduce(
+      (sum, item) => sum + Number(item.amount_paid || 0),
+      0
+    );
+
+    const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
+
+    const collectorOpenPtpAccounts = new Set(
+      collectorPtps
+        .filter((ptp) => ptp.effectiveStatus === 'Promise To Pay' && ptp.account_id)
+        .map((ptp) => ptp.account_id)
+    );
+
+    const collectorKeptPtps = collectorPtps.filter(
+      (ptp) => ptp.effectiveStatus === 'Kept'
+    ).length;
+
+    const collectorBrokenPtps = collectorPtps.filter(
+      (ptp) => ptp.effectiveStatus === 'Broken'
+    ).length;
+
+    const collectorResolvedPtps = collectorPtps.filter(
+      (ptp) => ptp.effectiveStatus === 'Kept' || ptp.effectiveStatus === 'Broken'
+    ).length;
+
+    return {
+      collector,
+      assignedAccounts: collectorAccounts.length,
+      totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+      totalCollected: collectorCollected,
+      openPtps: collectorOpenPtpAccounts.size,
+      keptPtps: collectorKeptPtps,
+      brokenPtps: collectorBrokenPtps,
+      ptpKeptRate:
+        collectorResolvedPtps > 0
+          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+          : '0.0%',
+      callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
+        .length,
+    };
+  });
+
+  const accountProducts = Array.from(
+    new Set(
+      accountList
+        .map((item) => String(item.product || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  const accountCoverage = accountProducts.map((product) => {
+    const productAccounts = accountList.filter((item) => {
+      const productName = String(item.product || '').trim();
+      return productName === product;
+    });
+
+    return {
+      product,
+      accounts: productAccounts.length,
+      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+    };
+  });
+
+  const paymentCoverage = accountProducts.map((product) => {
+    const productAccounts = accountList.filter((item) => {
+      const productName = String(item.product || '').trim();
+      return productName === product;
+    });
+
+    const paidProductAccounts = productAccounts.filter(
+      (item) => Number(item.amount_paid || 0) > 0
+    );
+
+    return {
+      product,
+      paymentsCount: paidProductAccounts.length,
+      collected: paidProductAccounts.reduce(
+        (sum, item) => sum + Number(item.amount_paid || 0),
+        0
+      ),
+      hasPayments: paidProductAccounts.length > 0,
+    };
+  });
+
   const portfolioAnalysisGroups = [
     {
       category: 'Accounts',
@@ -1072,6 +714,417 @@ export default function DashboardPage() {
       rows: [{ metric: 'Escalated Accounts', value: escalatedAccounts.toLocaleString() }],
     },
   ];
+
+  return {
+    collectorPerformance,
+    accountCoverage,
+    paymentCoverage,
+    portfolioAnalysisGroups,
+  };
+}
+
+export default function DashboardPage() {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [loadingProfile, setLoadingProfile] = useState(true);
+  const [accountList, setAccountList] = useState<DashboardAccountRow[]>([]);
+  const [payments, setPayments] = useState<DashboardPaymentRow[]>([]);
+  const [ptps, setPtps] = useState<DashboardPtpRow[]>([]);
+  const [dataError, setDataError] = useState<string | null>(null);
+  const [loadingData, setLoadingData] = useState(true);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [restoredFromCache, setRestoredFromCache] = useState(false);
+  const [resolvedCompanyId, setResolvedCompanyId] = useState('');
+  const [secondaryReady, setSecondaryReady] = useState(false);
+  const [secondaryLoading, setSecondaryLoading] = useState(false);
+
+  const normalizedProfileRole = normalizeRole(profile?.role);
+  const normalizedProfileName = normalizeName(profile?.name);
+  const isAgent = normalizedProfileRole === 'agent';
+
+  const dashboardCacheKey = useMemo(() => {
+    const companyId =
+      String(resolvedCompanyId || profile?.company_id || '').trim() || 'pending-company';
+    const role = normalizedProfileRole || 'unknown-role';
+    const name = normalizedProfileName || 'unknown-user';
+    return `${DASHBOARD_CACHE_PREFIX}${companyId}:${role}:${name}`;
+  }, [resolvedCompanyId, profile?.company_id, normalizedProfileRole, normalizedProfileName]);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(dashboardCacheKey);
+
+      if (!raw) {
+        setCacheHydrated(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw);
+
+      if (parsed?.profile) setProfile(parsed.profile);
+      if (Array.isArray(parsed?.accountList)) setAccountList(parsed.accountList);
+      if (Array.isArray(parsed?.payments)) setPayments(parsed.payments);
+      if (Array.isArray(parsed?.ptps)) setPtps(parsed.ptps);
+
+      if (typeof parsed?.resolvedCompanyId === 'string' && parsed.resolvedCompanyId.trim()) {
+        setResolvedCompanyId(parsed.resolvedCompanyId);
+      }
+
+      if (parsed?.secondaryReady === true) {
+        setSecondaryReady(true);
+      }
+
+      if (
+        parsed?.profile ||
+        Array.isArray(parsed?.accountList) ||
+        Array.isArray(parsed?.payments) ||
+        Array.isArray(parsed?.ptps)
+      ) {
+        setRestoredFromCache(true);
+        setLoadingData(false);
+      }
+    } catch {
+      // ignore cache errors
+    } finally {
+      setCacheHydrated(true);
+    }
+  }, [dashboardCacheKey]);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadDashboardContextAndData() {
+      if (!cacheHydrated) return;
+
+      try {
+        if (!supabase) {
+          if (mounted) {
+            if (!restoredFromCache) {
+              setSessionError('Supabase client is not configured.');
+            }
+            setLoadingProfile(false);
+            setLoadingData(false);
+          }
+          return;
+        }
+
+        if (accountList.length > 0 || ptps.length > 0 || payments.length > 0) {
+          setIsRefreshing(true);
+        } else {
+          setLoadingData(true);
+        }
+
+        setDataError(null);
+        setSecondaryLoading(false);
+
+        const firstSessionResult = await supabase.auth.getSession();
+        let session = firstSessionResult.data.session;
+        let sessionLoadError = firstSessionResult.error;
+
+        if (!session && !sessionLoadError) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+          const secondSessionResult = await supabase.auth.getSession();
+          session = secondSessionResult.data.session;
+          sessionLoadError = secondSessionResult.error;
+        }
+
+        if (!mounted) return;
+
+        if (sessionLoadError || !session?.user?.id) {
+          if (!restoredFromCache) {
+            setSessionError('Unable to load user session.');
+          }
+          setLoadingProfile(false);
+          setLoadingData(false);
+          setIsRefreshing(false);
+          return;
+        }
+
+        const userId = session.user.id;
+
+        const { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('id,name,role,company_id')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (!mounted) return;
+
+        if (profileError || !profileData?.id) {
+          if (!restoredFromCache) {
+            setSessionError('Unable to load user session.');
+          }
+          setLoadingProfile(false);
+          setLoadingData(false);
+          setIsRefreshing(false);
+          return;
+        }
+
+        let companyId = String(profileData.company_id || '').trim();
+
+        if (!companyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .limit(1)
+            .maybeSingle();
+
+          if (!mounted) return;
+
+          if (fixedCompanyError || !fixedCompany?.id) {
+            if (!restoredFromCache) {
+              setSessionError('Unable to resolve Pezesha company.');
+            }
+            setLoadingProfile(false);
+            setLoadingData(false);
+            setIsRefreshing(false);
+            return;
+          }
+
+          companyId = String(fixedCompany.id);
+        }
+
+        const resolvedProfile: UserProfile = {
+          id: String(profileData.id),
+          name: profileData.name ?? null,
+          role: profileData.role ?? null,
+          company_id: companyId,
+        };
+
+        const role = normalizeRole(profileData.role);
+        const collectorScope = normalizeName(profileData.name);
+        const restrictToCollector = role === 'agent';
+
+        const [accountsRows, paymentsRows, ptpRows] = await Promise.all([
+          fetchAllRows('accounts', {
+            companyId,
+            collectorName: collectorScope,
+            restrictToCollector,
+          }),
+          fetchAllRows('payments', {
+            companyId,
+            collectorName: collectorScope,
+            restrictToCollector,
+          }),
+          fetchAllRows('ptps', {
+            companyId,
+            collectorName: collectorScope,
+            restrictToCollector,
+          }),
+        ]);
+
+        if (!mounted) return;
+
+        setProfile(resolvedProfile);
+        setResolvedCompanyId(companyId);
+        setAccountList(accountsRows as DashboardAccountRow[]);
+        setPayments(paymentsRows as DashboardPaymentRow[]);
+        setPtps(ptpRows as DashboardPtpRow[]);
+        setSessionError(null);
+        setDataError(null);
+        setLoadingProfile(false);
+        setLoadingData(false);
+        setIsRefreshing(false);
+        setRestoredFromCache(false);
+        setSecondaryReady(false);
+        setSecondaryLoading(true);
+      } catch (error: any) {
+        if (!mounted) return;
+
+        if (!profile && !restoredFromCache) {
+          setSessionError(error?.message || 'Unable to load user session.');
+        } else {
+          setDataError(error?.message || 'Unknown error');
+        }
+
+        setLoadingProfile(false);
+        setLoadingData(false);
+        setIsRefreshing(false);
+        setSecondaryLoading(false);
+      }
+    }
+
+    loadDashboardContextAndData();
+
+    return () => {
+      mounted = false;
+    };
+  }, [cacheHydrated]);
+
+  useEffect(() => {
+    if (!accountList.length && !payments.length && !ptps.length) return;
+
+    setSecondaryLoading(true);
+
+    const timer = window.setTimeout(() => {
+      setSecondaryReady(true);
+      setSecondaryLoading(false);
+    }, 0);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [accountList, payments, ptps]);
+
+  useEffect(() => {
+    if (!cacheHydrated) return;
+
+    try {
+      sessionStorage.setItem(
+        dashboardCacheKey,
+        JSON.stringify({
+          profile,
+          resolvedCompanyId,
+          accountList,
+          payments,
+          ptps,
+          secondaryReady,
+          savedAt: Date.now(),
+        })
+      );
+    } catch {
+      // ignore storage errors
+    }
+  }, [
+    dashboardCacheKey,
+    profile,
+    resolvedCompanyId,
+    accountList,
+    payments,
+    ptps,
+    secondaryReady,
+    cacheHydrated,
+  ]);
+
+  const paymentsByAccountId = useMemo(() => {
+    const map = new Map<
+      string,
+      Array<{ amount: number | null; paid_on: string | null; collector_name?: string | null }>
+    >();
+
+    for (const payment of payments) {
+      const key = String(payment.account_id || '');
+      if (!key) continue;
+
+      const current = map.get(key) || [];
+      current.push({
+        amount: payment.amount ?? null,
+        paid_on: payment.paid_on ?? null,
+        collector_name: payment.collector_name ?? null,
+      });
+      map.set(key, current);
+    }
+
+    return map;
+  }, [payments]);
+
+  const normalizedPtps = useMemo(() => {
+    const dedupedPtps = dedupeOperationalPtps(ptps);
+
+    return dedupedPtps.map((ptp) => {
+      const accountPayments = ptp.account_id
+        ? paymentsByAccountId.get(String(ptp.account_id)) || []
+        : [];
+
+      let effectiveStatus = ptp.status || '-';
+      let effectiveKeptAmount = Number(ptp.kept_amount || 0);
+
+      const needsDerivedOutcome =
+        ptp.status === 'Promise To Pay' && isPastDue(ptp.promised_date);
+
+      const needsDerivedKeptAmount =
+        ptp.status === 'Kept' && Number(ptp.kept_amount || 0) <= 0;
+
+      if (needsDerivedOutcome || needsDerivedKeptAmount) {
+        const derived = resolvePtpOutcomeFromPayments(ptp, accountPayments);
+
+        if (needsDerivedOutcome) {
+          effectiveStatus = derived.effectiveStatus;
+        }
+
+        if (ptp.status === 'Kept' || derived.effectiveStatus === 'Kept') {
+          effectiveKeptAmount = derived.effectiveKeptAmount;
+        }
+      }
+
+      return {
+        ...ptp,
+        effectiveStatus,
+        effectiveKeptAmount,
+      };
+    });
+  }, [ptps, paymentsByAccountId]);
+
+  const primary = useMemo(
+    () =>
+      buildPrimaryDashboardState({
+        accountList,
+        payments,
+        normalizedPtps,
+        isAgent,
+      }),
+    [accountList, payments, normalizedPtps, isAgent]
+  );
+
+  const secondary = useMemo(
+    () =>
+      buildSecondaryDashboardState({
+        accountList,
+        normalizedPtps,
+        isAgent,
+      }),
+    [accountList, normalizedPtps, isAgent]
+  );
+
+  if (
+    (loadingProfile || loadingData) &&
+    !restoredFromCache &&
+    !profile &&
+    accountList.length === 0 &&
+    ptps.length === 0
+  ) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+          {isRefreshing ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              Refreshing…
+            </span>
+          ) : null}
+        </div>
+
+        <p className="text-slate-500">Loading dashboard...</p>
+      </div>
+    );
+  }
+
+  if (sessionError && !profile && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+          {isRefreshing ? (
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              Refreshing…
+            </span>
+          ) : null}
+        </div>
+        <p className="text-red-600">{sessionError}</p>
+      </div>
+    );
+  }
+
+  if (!resolvedCompanyId && !restoredFromCache && accountList.length === 0 && ptps.length === 0) {
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold text-slate-900">Dashboard</h1>
+        <p className="text-red-600">Unable to load user session.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -1107,19 +1160,19 @@ export default function DashboardPage() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
         <KpiCard
           title={isAgent ? 'My Portfolio Outstanding' : 'Portfolio Outstanding'}
-          value={outstanding}
+          value={primary.outstanding}
           helper={isAgent ? 'Live total balance on your accounts' : 'Live total balance'}
           money
         />
         <KpiCard
           title="Collected to Date"
-          value={totalCollected}
+          value={primary.totalCollected}
           helper={isAgent ? 'Payments logged on your accounts' : 'All payments logged'}
           money
         />
         <KpiCard
           title="Collected This Month"
-          value={collectedThisMonth}
+          value={primary.collectedThisMonth}
           helper="Payments made this month"
           money
         />
@@ -1127,7 +1180,7 @@ export default function DashboardPage() {
         <Link href="/accounts?filter=open-ptps" className="block">
           <KpiCard
             title={isAgent ? 'My Open PTP Accounts' : 'Open PTP Accounts'}
-            value={openPtps}
+            value={primary.openPtps}
             helper={isAgent ? 'Assigned accounts with active promises' : 'Accounts with active promises'}
           />
         </Link>
@@ -1135,14 +1188,14 @@ export default function DashboardPage() {
         <Link href="/accounts?filter=ptps-due-today" className="block">
           <KpiCard
             title={isAgent ? 'My PTPs Due Today' : 'PTP Accounts Due Today'}
-            value={ptpsDueToday}
+            value={primary.ptpsDueToday}
             helper={isAgent ? 'Your promises due today' : 'Accounts with promises due today'}
           />
         </Link>
 
         <KpiCard
           title={isAgent ? 'My Active Allocation' : 'Active Collectors'}
-          value={isAgent ? totalAccounts : activeCollectors}
+          value={isAgent ? primary.totalAccounts : primary.activeCollectors}
           helper={isAgent ? 'Accounts currently assigned to you' : 'Collectors with assigned cases'}
         />
       </div>
@@ -1159,7 +1212,7 @@ export default function DashboardPage() {
           </div>
 
           <div className="grid gap-3 md:grid-cols-2">
-            {todayWorkQueue.map((item) => (
+            {primary.todayWorkQueue.map((item) => (
               <Link
                 key={item.title}
                 href={item.href}
@@ -1183,7 +1236,7 @@ export default function DashboardPage() {
             </div>
 
             <div className="space-y-3">
-              {alerts.map((alert) => (
+              {primary.alerts.map((alert) => (
                 <Link
                   key={alert.title}
                   href={alert.href}
@@ -1207,7 +1260,7 @@ export default function DashboardPage() {
             </div>
 
             <div className="space-y-3">
-              {quickViews.map((view) => (
+              {primary.quickViews.map((view) => (
                 <Link
                   key={view.label}
                   href={view.href}
@@ -1222,110 +1275,118 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
-        <div className="space-y-6">
-          <div>
-            <h2 className="section-title mb-3">Portfolio Analysis Summary</h2>
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <table className="min-w-full text-sm">
-                <thead className="bg-slate-50">
-                  <tr className="border-b border-slate-200">
-                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Metric</th>
-                    <th className="px-4 py-3 text-left font-semibold text-slate-700">Value</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {portfolioAnalysisGroups.flatMap((group) => [
-                    <tr key={`${group.category}-header`} className="border-b border-slate-200">
-                      <td
-                        colSpan={2}
-                        className="bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-900"
-                      >
-                        {group.category}
-                      </td>
-                    </tr>,
-                    ...group.rows.map((row) => (
-                      <tr
-                        key={`${group.category}-${row.metric}`}
-                        className="border-b border-slate-100 last:border-b-0"
-                      >
-                        <td className="px-4 py-3 text-slate-700">{row.metric}</td>
-                        <td className="px-4 py-3 font-medium text-slate-900">{row.value}</td>
-                      </tr>
-                    )),
-                  ])}
-                </tbody>
-              </table>
-            </div>
-          </div>
+      {secondaryLoading && !secondaryReady ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <p className="text-sm text-slate-500">Loading more dashboard sections…</p>
+        </div>
+      ) : null}
 
-          {!isAgent ? (
+      {secondaryReady ? (
+        <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
+          <div className="space-y-6">
             <div>
-              <h2 className="section-title mb-3">Collector Scorecard</h2>
-              <DataTable
-                headers={[
-                  'Collector',
-                  'Assigned',
-                  'Total Collected',
-                  'Open PTP Accounts',
-                  'Kept PTPs',
-                  'Broken PTPs',
-                  'PTP Kept Rate',
-                  'Callbacks',
-                ]}
-              >
-                {collectorPerformance.map((item) => (
-                  <tr key={item.collector}>
-                    <td className="px-4 py-3 font-medium">{item.collector}</td>
-                    <td className="px-4 py-3">{item.assignedAccounts}</td>
-                    <td className="px-4 py-3">{currency(item.totalCollected)}</td>
-                    <td className="px-4 py-3">{item.openPtps}</td>
-                    <td className="px-4 py-3">{item.keptPtps}</td>
-                    <td className="px-4 py-3">{item.brokenPtps}</td>
-                    <td className="px-4 py-3">{item.ptpKeptRate}</td>
-                    <td className="px-4 py-3">{item.callbacks}</td>
-                  </tr>
-                ))}
-              </DataTable>
+              <h2 className="section-title mb-3">Portfolio Analysis Summary</h2>
+              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50">
+                    <tr className="border-b border-slate-200">
+                      <th className="px-4 py-3 text-left font-semibold text-slate-700">Metric</th>
+                      <th className="px-4 py-3 text-left font-semibold text-slate-700">Value</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {secondary.portfolioAnalysisGroups.flatMap((group) => [
+                      <tr key={`${group.category}-header`} className="border-b border-slate-200">
+                        <td
+                          colSpan={2}
+                          className="bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-900"
+                        >
+                          {group.category}
+                        </td>
+                      </tr>,
+                      ...group.rows.map((row) => (
+                        <tr
+                          key={`${group.category}-${row.metric}`}
+                          className="border-b border-slate-100 last:border-b-0"
+                        >
+                          <td className="px-4 py-3 text-slate-700">{row.metric}</td>
+                          <td className="px-4 py-3 font-medium text-slate-900">{row.value}</td>
+                        </tr>
+                      )),
+                    ])}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          ) : null}
-        </div>
 
-        <div className="space-y-6">
-          <div className="card p-6">
-            <h2 className="section-title">Accounts Coverage by Product</h2>
-            <div className="mt-4">
-              <DataTable headers={['Product', 'Accounts', 'Balance']}>
-                {accountCoverage.map((row) => (
-                  <tr key={row.product}>
-                    <td className="px-4 py-3 font-medium">{row.product}</td>
-                    <td className="px-4 py-3">{row.accounts}</td>
-                    <td className="px-4 py-3">{currency(row.balance)}</td>
-                  </tr>
-                ))}
-              </DataTable>
-            </div>
+            {!isAgent ? (
+              <div>
+                <h2 className="section-title mb-3">Collector Scorecard</h2>
+                <DataTable
+                  headers={[
+                    'Collector',
+                    'Assigned',
+                    'Total Collected',
+                    'Open PTP Accounts',
+                    'Kept PTPs',
+                    'Broken PTPs',
+                    'PTP Kept Rate',
+                    'Callbacks',
+                  ]}
+                >
+                  {secondary.collectorPerformance.map((item) => (
+                    <tr key={item.collector}>
+                      <td className="px-4 py-3 font-medium">{item.collector}</td>
+                      <td className="px-4 py-3">{item.assignedAccounts}</td>
+                      <td className="px-4 py-3">{currency(item.totalCollected)}</td>
+                      <td className="px-4 py-3">{item.openPtps}</td>
+                      <td className="px-4 py-3">{item.keptPtps}</td>
+                      <td className="px-4 py-3">{item.brokenPtps}</td>
+                      <td className="px-4 py-3">{item.ptpKeptRate}</td>
+                      <td className="px-4 py-3">{item.callbacks}</td>
+                    </tr>
+                  ))}
+                </DataTable>
+              </div>
+            ) : null}
           </div>
 
-          <div className="card p-6">
-            <h2 className="section-title">Payments Coverage by Product</h2>
-            <div className="mt-4">
-              <DataTable headers={['Product', 'Payments', 'Collected', 'Coverage']}>
-                {paymentCoverage.map((row) => (
-                  <tr key={row.product}>
-                    <td className="px-4 py-3 font-medium">{row.product}</td>
-                    <td className="px-4 py-3">{row.paymentsCount}</td>
-                    <td className="px-4 py-3">{currency(row.collected)}</td>
-                    <td className="px-4 py-3">
-                      {row.hasPayments ? 'Payments logged' : 'No payments logged yet'}
-                    </td>
-                  </tr>
-                ))}
-              </DataTable>
+          <div className="space-y-6">
+            <div className="card p-6">
+              <h2 className="section-title">Accounts Coverage by Product</h2>
+              <div className="mt-4">
+                <DataTable headers={['Product', 'Accounts', 'Balance']}>
+                  {secondary.accountCoverage.map((row) => (
+                    <tr key={row.product}>
+                      <td className="px-4 py-3 font-medium">{row.product}</td>
+                      <td className="px-4 py-3">{row.accounts}</td>
+                      <td className="px-4 py-3">{currency(row.balance)}</td>
+                    </tr>
+                  ))}
+                </DataTable>
+              </div>
+            </div>
+
+            <div className="card p-6">
+              <h2 className="section-title">Payments Coverage by Product</h2>
+              <div className="mt-4">
+                <DataTable headers={['Product', 'Payments', 'Collected', 'Coverage']}>
+                  {secondary.paymentCoverage.map((row) => (
+                    <tr key={row.product}>
+                      <td className="px-4 py-3 font-medium">{row.product}</td>
+                      <td className="px-4 py-3">{row.paymentsCount}</td>
+                      <td className="px-4 py-3">{currency(row.collected)}</td>
+                      <td className="px-4 py-3">
+                        {row.hasPayments ? 'Payments logged' : 'No payments logged yet'}
+                      </td>
+                    </tr>
+                  ))}
+                </DataTable>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
