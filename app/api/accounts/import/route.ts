@@ -757,6 +757,45 @@ export async function POST(req: NextRequest) {
   let skippedCount = 0;
   let failedCount = 0;
 
+  for (const insertedAccount of insertedAccounts ?? []) {
+    const result = await assignStrategyToAccount(admin, {
+      accountId: String(insertedAccount.id),
+      productCode: insertedAccount.product_code ?? null,
+      dpd: insertedAccount.dpd ?? null,
+    });
+
+    if (!result.ok) {
+      failedCount += 1;
+      strategyResults.push({
+        accountId: insertedAccount.id,
+        status: 'failed',
+        error: result.error,
+      });
+      continue;
+    }
+
+    if (result.skipped) {
+      skippedCount += 1;
+      strategyResults.push({
+        accountId: insertedAccount.id,
+        status: 'skipped',
+        strategyId: result.strategyId,
+        strategyName: result.strategyName ?? null,
+        meta: result.meta,
+      });
+      continue;
+    }
+
+    assignedCount += 1;
+    strategyResults.push({
+      accountId: insertedAccount.id,
+      status: 'assigned',
+      strategyId: result.strategyId,
+      strategyName: result.strategyName ?? null,
+      meta: result.meta,
+    });
+  }
+
   return NextResponse.json({
     success: true,
     importedCount: insertedAccounts?.length || 0,
