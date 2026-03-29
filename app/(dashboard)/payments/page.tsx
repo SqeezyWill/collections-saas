@@ -5,7 +5,8 @@ import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
-const PAYMENTS_CACHE_PREFIX = 'payments-page-cache:v2:';
+const PAYMENTS_CACHE_PREFIX = 'payments-page-cache:v3:';
+const PAYMENTS_LAST_VISIBLE_CACHE_KEY = 'payments-page-cache:v3:last-visible';
 const PEZESHA_FALLBACK_NAME = 'Pezesha';
 const ROWS_PER_PAGE = 15;
 
@@ -44,6 +45,10 @@ function isCurrentMonth(dateValue: string | null | undefined) {
   );
 }
 
+function hasVisiblePaymentsData(paymentRows: any[], accountRows: any[]) {
+  return paymentRows.length > 0 || accountRows.length > 0;
+}
+
 export default function PaymentsPage() {
   const [loading, setLoading] = useState(true);
   const [errorMessage, setErrorMessage] = useState('');
@@ -64,7 +69,9 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     try {
-      const raw = sessionStorage.getItem(paymentsCacheKey);
+      const specificRaw = sessionStorage.getItem(paymentsCacheKey);
+      const fallbackRaw = sessionStorage.getItem(PAYMENTS_LAST_VISIBLE_CACHE_KEY);
+      const raw = specificRaw || fallbackRaw;
 
       if (!raw) {
         setCacheHydrated(true);
@@ -94,17 +101,18 @@ export default function PaymentsPage() {
 
   useEffect(() => {
     if (!cacheHydrated) return;
+    if (!profile && paymentRows.length === 0 && accountRows.length === 0) return;
 
     try {
-      sessionStorage.setItem(
-        paymentsCacheKey,
-        JSON.stringify({
-          profile,
-          paymentRows,
-          accountRows,
-          savedAt: Date.now(),
-        })
-      );
+      const payload = JSON.stringify({
+        profile,
+        paymentRows,
+        accountRows,
+        savedAt: Date.now(),
+      });
+
+      sessionStorage.setItem(paymentsCacheKey, payload);
+      sessionStorage.setItem(PAYMENTS_LAST_VISIBLE_CACHE_KEY, payload);
     } catch {
       // ignore cache errors
     }
@@ -116,7 +124,7 @@ export default function PaymentsPage() {
     async function loadPayments() {
       try {
         if (!supabase) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
             setErrorMessage('Supabase is not configured.');
             setLoading(false);
           }
@@ -125,21 +133,29 @@ export default function PaymentsPage() {
 
         const client = supabase;
 
-        if (paymentRows.length === 0 && accountRows.length === 0) {
+        if (!hasVisiblePaymentsData(paymentRows, accountRows) && !restoredFromCache) {
           setLoading(true);
         } else {
           setIsRefreshing(true);
         }
 
-        const {
-          data: { session },
-          error: sessionError,
-        } = await client.auth.getSession();
+        const firstSessionResult = await client.auth.getSession();
+        let session = firstSessionResult.data.session;
+        let sessionError = firstSessionResult.error;
+
+        if (!session && !sessionError) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+          const secondSessionResult = await client.auth.getSession();
+          session = secondSessionResult.data.session;
+          sessionError = secondSessionResult.error;
+        }
 
         if (sessionError) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
             setErrorMessage(sessionError.message || 'Unable to load user session.');
             setLoading(false);
+            setIsRefreshing(false);
+          } else if (mounted) {
             setIsRefreshing(false);
           }
           return;
@@ -147,9 +163,11 @@ export default function PaymentsPage() {
 
         const userId = session?.user?.id;
         if (!userId) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
             setErrorMessage('Unable to load user session.');
             setLoading(false);
+            setIsRefreshing(false);
+          } else if (mounted) {
             setIsRefreshing(false);
           }
           return;
@@ -162,9 +180,11 @@ export default function PaymentsPage() {
           .maybeSingle();
 
         if (profileError || !profileData?.id) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
             setErrorMessage('Unable to load user profile.');
             setLoading(false);
+            setIsRefreshing(false);
+          } else if (mounted) {
             setIsRefreshing(false);
           }
           return;
@@ -181,9 +201,11 @@ export default function PaymentsPage() {
             .maybeSingle();
 
           if (fixedCompanyError || !fixedCompany?.id) {
-            if (mounted) {
+            if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
               setErrorMessage('Unable to resolve Pezesha company.');
               setLoading(false);
+              setIsRefreshing(false);
+            } else if (mounted) {
               setIsRefreshing(false);
             }
             return;
@@ -203,10 +225,10 @@ export default function PaymentsPage() {
           .order('created_at', { ascending: false });
 
         let accountsQuery = client
-  .from('accounts')
-  .select('id,collector_name,product,balance,amount_paid,last_action_date,created_at')
-  .eq('company_id', resolvedCompanyId)
-  .order('created_at', { ascending: false });
+          .from('accounts')
+          .select('id,collector_name,product,balance,amount_paid,last_action_date,created_at')
+          .eq('company_id', resolvedCompanyId)
+          .order('created_at', { ascending: false });
 
         if (isAgent && collectorScope) {
           paymentsQuery = paymentsQuery.eq('collector_name', collectorScope);
@@ -219,18 +241,22 @@ export default function PaymentsPage() {
         ] = await Promise.all([paymentsQuery, accountsQuery]);
 
         if (paymentsError) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
             setErrorMessage(`Failed to load payments: ${paymentsError.message}`);
             setLoading(false);
+            setIsRefreshing(false);
+          } else if (mounted) {
             setIsRefreshing(false);
           }
           return;
         }
 
         if (accountsError) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
             setErrorMessage(`Failed to load payment summary accounts: ${accountsError.message}`);
             setLoading(false);
+            setIsRefreshing(false);
+          } else if (mounted) {
             setIsRefreshing(false);
           }
           return;
@@ -249,12 +275,13 @@ export default function PaymentsPage() {
           setLoading(false);
           setIsRefreshing(false);
           setRestoredFromCache(false);
-          setCurrentPage(1);
         }
       } catch (error: any) {
-        if (mounted) {
+        if (mounted && !restoredFromCache && !hasVisiblePaymentsData(paymentRows, accountRows)) {
           setErrorMessage(error?.message || 'Failed to load payments.');
           setLoading(false);
+          setIsRefreshing(false);
+        } else if (mounted) {
           setIsRefreshing(false);
         }
       }

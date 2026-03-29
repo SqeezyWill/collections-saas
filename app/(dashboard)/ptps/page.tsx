@@ -7,10 +7,16 @@ import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
 const TOP_TABLE_LIMIT = 15;
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
+const PEZESHA_FALLBACK_NAME = 'Pezesha';
+const PTPS_LAST_VISIBLE_CACHE_KEY = `ptps_page_cache_${CACHE_VERSION}:last-visible`;
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
+}
+
+function normalizeText(value: unknown) {
+  return String(value || '').trim();
 }
 
 function isToday(dateValue: string | null | undefined) {
@@ -165,6 +171,10 @@ type CachedState = {
   cachedAt: string;
 };
 
+function hasVisiblePtpData(rows: any[], allRows: any[]) {
+  return rows.length > 0 || allRows.length > 0;
+}
+
 export default function PtpsPage({
   searchParams,
 }: {
@@ -173,6 +183,8 @@ export default function PtpsPage({
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
+  const [restoredFromCache, setRestoredFromCache] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [rows, setRows] = useState<any[]>([]);
@@ -196,48 +208,115 @@ export default function PtpsPage({
     };
   }, [searchParams]);
 
+  const ptpsCacheKey = useMemo(() => {
+    const companyId = normalizeText(profile?.company_id) || 'pending-company';
+    const role = normalizeRole(profile?.role);
+    const name = normalizeText(profile?.name) || 'unknown-user';
+    return `ptps_page_cache_${CACHE_VERSION}:${companyId}:${role}:${name}`;
+  }, [profile?.company_id, profile?.role, profile?.name]);
+
+  useEffect(() => {
+    try {
+      const specificRaw = window.sessionStorage.getItem(ptpsCacheKey);
+      const fallbackRaw = window.sessionStorage.getItem(PTPS_LAST_VISIBLE_CACHE_KEY);
+      const raw = specificRaw || fallbackRaw;
+
+      if (!raw) {
+        setCacheHydrated(true);
+        return;
+      }
+
+      const parsed = JSON.parse(raw) as CachedState;
+
+      if (parsed?.profile) setProfile(parsed.profile);
+      if (Array.isArray(parsed?.rows)) setRows(parsed.rows);
+      if (Array.isArray(parsed?.allRows)) setAllRows(parsed.allRows);
+
+      if (
+        parsed?.profile ||
+        Array.isArray(parsed?.rows) ||
+        Array.isArray(parsed?.allRows)
+      ) {
+        setRestoredFromCache(true);
+        setLoading(false);
+      }
+    } catch {
+      // ignore cache read errors
+    } finally {
+      setCacheHydrated(true);
+    }
+  }, [ptpsCacheKey]);
+
+  useEffect(() => {
+    if (!cacheHydrated) return;
+    if (!profile && rows.length === 0 && allRows.length === 0) return;
+
+    try {
+      const payload: CachedState = {
+        profile,
+        rows,
+        allRows,
+        cachedAt: new Date().toISOString(),
+      };
+      const serialized = JSON.stringify(payload);
+      window.sessionStorage.setItem(ptpsCacheKey, serialized);
+      window.sessionStorage.setItem(PTPS_LAST_VISIBLE_CACHE_KEY, serialized);
+    } catch {
+      // ignore cache write errors
+    }
+  }, [ptpsCacheKey, cacheHydrated, profile, rows, allRows]);
+
   useEffect(() => {
     let mounted = true;
 
     async function loadPtps() {
       try {
         if (!supabase) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
             setErrorMessage('Supabase is not configured.');
             setLoading(false);
           }
           return;
         }
 
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
+        if (!hasVisiblePtpData(rows, allRows) && !restoredFromCache) {
+          setLoading(true);
+        } else {
+          setRefreshing(true);
+        }
 
-        const userId = session?.user?.id;
-        if (!userId) {
-          if (mounted) {
-            setErrorMessage('Unable to load user session.');
+        const firstSessionResult = await supabase.auth.getSession();
+        let session = firstSessionResult.data.session;
+        let sessionError = firstSessionResult.error;
+
+        if (!session && !sessionError) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+          const secondSessionResult = await supabase.auth.getSession();
+          session = secondSessionResult.data.session;
+          sessionError = secondSessionResult.error;
+        }
+
+        if (sessionError) {
+          if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
+            setErrorMessage(sessionError.message || 'Unable to load user session.');
             setLoading(false);
+            setRefreshing(false);
+          } else if (mounted) {
+            setRefreshing(false);
           }
           return;
         }
 
-        const cacheKey = `ptps_page_cache_${CACHE_VERSION}:${userId}`;
-
-        try {
-          const raw = window.sessionStorage.getItem(cacheKey);
-          if (raw) {
-            const parsed = JSON.parse(raw) as CachedState;
-            if (mounted && parsed?.allRows && parsed?.profile) {
-              setProfile(parsed.profile);
-              setAllRows(parsed.allRows);
-              setRows(parsed.rows || parsed.allRows);
-              setLoading(false);
-              setRefreshing(true);
-            }
+        const userId = session?.user?.id;
+        if (!userId) {
+          if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
+            setErrorMessage('Unable to load user session.');
+            setLoading(false);
+            setRefreshing(false);
+          } else if (mounted) {
+            setRefreshing(false);
           }
-        } catch {
-          // ignore cache read errors
+          return;
         }
 
         const { data: profileData, error: profileError } = await supabase
@@ -247,9 +326,11 @@ export default function PtpsPage({
           .maybeSingle();
 
         if (profileError || !profileData?.id) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
             setErrorMessage('Unable to load user profile.');
             setLoading(false);
+            setRefreshing(false);
+          } else if (mounted) {
             setRefreshing(false);
           }
           return;
@@ -261,14 +342,16 @@ export default function PtpsPage({
           const { data: fixedCompany, error: fixedCompanyError } = await supabase
             .from('companies')
             .select('id,name,code')
-            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .or(`name.eq.${PEZESHA_FALLBACK_NAME},code.eq.${PEZESHA_FALLBACK_NAME}`)
             .limit(1)
             .maybeSingle();
 
           if (fixedCompanyError || !fixedCompany?.id) {
-            if (mounted) {
+            if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
               setErrorMessage('Unable to resolve Pezesha company.');
               setLoading(false);
+              setRefreshing(false);
+            } else if (mounted) {
               setRefreshing(false);
             }
             return;
@@ -294,9 +377,11 @@ export default function PtpsPage({
         const { data: initialRows, error: initialError } = await initialQuery;
 
         if (initialError) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
             setErrorMessage(`Failed to load PTPs: ${initialError.message}`);
             setLoading(false);
+            setRefreshing(false);
+          } else if (mounted) {
             setRefreshing(false);
           }
           return;
@@ -368,9 +453,11 @@ export default function PtpsPage({
         const { data: ptpRows, error } = await rowsQuery;
 
         if (error) {
-          if (mounted) {
+          if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
             setErrorMessage(`Failed to load PTPs: ${error.message}`);
             setLoading(false);
+            setRefreshing(false);
+          } else if (mounted) {
             setRefreshing(false);
           }
           return;
@@ -484,34 +571,27 @@ export default function PtpsPage({
           setErrorMessage('');
           setLoading(false);
           setRefreshing(false);
-        }
-
-        try {
-          const payload: CachedState = {
-            profile: nextProfile,
-            rows: normalizedRows,
-            allRows: normalizedRows,
-            cachedAt: new Date().toISOString(),
-          };
-          window.sessionStorage.setItem(cacheKey, JSON.stringify(payload));
-        } catch {
-          // ignore cache write errors
+          setRestoredFromCache(false);
         }
       } catch (error: any) {
-        if (mounted) {
+        if (mounted && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
           setErrorMessage(error?.message || 'Failed to load PTPs.');
           setLoading(false);
+          setRefreshing(false);
+        } else if (mounted) {
           setRefreshing(false);
         }
       }
     }
 
-    loadPtps();
+    if (cacheHydrated) {
+      loadPtps();
+    }
 
     return () => {
       mounted = false;
     };
-  }, [searchParams]);
+  }, [searchParams, cacheHydrated]);
 
   const filteredRows = useMemo(() => {
     return allRows.filter((row) => {
@@ -678,7 +758,7 @@ export default function PtpsPage({
 
   const isAgent = normalizeRole(profile?.role) === 'agent';
 
-  if (loading) {
+  if (loading && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">PTPs</h1>
@@ -687,7 +767,7 @@ export default function PtpsPage({
     );
   }
 
-  if (errorMessage) {
+  if (errorMessage && !restoredFromCache && !hasVisiblePtpData(rows, allRows)) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">PTPs</h1>
@@ -708,6 +788,13 @@ export default function PtpsPage({
               </span>
             ) : null}
           </div>
+
+          {restoredFromCache ? (
+            <p className="mt-2 text-sm text-slate-500">
+              Restored your last PTP view while the latest data loads.
+            </p>
+          ) : null}
+
           <p className="mt-1 text-slate-500">
             {isAgent
               ? 'Live promise-to-pay activity for your assigned portfolio.'

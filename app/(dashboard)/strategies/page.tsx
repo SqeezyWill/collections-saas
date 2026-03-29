@@ -39,6 +39,28 @@ type CreateStrategyForm = {
   isActive: boolean;
 };
 
+type AuthProfile = {
+  id: string;
+  name: string | null;
+  role: string | null;
+  company_id: string | null;
+};
+
+type CachedStrategiesState = {
+  profile: AuthProfile | null;
+  strategies: StrategyRow[];
+  products: ProductRow[];
+  productCode: string;
+  mappingProductId: string;
+  mappingSelection: string[];
+  role: string;
+  savedAt: number;
+};
+
+const STRATEGIES_CACHE_PREFIX = 'strategies-page-cache:v1:';
+const STRATEGIES_LAST_VISIBLE_CACHE_KEY = 'strategies-page-cache:v1:last-visible';
+const PEZESHA_FALLBACK_NAME = 'Pezesha';
+
 async function readJsonSafe(res: Response) {
   const text = await res.text();
   if (!text) return { json: null as any, text: '' };
@@ -49,8 +71,27 @@ async function readJsonSafe(res: Response) {
   }
 }
 
+function normalizeRole(role: string | null | undefined) {
+  return String(role || '').trim().toLowerCase();
+}
+
+function normalizeText(value: unknown) {
+  return String(value || '').trim();
+}
+
+function buildStrategiesCacheKey(profile: AuthProfile | null, role: string) {
+  const companyId = normalizeText(profile?.company_id) || 'pending-company';
+  const normalizedRole = normalizeRole(role || profile?.role);
+  const name = normalizeText(profile?.name) || 'unknown-user';
+  return `${STRATEGIES_CACHE_PREFIX}${companyId}:${normalizedRole}:${name}`;
+}
+
 export default function StrategiesPage() {
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [cacheHydrated, setCacheHydrated] = useState(false);
+  const [restoredFromCache, setRestoredFromCache] = useState(false);
+
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [strategies, setStrategies] = useState<StrategyRow[]>([]);
 
@@ -63,6 +104,7 @@ export default function StrategiesPage() {
   const [mappingSaving, setMappingSaving] = useState(false);
   const [mappingMessage, setMappingMessage] = useState<string | null>(null);
   const [mappingError, setMappingError] = useState<string | null>(null);
+  const [mappingLoading, setMappingLoading] = useState(false);
 
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -77,6 +119,12 @@ export default function StrategiesPage() {
 
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [role, setRole] = useState('agent');
+  const [profile, setProfile] = useState<AuthProfile | null>(null);
+
+  const strategiesCacheKey = useMemo(
+    () => buildStrategiesCacheKey(profile, role),
+    [profile, role]
+  );
 
   async function authHeaders(includeJson = false): Promise<Record<string, string>> {
     const headers: Record<string, string> = {};
@@ -86,10 +134,22 @@ export default function StrategiesPage() {
     }
 
     if (supabase) {
-      const { data } = await supabase.auth.getSession();
-      const token = data.session?.access_token;
-      if (token) {
-        headers.Authorization = `Bearer ${token}`;
+      const firstSessionResult = await supabase.auth.getSession();
+      let session = firstSessionResult.data.session;
+      let sessionError = firstSessionResult.error;
+
+      if (!session && !sessionError) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+        const secondSessionResult = await supabase.auth.getSession();
+        session = secondSessionResult.data.session;
+        sessionError = secondSessionResult.error;
+      }
+
+      if (!sessionError) {
+        const token = session?.access_token;
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
       }
     }
 
@@ -142,22 +202,302 @@ export default function StrategiesPage() {
     });
   }
 
-  async function refreshProducts() {
-    setProductsLoading(true);
+  useEffect(() => {
     try {
-      const res = await fetch('/api/admin/products', {
-        headers: await authHeaders(),
-        cache: 'no-store',
-      });
+      const specificRaw = sessionStorage.getItem(strategiesCacheKey);
+      const fallbackRaw = sessionStorage.getItem(STRATEGIES_LAST_VISIBLE_CACHE_KEY);
+      const raw = specificRaw || fallbackRaw;
 
-      const { json, text } = await readJsonSafe(res);
-      if (!res.ok) {
-        const msg =
-          json?.error || (text ? text.slice(0, 180) : `Request failed (${res.status}) with empty body`);
-        throw new Error(msg);
+      if (!raw) {
+        setCacheHydrated(true);
+        return;
       }
 
-      const list = (json?.products ?? []) as ProductRow[];
+      const parsed = JSON.parse(raw) as CachedStrategiesState;
+
+      if (parsed?.profile) setProfile(parsed.profile);
+      if (Array.isArray(parsed?.strategies)) setStrategies(parsed.strategies);
+      if (Array.isArray(parsed?.products)) setProducts(parsed.products);
+      if (typeof parsed?.productCode === 'string') setProductCode(parsed.productCode);
+      if (typeof parsed?.mappingProductId === 'string') setMappingProductId(parsed.mappingProductId);
+      if (Array.isArray(parsed?.mappingSelection)) setMappingSelection(parsed.mappingSelection);
+      if (typeof parsed?.role === 'string') setRole(parsed.role);
+
+      if (
+        parsed?.profile ||
+        Array.isArray(parsed?.strategies) ||
+        Array.isArray(parsed?.products)
+      ) {
+        setRestoredFromCache(true);
+        setLoading(false);
+        setProductsLoading(false);
+      }
+    } catch {
+      // ignore cache read errors
+    } finally {
+      setCacheHydrated(true);
+    }
+  }, [strategiesCacheKey]);
+
+  useEffect(() => {
+    if (!cacheHydrated) return;
+    if (!profile && strategies.length === 0 && products.length === 0) return;
+
+    try {
+      const payload: CachedStrategiesState = {
+        profile,
+        strategies,
+        products,
+        productCode,
+        mappingProductId,
+        mappingSelection,
+        role,
+        savedAt: Date.now(),
+      };
+
+      const serialized = JSON.stringify(payload);
+      sessionStorage.setItem(strategiesCacheKey, serialized);
+      sessionStorage.setItem(STRATEGIES_LAST_VISIBLE_CACHE_KEY, serialized);
+    } catch {
+      // ignore cache write errors
+    }
+  }, [
+    cacheHydrated,
+    strategiesCacheKey,
+    profile,
+    strategies,
+    products,
+    productCode,
+    mappingProductId,
+    mappingSelection,
+    role,
+  ]);
+
+  async function loadProfile() {
+    if (!supabase) {
+      return {
+        ok: false as const,
+        error: 'Supabase is not configured.',
+      };
+    }
+
+    const firstSessionResult = await supabase.auth.getSession();
+    let session = firstSessionResult.data.session;
+    let sessionError = firstSessionResult.error;
+
+    if (!session && !sessionError) {
+      await new Promise((resolve) => window.setTimeout(resolve, 250));
+      const secondSessionResult = await supabase.auth.getSession();
+      session = secondSessionResult.data.session;
+      sessionError = secondSessionResult.error;
+    }
+
+    if (sessionError) {
+      return {
+        ok: false as const,
+        error: sessionError.message || 'Unable to load user session.',
+      };
+    }
+
+    const userId = session?.user?.id;
+    if (!userId) {
+      return {
+        ok: false as const,
+        error: 'Unable to load user session.',
+      };
+    }
+
+    const { data: profileData, error: profileError } = await supabase
+      .from('user_profiles')
+      .select('id,name,role,company_id')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (profileError || !profileData?.id) {
+      return {
+        ok: false as const,
+        error: profileError?.message || 'Unable to load user profile.',
+      };
+    }
+
+    let resolvedCompanyId = String(profileData.company_id || '').trim();
+
+    if (!resolvedCompanyId) {
+      const { data: fixedCompany, error: fixedCompanyError } = await supabase
+        .from('companies')
+        .select('id,name,code')
+        .or(`name.eq.${PEZESHA_FALLBACK_NAME},code.eq.${PEZESHA_FALLBACK_NAME}`)
+        .limit(1)
+        .maybeSingle();
+
+      if (fixedCompanyError || !fixedCompany?.id) {
+        return {
+          ok: false as const,
+          error: fixedCompanyError?.message || 'Unable to resolve Pezesha company.',
+        };
+      }
+
+      resolvedCompanyId = String(fixedCompany.id);
+    }
+
+    return {
+      ok: true as const,
+      profile: {
+        id: String(profileData.id),
+        name: profileData.name ?? null,
+        role: profileData.role ?? null,
+        company_id: resolvedCompanyId,
+      } as AuthProfile,
+    };
+  }
+
+  async function fetchProducts() {
+    const res = await fetch('/api/admin/products', {
+      headers: await authHeaders(),
+      cache: 'no-store',
+    });
+
+    const { json, text } = await readJsonSafe(res);
+    if (!res.ok) {
+      const msg =
+        json?.error ||
+        (text ? text.slice(0, 180) : `Request failed (${res.status}) with empty body`);
+      throw new Error(msg);
+    }
+
+    return (json?.products ?? []) as ProductRow[];
+  }
+
+  async function fetchStrategies(nextProductCode?: string) {
+    const code = (nextProductCode ?? productCode).trim();
+    const qs = code ? `?productCode=${encodeURIComponent(code)}` : '';
+
+    const res = await fetch(`/api/admin/strategies${qs}`, {
+      headers: await authHeaders(),
+      cache: 'no-store',
+    });
+
+    const { json, text } = await readJsonSafe(res);
+
+    if (!res.ok) {
+      const msg =
+        json?.error ||
+        (text ? text.slice(0, 180) : `Request failed (${res.status}) with empty body`);
+      throw new Error(msg);
+    }
+
+    return (json?.strategies ?? []) as StrategyRow[];
+  }
+
+  async function fetchMappingSelection(productId: string) {
+    if (!productId) return [];
+
+    const res = await fetch(`/api/admin/strategies?productId=${encodeURIComponent(productId)}`, {
+      headers: await authHeaders(),
+      cache: 'no-store',
+    });
+
+    const { json, text } = await readJsonSafe(res);
+    if (!res.ok) {
+      const msg =
+        json?.error ||
+        (text ? text.slice(0, 180) : `Request failed (${res.status}) with empty body`);
+      throw new Error(msg);
+    }
+
+    return ((json?.strategies ?? []) as StrategyRow[]).map((s) => s.id);
+  }
+
+  async function refreshAll(nextProductCode?: string, preserveVisible = true) {
+    if (!cacheHydrated) return;
+
+    if (!preserveVisible || (strategies.length === 0 && products.length === 0)) {
+      setLoading(true);
+      setProductsLoading(true);
+    } else {
+      setRefreshing(true);
+    }
+
+    setErrorMsg(null);
+    setMappingError(null);
+
+    try {
+      const profileResult = await loadProfile();
+
+      if (!profileResult.ok) {
+        throw new Error(profileResult.error);
+      }
+
+      const nextProfile = profileResult.profile;
+      const nextRole = normalizeRole(nextProfile.role);
+
+      setProfile(nextProfile);
+      setRole(nextRole);
+
+      const [nextProducts, nextStrategies] = await Promise.all([
+        fetchProducts(),
+        fetchStrategies(nextProductCode),
+      ]);
+
+      setProducts(nextProducts);
+      setStrategies(nextStrategies);
+
+      const selectedMappingProductId =
+        mappingProductId ||
+        (nextProducts.length > 0 ? String(nextProducts[0].id) : '');
+
+      if (!mappingProductId && selectedMappingProductId) {
+        setMappingProductId(selectedMappingProductId);
+      }
+
+      if ((nextRole === 'admin' || nextRole === 'super_admin') && selectedMappingProductId) {
+        setMappingLoading(true);
+        const nextMappingSelection = await fetchMappingSelection(selectedMappingProductId);
+        setMappingSelection(nextMappingSelection);
+        setMappingLoading(false);
+      }
+
+      setErrorMsg(null);
+      setLoading(false);
+      setProductsLoading(false);
+      setRefreshing(false);
+      setRestoredFromCache(false);
+    } catch (e: any) {
+      setErrorMsg(e?.message || 'Failed to load strategies.');
+      setLoading(false);
+      setProductsLoading(false);
+      setRefreshing(false);
+      setMappingLoading(false);
+    }
+  }
+
+  async function refreshStrategies(nextProductCode?: string) {
+    const preserveVisible = strategies.length > 0 || products.length > 0 || restoredFromCache;
+
+    if (!preserveVisible) {
+      setLoading(true);
+    } else {
+      setRefreshing(true);
+    }
+
+    setErrorMsg(null);
+
+    try {
+      const nextStrategies = await fetchStrategies(nextProductCode);
+      setStrategies(nextStrategies);
+      setLoading(false);
+      setRefreshing(false);
+    } catch (e: any) {
+      setErrorMsg(e?.message || 'Failed to load strategies.');
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
+
+  async function refreshProductsOnly() {
+    setProductsLoading(true);
+    try {
+      const list = await fetchProducts();
       setProducts(list);
 
       if (!mappingProductId && list.length > 0) {
@@ -170,35 +510,6 @@ export default function StrategiesPage() {
     }
   }
 
-  async function refreshStrategies(nextProductCode?: string) {
-    setLoading(true);
-    setErrorMsg(null);
-
-    const code = (nextProductCode ?? productCode).trim();
-    const qs = code ? `?productCode=${encodeURIComponent(code)}` : '';
-
-    try {
-      const res = await fetch(`/api/admin/strategies${qs}`, {
-        headers: await authHeaders(),
-        cache: 'no-store',
-      });
-
-      const { json, text } = await readJsonSafe(res);
-
-      if (!res.ok) {
-        const msg =
-          json?.error || (text ? text.slice(0, 180) : `Request failed (${res.status}) with empty body`);
-        throw new Error(msg);
-      }
-
-      setStrategies((json?.strategies ?? []) as StrategyRow[]);
-    } catch (e: any) {
-      setErrorMsg(e?.message || 'Failed to load strategies.');
-    } finally {
-      setLoading(false);
-    }
-  }
-
   async function loadMappingSelection(productId: string) {
     setMappingError(null);
     setMappingMessage(null);
@@ -208,57 +519,27 @@ export default function StrategiesPage() {
       return;
     }
 
+    setMappingLoading(true);
+
     try {
-      const res = await fetch(`/api/admin/strategies?productId=${encodeURIComponent(productId)}`, {
-        headers: await authHeaders(),
-        cache: 'no-store',
-      });
-
-      const { json, text } = await readJsonSafe(res);
-      if (!res.ok) {
-        const msg =
-          json?.error || (text ? text.slice(0, 180) : `Request failed (${res.status}) with empty body`);
-        throw new Error(msg);
-      }
-
-      const mapped = ((json?.strategies ?? []) as StrategyRow[]).map((s) => s.id);
+      const mapped = await fetchMappingSelection(productId);
       setMappingSelection(mapped);
     } catch (e: any) {
       setMappingError(e?.message || 'Failed to load product mappings.');
+    } finally {
+      setMappingLoading(false);
     }
   }
 
   useEffect(() => {
-    async function init() {
-      if (supabase) {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const userId = sessionData.session?.user?.id;
-
-        if (userId) {
-          const { data } = await supabase
-            .from('user_profiles')
-            .select('role')
-            .eq('id', userId)
-            .maybeSingle();
-
-          if (data?.role) {
-            setRole(String(data.role).trim().toLowerCase());
-          }
-        }
-      }
-
-      await refreshProducts();
-      await refreshStrategies('');
-    }
-
-    init();
-  }, []);
+    refreshAll('', true);
+  }, [cacheHydrated]);
 
   useEffect(() => {
-    if (mappingProductId && canManageStrategies) {
+    if (mappingProductId && canManageStrategies && cacheHydrated) {
       loadMappingSelection(mappingProductId);
     }
-  }, [mappingProductId, canManageStrategies]);
+  }, [mappingProductId, canManageStrategies, cacheHydrated]);
 
   function openAdd() {
     setSaveSuccess(null);
@@ -267,7 +548,9 @@ export default function StrategiesPage() {
 
     const preselected: string[] = [];
     if (productCode) {
-      const match = products.find((p) => String(p.code || '').toLowerCase() === productCode.toLowerCase());
+      const match = products.find(
+        (p) => String(p.code || '').toLowerCase() === productCode.toLowerCase()
+      );
       if (match?.id) preselected.push(String(match.id));
     }
     setSelectedProductIds(preselected);
@@ -316,6 +599,7 @@ export default function StrategiesPage() {
       setSaveSuccess(`Strategy created: ${json?.strategy?.name || payload.name}`);
       setIsAddOpen(false);
       await refreshStrategies();
+      await refreshProductsOnly();
       if (mappingProductId && canManageStrategies) {
         await loadMappingSelection(mappingProductId);
       }
@@ -476,7 +760,10 @@ export default function StrategiesPage() {
                         {activeProducts.map((p) => {
                           const checked = selectedProductIds.includes(p.id);
                           return (
-                            <label key={p.id} className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                            <label
+                              key={p.id}
+                              className="flex cursor-pointer items-center gap-2 text-sm text-slate-700"
+                            >
                               <input
                                 type="checkbox"
                                 checked={checked}
@@ -524,7 +811,21 @@ export default function StrategiesPage() {
 
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold text-slate-900">Strategies</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-3xl font-semibold text-slate-900">Strategies</h1>
+            {refreshing ? (
+              <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                Refreshing…
+              </span>
+            ) : null}
+          </div>
+
+          {restoredFromCache ? (
+            <p className="mt-2 text-sm text-slate-500">
+              Restored your last strategies view while the latest data loads.
+            </p>
+          ) : null}
+
           <p className="mt-1 text-slate-500">
             Manage collection strategies and choose which strategies apply to each product line.
           </p>
@@ -552,7 +853,7 @@ export default function StrategiesPage() {
 
           <button
             type="button"
-            onClick={() => refreshStrategies()}
+            onClick={() => refreshAll(productCode, true)}
             className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
           >
             Refresh
@@ -650,7 +951,10 @@ export default function StrategiesPage() {
             </div>
 
             <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600">
-              Selected strategies: <span className="font-medium">{mappingSelection.length}</span>
+              Selected strategies:{' '}
+              <span className="font-medium">
+                {mappingLoading ? 'Loading…' : mappingSelection.length}
+              </span>
             </div>
           </div>
         ) : null}
@@ -667,7 +971,9 @@ export default function StrategiesPage() {
             </div>
           </div>
 
-          {loading ? <p className="mb-3 text-sm text-slate-500">Loading strategies…</p> : null}
+          {loading && strategies.length === 0 ? (
+            <p className="mb-3 text-sm text-slate-500">Loading strategies…</p>
+          ) : null}
 
           {!loading && mappingStrategies.length === 0 ? (
             <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6">
