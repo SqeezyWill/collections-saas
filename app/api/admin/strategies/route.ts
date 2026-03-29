@@ -222,3 +222,147 @@ export async function POST(req: NextRequest) {
     },
   });
 }
+
+export async function PUT(req: NextRequest) {
+  const auth = await requireAdminRole(req);
+  if ('error' in auth) {
+    return NextResponse.json({ error: auth.error }, { status: auth.status });
+  }
+
+  if (!supabaseAdmin) {
+    return NextResponse.json({ error: 'Supabase admin not configured.' }, { status: 500 });
+  }
+
+  const body = await req.json().catch(() => ({}));
+
+  const productId = body.productId != null ? String(body.productId).trim() : '';
+  const strategyIds: string[] = Array.isArray(body.strategyIds)
+    ? uniq(body.strategyIds.map((x: any) => String(x).trim()).filter(Boolean))
+    : [];
+
+  if (!productId) {
+    return NextResponse.json({ error: 'productId is required.' }, { status: 400 });
+  }
+
+  const { data: product, error: productError } = await supabaseAdmin
+    .from(PRODUCTS_TABLE)
+    .select('id,code,name,is_active')
+    .eq('id', productId)
+    .maybeSingle();
+
+  if (productError) {
+    return NextResponse.json({ error: productError.message }, { status: 500 });
+  }
+
+  if (!product) {
+    return NextResponse.json({ error: 'Selected product was not found.' }, { status: 404 });
+  }
+
+  if (strategyIds.length > 0) {
+    const { data: existingStrategies, error: strategyCheckError } = await supabaseAdmin
+      .from(STRATEGIES_TABLE)
+      .select('id')
+      .in('id', strategyIds);
+
+    if (strategyCheckError) {
+      return NextResponse.json({ error: strategyCheckError.message }, { status: 500 });
+    }
+
+    const foundIds = new Set((existingStrategies ?? []).map((row: any) => String(row.id)));
+    const missing = strategyIds.filter((id) => !foundIds.has(id));
+
+    if (missing.length > 0) {
+      return NextResponse.json(
+        { error: `Some strategies were not found: ${missing.join(', ')}` },
+        { status: 400 }
+      );
+    }
+  }
+
+  const { data: currentMappings, error: currentMappingsError } = await supabaseAdmin
+    .from(MAP_TABLE)
+    .select('strategy_id,product_id,is_active')
+    .eq('product_id', productId);
+
+  if (currentMappingsError) {
+    return NextResponse.json({ error: currentMappingsError.message }, { status: 500 });
+  }
+
+  const currentByStrategyId = new Map<string, any>();
+  for (const row of currentMappings ?? []) {
+    currentByStrategyId.set(String(row.strategy_id), row);
+  }
+
+  const incomingSet = new Set(strategyIds);
+  const currentIds = Array.from(currentByStrategyId.keys());
+
+  const toDeactivate = currentIds.filter((id) => !incomingSet.has(id));
+  const toReactivate = strategyIds.filter((id) => {
+    const existing = currentByStrategyId.get(id);
+    return existing && existing.is_active === false;
+  });
+  const toInsert = strategyIds.filter((id) => !currentByStrategyId.has(id));
+
+  if (toDeactivate.length > 0) {
+    const { error: deactivateError } = await supabaseAdmin
+      .from(MAP_TABLE)
+      .update({ is_active: false })
+      .eq('product_id', productId)
+      .in('strategy_id', toDeactivate);
+
+    if (deactivateError) {
+      return NextResponse.json({ error: deactivateError.message }, { status: 500 });
+    }
+  }
+
+  if (toReactivate.length > 0) {
+    const { error: reactivateError } = await supabaseAdmin
+      .from(MAP_TABLE)
+      .update({ is_active: true })
+      .eq('product_id', productId)
+      .in('strategy_id', toReactivate);
+
+    if (reactivateError) {
+      return NextResponse.json({ error: reactivateError.message }, { status: 500 });
+    }
+  }
+
+  if (toInsert.length > 0) {
+    const insertRows = toInsert.map((strategyId) => ({
+      strategy_id: strategyId,
+      product_id: productId,
+      is_active: true,
+    }));
+
+    const { error: insertError } = await supabaseAdmin.from(MAP_TABLE).insert(insertRows);
+    if (insertError) {
+      return NextResponse.json({ error: insertError.message }, { status: 500 });
+    }
+  }
+
+  const { data: updatedMappings, error: updatedMappingsError } = await supabaseAdmin
+    .from(MAP_TABLE)
+    .select('strategy_id,product_id,is_active')
+    .eq('product_id', productId)
+    .eq('is_active', true);
+
+  if (updatedMappingsError) {
+    return NextResponse.json({ error: updatedMappingsError.message }, { status: 500 });
+  }
+
+  return NextResponse.json({
+    success: true,
+    product: {
+      id: String(product.id),
+      code: String(product.code || ''),
+      name: String(product.name || ''),
+    },
+    strategyIds: (updatedMappings ?? []).map((row: any) => String(row.strategy_id)),
+    summary: {
+      activeCount: (updatedMappings ?? []).length,
+      insertedCount: toInsert.length,
+      reactivatedCount: toReactivate.length,
+      deactivatedCount: toDeactivate.length,
+    },
+  });
+}
