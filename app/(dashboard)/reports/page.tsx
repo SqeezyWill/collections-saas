@@ -494,25 +494,21 @@ async function fetchAllRows(
     if (table === 'accounts') {
       query = supabase
         .from('accounts')
-        .select(
-          'id,cfid,debtor_name,account_no,balance,amount_paid,status,collector_name,product,due_date,loan_due_date,next_action_date,last_action_date,dpd,contactability,reachability,created_at,updated_at'
-        )
+        .select('*')
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .range(from, to);
     } else if (table === 'payments') {
       query = supabase
         .from('payments')
-        .select('id,account_id,amount,paid_on,collector_name,created_at')
+        .select('*')
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .range(from, to);
     } else {
       query = supabase
         .from('ptps')
-        .select(
-          'id,account_id,collector_name,promised_amount,promised_date,kept_amount,status,created_at,updated_at,is_rebooked'
-        )
+        .select('*')
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .range(from, to);
