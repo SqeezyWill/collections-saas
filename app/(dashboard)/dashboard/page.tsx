@@ -158,6 +158,36 @@ function resolvePtpOutcomeFromPayments(
   };
 }
 
+function buildOperationalPtpKey(ptp: DashboardPtpRow) {
+  const accountId = String(ptp.account_id || '').trim();
+  const promisedDate = toDateOnly(ptp.promised_date);
+  if (!accountId || !promisedDate) return String(ptp.id || '');
+  return `${accountId}::${promisedDate}`;
+}
+
+function dedupeOperationalPtps(ptps: DashboardPtpRow[]) {
+  const latestByKey = new Map<string, DashboardPtpRow>();
+
+  for (const ptp of ptps) {
+    const key = buildOperationalPtpKey(ptp);
+    const existing = latestByKey.get(key);
+
+    if (!existing) {
+      latestByKey.set(key, ptp);
+      continue;
+    }
+
+    const existingTime = new Date(existing.created_at || 0).getTime();
+    const currentTime = new Date(ptp.created_at || 0).getTime();
+
+    if (currentTime >= existingTime) {
+      latestByKey.set(key, ptp);
+    }
+  }
+
+  return Array.from(latestByKey.values());
+}
+
 async function fetchAllRows(
   table: 'accounts' | 'payments' | 'ptps',
   input: {
@@ -180,8 +210,8 @@ async function fetchAllRows(
       query = supabase
         .from('accounts')
         .select(
-  'id,balance,amount_paid,status,collector_name,product,next_action_date,last_action_date'
-)
+          'id,balance,amount_paid,status,collector_name,product,next_action_date,last_action_date'
+        )
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
         .range(from, to);
@@ -682,7 +712,9 @@ export default function DashboardPage() {
     paymentsByAccountId.set(key, current);
   }
 
-  const normalizedPtps = ptps.map((ptp) => {
+  const dedupedPtps = dedupeOperationalPtps(ptps);
+
+  const normalizedPtps = dedupedPtps.map((ptp) => {
     const accountPayments = ptp.account_id
       ? paymentsByAccountId.get(String(ptp.account_id)) || []
       : [];
