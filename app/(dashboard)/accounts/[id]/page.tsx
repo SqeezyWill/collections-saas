@@ -29,49 +29,7 @@ const ACCOUNT_ACCESS_SELECT = `
   status
 `;
 
-const ACCOUNT_DETAIL_SELECT = `
-  id,
-  company_id,
-  debtor_name,
-  identification,
-  account_no,
-  customer_id,
-  cfid,
-  collector_name,
-  primary_phone,
-  secondary_phone,
-  tertiary_phone,
-  contacts,
-  employment_status,
-  employer_name,
-  employer_details,
-  product,
-  product_code,
-  portfolio_category,
-  region,
-  score,
-  risk_segment,
-  installment_type,
-  funded_date,
-  loan_taken_date,
-  due_date,
-  loan_due_date,
-  last_installment_date,
-  duration,
-  days_late_lastinstallment,
-  total_due,
-  balance,
-  amount_paid,
-  status,
-  dpd,
-  last_pay_date,
-  last_pay_amount,
-  last_action_date,
-  next_action_date,
-  created_at,
-  uploaded_at,
-  outsource_date
-`;
+const ACCOUNT_DETAIL_SELECT = '*';
 
 const RECENT_PTPS_SELECT = `
   id,
