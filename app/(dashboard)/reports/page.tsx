@@ -250,6 +250,51 @@ function downloadCsv(filename: string, rows: Record<string, any>[]) {
   URL.revokeObjectURL(url);
 }
 
+async function downloadProtectedCsv(url: string, filename: string) {
+  if (!supabase) {
+    throw new Error('Supabase is not configured.');
+  }
+
+  const {
+    data: { session },
+    error: sessionError,
+  } = await supabase.auth.getSession();
+
+  if (sessionError || !session?.access_token) {
+    throw new Error('Unable to load authenticated session for download.');
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${session.access_token}`,
+    },
+  });
+
+  if (!response.ok) {
+    let message = 'Download failed.';
+    try {
+      const payload = await response.json();
+      message = payload?.error || message;
+    } catch {
+      // ignore json parse issues
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  URL.revokeObjectURL(objectUrl);
+}
+
 function daysUntil(dateValue: string | null | undefined) {
   const target = parseDateOnly(dateValue);
   if (!target) return null;
@@ -1530,6 +1575,32 @@ function ReportsPageClient() {
     );
   }
 
+  async function handleDownloadProtectedPtpExport() {
+    try {
+      const filename =
+        activePtpExportMonth
+          ? `ptp-performance-report_${activePtpExportMonth}.csv`
+          : 'ptp-performance-report.csv';
+
+      await downloadProtectedCsv(ptpOverviewExportHref, filename);
+    } catch (error: any) {
+      alert(error?.message || 'Failed to download PTP export.');
+    }
+  }
+
+  async function handleDownloadProtectedBrokenPtpExport() {
+    try {
+      const filename =
+        activePtpExportMonth
+          ? `broken-ptp-export_${activePtpExportMonth}.csv`
+          : 'broken-ptp-export.csv';
+
+      await downloadProtectedCsv(ptpEarlyWarningExportHref, filename);
+    } catch (error: any) {
+      alert(error?.message || 'Failed to download broken PTP export.');
+    }
+  }
+
   function renderProductChip(product: string) {
     const isActive = selectedProducts.length === 0 || selectedProducts.includes(product);
 
@@ -1656,12 +1727,13 @@ function ReportsPageClient() {
               >
                 Download Status Report
               </button>
-              <a
-                href={ptpOverviewExportHref}
+              <button
+                type="button"
+                onClick={handleDownloadProtectedPtpExport}
                 className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
                 Download PTP Export
-              </a>
+              </button>
             </>
           ) : activeTab === 'early_warning' ? (
             <>
@@ -1671,12 +1743,13 @@ function ReportsPageClient() {
               >
                 Download Early Warning Report
               </button>
-              <a
-                href={ptpEarlyWarningExportHref}
+              <button
+                type="button"
+                onClick={handleDownloadProtectedBrokenPtpExport}
                 className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
               >
                 Download Broken PTP Export
-              </a>
+              </button>
             </>
           ) : activeTab === 'roll_rates' ? (
             <button
