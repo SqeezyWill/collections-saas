@@ -9,7 +9,8 @@ import { currency } from '@/lib/utils';
 
 const PAGE_SIZE = 1000;
 const COLLECTOR_PAGE_SIZE = 15;
-const REPORTS_CACHE_PREFIX = 'reports-cache:v3:';
+const REPORTS_CACHE_PREFIX = 'reports-cache:v4:';
+const REPORTS_LAST_VISIBLE_CACHE_KEY = 'reports-cache:v4:last-visible';
 
 type AuthProfile = {
   id: string;
@@ -559,6 +560,10 @@ function buildAccountHref(input: {
   return query ? `/accounts?${query}` : '/accounts';
 }
 
+function hasVisibleReportPayload(data: ReportState) {
+  return data.accounts.length > 0 || data.payments.length > 0 || data.ptps.length > 0;
+}
+
 export default function ReportsPageWrapper() {
   return <ReportsPageClient />;
 }
@@ -573,6 +578,7 @@ function ReportsPageClient() {
   });
 
   const [profile, setProfile] = useState<AuthProfile | null>(null);
+  const [resolvedCompanyId, setResolvedCompanyId] = useState('');
   const [collectorPage, setCollectorPage] = useState(1);
   const [activeTab, setActiveTab] = useState<ActiveTab>('overview');
   const [cacheHydrated, setCacheHydrated] = useState(false);
@@ -595,15 +601,17 @@ function ReportsPageClient() {
   const drilldownRef = useRef<HTMLDivElement | null>(null);
 
   const reportsCacheKey = useMemo(() => {
-    const companyId = normalizeText(profile?.company_id) || 'pending-company';
+    const companyId = normalizeText(resolvedCompanyId || profile?.company_id) || 'pending-company';
     const role = normalizeRole(profile?.role);
     const name = normalizeText(profile?.name) || 'unknown-user';
     return `${REPORTS_CACHE_PREFIX}${companyId}:${role}:${name}`;
-  }, [profile?.company_id, profile?.role, profile?.name]);
+  }, [resolvedCompanyId, profile?.company_id, profile?.role, profile?.name]);
 
   useEffect(() => {
     try {
-      const raw = sessionStorage.getItem(reportsCacheKey);
+      const specificRaw = sessionStorage.getItem(reportsCacheKey);
+      const fallbackRaw = sessionStorage.getItem(REPORTS_LAST_VISIBLE_CACHE_KEY);
+      const raw = specificRaw || fallbackRaw;
 
       if (!raw) {
         setCacheHydrated(true);
@@ -613,6 +621,7 @@ function ReportsPageClient() {
       const parsed = JSON.parse(raw);
 
       if (parsed?.profile) setProfile(parsed.profile);
+      if (parsed?.resolvedCompanyId) setResolvedCompanyId(parsed.resolvedCompanyId);
       if (parsed?.reportData) setReportData(parsed.reportData);
       if (parsed?.activeTab) setActiveTab(parsed.activeTab);
       if (parsed?.priorityFilter) setPriorityFilter(parsed.priorityFilter);
@@ -623,7 +632,7 @@ function ReportsPageClient() {
       if (parsed?.periodEndDate) setPeriodEndDate(parsed.periodEndDate);
       if (Array.isArray(parsed?.selectedProducts)) setSelectedProducts(parsed.selectedProducts);
 
-      if (parsed?.reportData?.loaded) {
+      if (parsed?.reportData?.loaded || hasVisibleReportPayload(parsed?.reportData || reportData)) {
         setRestoredFromCache(true);
       }
     } catch {
@@ -658,30 +667,34 @@ function ReportsPageClient() {
 
   useEffect(() => {
     if (!cacheHydrated) return;
+    if (!profile?.id) return;
+    if (!reportData.loaded || reportData.error) return;
 
     try {
-      sessionStorage.setItem(
-        reportsCacheKey,
-        JSON.stringify({
-          profile,
-          reportData,
-          activeTab,
-          priorityFilter,
-          rolloverFilter,
-          collectorFilter,
-          periodWindow,
-          periodStartDate,
-          periodEndDate,
-          selectedProducts,
-          savedAt: Date.now(),
-        })
-      );
+      const payload = JSON.stringify({
+        profile,
+        resolvedCompanyId,
+        reportData,
+        activeTab,
+        priorityFilter,
+        rolloverFilter,
+        collectorFilter,
+        periodWindow,
+        periodStartDate,
+        periodEndDate,
+        selectedProducts,
+        savedAt: Date.now(),
+      });
+
+      sessionStorage.setItem(reportsCacheKey, payload);
+      sessionStorage.setItem(REPORTS_LAST_VISIBLE_CACHE_KEY, payload);
     } catch {
       // ignore cache errors
     }
   }, [
     reportsCacheKey,
     profile,
+    resolvedCompanyId,
     reportData,
     activeTab,
     priorityFilter,
@@ -701,7 +714,7 @@ function ReportsPageClient() {
 
     (async () => {
       if (!supabase) {
-        if (mounted) {
+        if (mounted && !restoredFromCache) {
           setReportData({
             accounts: [],
             payments: [],
@@ -714,109 +727,124 @@ function ReportsPageClient() {
       }
 
       try {
-        if (!reportData.loaded) {
-          setReportData((prev) => ({ ...prev, error: null }));
-        } else {
+        if (reportData.loaded || hasVisibleReportPayload(reportData) || restoredFromCache) {
           setIsRefreshing(true);
         }
 
-        const {
-          data: { session },
-          error: sessionError,
-        } = await supabase.auth.getSession();
+        const firstSessionResult = await supabase.auth.getSession();
+        let session = firstSessionResult.data.session;
+        let sessionLoadError = firstSessionResult.error;
+
+        if (!session && !sessionLoadError) {
+          await new Promise((resolve) => window.setTimeout(resolve, 250));
+          const secondSessionResult = await supabase.auth.getSession();
+          session = secondSessionResult.data.session;
+          sessionLoadError = secondSessionResult.error;
+        }
 
         if (!mounted) return;
 
-        if (sessionError) {
-          setReportData((prev) => ({
-            ...prev,
-            loaded: true,
-            error: sessionError.message || 'Unable to load user session.',
-          }));
+        if (sessionLoadError) {
+          if (!restoredFromCache && !hasVisibleReportPayload(reportData)) {
+            setReportData((prev) => ({
+              ...prev,
+              loaded: true,
+              error: sessionLoadError.message || 'Unable to load user session.',
+            }));
+          }
           setIsRefreshing(false);
           return;
         }
 
         const userId = session?.user?.id;
         if (!userId) {
-          setReportData((prev) => ({
-            ...prev,
-            loaded: true,
-            error: 'Unable to load user session.',
-          }));
+          if (!restoredFromCache && !hasVisibleReportPayload(reportData)) {
+            setReportData((prev) => ({
+              ...prev,
+              loaded: true,
+              error: 'Unable to load user session.',
+            }));
+          }
           setIsRefreshing(false);
           return;
         }
 
         const { data: userProfile, error: profileError } = await supabase
-  .from('user_profiles')
-  .select('id,name,email,company_id,role')
-  .eq('id', userId)
-  .maybeSingle();
+          .from('user_profiles')
+          .select('id,name,email,company_id,role')
+          .eq('id', userId)
+          .maybeSingle();
 
-if (!mounted) return;
+        if (!mounted) return;
 
-if (profileError || !userProfile?.id) {
-  setReportData((prev) => ({
-    ...prev,
-    loaded: true,
-    error: profileError?.message || 'Unable to load user profile.',
-  }));
-  setIsRefreshing(false);
-  return;
-}
+        if (profileError || !userProfile?.id) {
+          if (!restoredFromCache && !hasVisibleReportPayload(reportData)) {
+            setReportData((prev) => ({
+              ...prev,
+              loaded: true,
+              error: profileError?.message || 'Unable to load user profile.',
+            }));
+          }
+          setIsRefreshing(false);
+          return;
+        }
 
-let resolvedCompanyId = String(userProfile.company_id || '').trim();
+        let nextResolvedCompanyId = String(userProfile.company_id || '').trim();
 
-if (!resolvedCompanyId) {
-  const { data: fixedCompany, error: fixedCompanyError } = await supabase
-    .from('companies')
-    .select('id,name,code')
-    .or('name.eq.Pezesha,code.eq.Pezesha')
-    .limit(1)
-    .maybeSingle();
+        if (!nextResolvedCompanyId) {
+          const { data: fixedCompany, error: fixedCompanyError } = await supabase
+            .from('companies')
+            .select('id,name,code')
+            .or('name.eq.Pezesha,code.eq.Pezesha')
+            .limit(1)
+            .maybeSingle();
 
-  if (!mounted) return;
+          if (!mounted) return;
 
-  if (fixedCompanyError || !fixedCompany?.id) {
-    setReportData((prev) => ({
-      ...prev,
-      loaded: true,
-      error: fixedCompanyError?.message || 'Unable to resolve Pezesha company.',
-    }));
-    setIsRefreshing(false);
-    return;
-  }
+          if (fixedCompanyError || !fixedCompany?.id) {
+            if (!restoredFromCache && !hasVisibleReportPayload(reportData)) {
+              setReportData((prev) => ({
+                ...prev,
+                loaded: true,
+                error: fixedCompanyError?.message || 'Unable to resolve Pezesha company.',
+              }));
+            }
+            setIsRefreshing(false);
+            return;
+          }
 
-  resolvedCompanyId = String(fixedCompany.id);
-}
+          nextResolvedCompanyId = String(fixedCompany.id);
+        }
 
-setProfile({
-  ...(userProfile as AuthProfile),
-  company_id: resolvedCompanyId,
-});
+        const resolvedProfile: AuthProfile = {
+          ...(userProfile as AuthProfile),
+          company_id: nextResolvedCompanyId,
+        };
 
-const normalizedRole = normalizeRole((userProfile as any).role);
-const isAgent = normalizedRole === 'agent';
-const collectorScope = normalizeText((userProfile as any).name);
+        setProfile(resolvedProfile);
+        setResolvedCompanyId(nextResolvedCompanyId);
 
-const [accounts, payments, ptps] = await Promise.all([
-  fetchAllRows('accounts', {
-    companyId: resolvedCompanyId,
-    collectorName: collectorScope,
-    restrictToCollector: isAgent,
-  }),
-  fetchAllRows('payments', {
-    companyId: resolvedCompanyId,
-    collectorName: collectorScope,
-    restrictToCollector: isAgent,
-  }),
-  fetchAllRows('ptps', {
-    companyId: resolvedCompanyId,
-    collectorName: collectorScope,
-    restrictToCollector: isAgent,
-  }),
-]);
+        const normalizedRole = normalizeRole((userProfile as any).role);
+        const isAgent = normalizedRole === 'agent';
+        const collectorScope = normalizeText((userProfile as any).name);
+
+        const [accounts, payments, ptps] = await Promise.all([
+          fetchAllRows('accounts', {
+            companyId: nextResolvedCompanyId,
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+          fetchAllRows('payments', {
+            companyId: nextResolvedCompanyId,
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+          fetchAllRows('ptps', {
+            companyId: nextResolvedCompanyId,
+            collectorName: collectorScope,
+            restrictToCollector: isAgent,
+          }),
+        ]);
 
         if (!mounted) return;
 
@@ -832,11 +860,13 @@ const [accounts, payments, ptps] = await Promise.all([
       } catch (error: any) {
         if (!mounted) return;
 
-        setReportData((prev) => ({
-          ...prev,
-          loaded: true,
-          error: error?.message || 'Unknown error',
-        }));
+        if (!restoredFromCache && !hasVisibleReportPayload(reportData)) {
+          setReportData((prev) => ({
+            ...prev,
+            loaded: true,
+            error: error?.message || 'Unknown error',
+          }));
+        }
         setIsRefreshing(false);
       }
     })();
@@ -854,9 +884,12 @@ const [accounts, payments, ptps] = await Promise.all([
 
   useEffect(() => {
     setCollectorPage(1);
+    setDrilldownTitle('');
+    setDrilldownRows([]);
   }, [activeTab]);
 
   const { accounts, payments, ptps } = reportData;
+  const hasVisibleData = restoredFromCache || hasVisibleReportPayload(reportData);
 
   const paymentsByAccountId = useMemo(() => {
     const map = new Map<string, Array<{ amount: number | null; paid_on: string | null }>>();
@@ -917,6 +950,14 @@ const [accounts, payments, ptps] = await Promise.all([
     () =>
       Array.from(
         new Set(accounts.map((item) => normalizeText(item.product)).filter(Boolean))
+      ).sort((a, b) => String(a).localeCompare(String(b))),
+    [accounts]
+  );
+
+  const collectors = useMemo(
+    () =>
+      Array.from(
+        new Set(accounts.map((item) => normalizeCollectorName(item.collector_name)).filter(Boolean))
       ).sort((a, b) => String(a).localeCompare(String(b))),
     [accounts]
   );
@@ -1039,10 +1080,6 @@ const [accounts, payments, ptps] = await Promise.all([
       };
     });
 
-    const collectors = Array.from(
-      new Set(accounts.map((item) => normalizeCollectorName(item.collector_name)).filter(Boolean))
-    ).sort((a, b) => String(a).localeCompare(String(b)));
-
     const collectorRows = collectors.map((collector) => {
       const collectorAccounts = accounts.filter(
         (item) => normalizeCollectorName(item.collector_name) === collector
@@ -1111,7 +1148,7 @@ const [accounts, payments, ptps] = await Promise.all([
       statusRows,
       collectorRows,
     };
-  }, [activeTab, accounts, normalizedPtps, accountProducts]);
+  }, [activeTab, accounts, normalizedPtps, accountProducts, collectors]);
 
   const totalCollectorPages = useMemo(
     () => Math.max(1, Math.ceil(overviewData.collectorRows.length / COLLECTOR_PAGE_SIZE)),
@@ -1533,7 +1570,7 @@ const [accounts, payments, ptps] = await Promise.all([
     return `/api/ptps/report/export?${params.toString()}`;
   }, [collectorFilter, activePtpExportMonth]);
 
-  if (!reportData.loaded && !restoredFromCache) {
+  if (!reportData.loaded && !hasVisibleData) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Reports</h1>
@@ -1542,7 +1579,7 @@ const [accounts, payments, ptps] = await Promise.all([
     );
   }
 
-  if (reportData.error && !restoredFromCache && reportData.accounts.length === 0) {
+  if (reportData.error && !hasVisibleData) {
     return (
       <div className="space-y-4">
         <h1 className="text-3xl font-semibold">Reports</h1>
@@ -1843,7 +1880,7 @@ const [accounts, payments, ptps] = await Promise.all([
             ) : null}
           </div>
 
-          {restoredFromCache ? (
+          {hasVisibleData ? (
             <p className="mt-2 text-sm text-slate-500">
               Restored your last report view while the latest data loads.
             </p>
@@ -1852,6 +1889,12 @@ const [accounts, payments, ptps] = await Promise.all([
           <p className="mt-1 text-slate-500">
             Live reporting summary built from accounts, payments and PTP records.
           </p>
+
+          {reportData.error && hasVisibleData ? (
+            <p className="mt-2 text-sm text-amber-700">
+              Showing last visible report data while refresh retries.
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-wrap gap-3">
@@ -2362,15 +2405,11 @@ const [accounts, payments, ptps] = await Promise.all([
                     className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
                   >
                     <option value="all">All collectors</option>
-                    {Array.from(
-                      new Set(accounts.map((item) => normalizeCollectorName(item.collector_name)).filter(Boolean))
-                    )
-                      .sort((a, b) => String(a).localeCompare(String(b)))
-                      .map((collector) => (
-                        <option key={collector} value={collector}>
-                          {collector}
-                        </option>
-                      ))}
+                    {collectors.map((collector) => (
+                      <option key={collector} value={collector}>
+                        {collector}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
