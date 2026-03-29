@@ -749,46 +749,74 @@ function ReportsPageClient() {
         }
 
         const { data: userProfile, error: profileError } = await supabase
-          .from('user_profiles')
-          .select('id,name,email,company_id,role')
-          .eq('id', userId)
-          .maybeSingle();
+  .from('user_profiles')
+  .select('id,name,email,company_id,role')
+  .eq('id', userId)
+  .maybeSingle();
 
-        if (!mounted) return;
+if (!mounted) return;
 
-        if (profileError || !userProfile?.company_id) {
-          setReportData((prev) => ({
-            ...prev,
-            loaded: true,
-            error: profileError?.message || 'Your user profile has no company_id.',
-          }));
-          setIsRefreshing(false);
-          return;
-        }
+if (profileError || !userProfile?.id) {
+  setReportData((prev) => ({
+    ...prev,
+    loaded: true,
+    error: profileError?.message || 'Unable to load user profile.',
+  }));
+  setIsRefreshing(false);
+  return;
+}
 
-        setProfile(userProfile as AuthProfile);
+let resolvedCompanyId = String(userProfile.company_id || '').trim();
 
-        const normalizedRole = normalizeRole((userProfile as any).role);
-        const isAgent = normalizedRole === 'agent';
-        const collectorScope = normalizeText((userProfile as any).name);
+if (!resolvedCompanyId) {
+  const { data: fixedCompany, error: fixedCompanyError } = await supabase
+    .from('companies')
+    .select('id,name,code')
+    .or('name.eq.Pezesha,code.eq.Pezesha')
+    .limit(1)
+    .maybeSingle();
 
-        const [accounts, payments, ptps] = await Promise.all([
-          fetchAllRows('accounts', {
-            companyId: String((userProfile as any).company_id),
-            collectorName: collectorScope,
-            restrictToCollector: isAgent,
-          }),
-          fetchAllRows('payments', {
-            companyId: String((userProfile as any).company_id),
-            collectorName: collectorScope,
-            restrictToCollector: isAgent,
-          }),
-          fetchAllRows('ptps', {
-            companyId: String((userProfile as any).company_id),
-            collectorName: collectorScope,
-            restrictToCollector: isAgent,
-          }),
-        ]);
+  if (!mounted) return;
+
+  if (fixedCompanyError || !fixedCompany?.id) {
+    setReportData((prev) => ({
+      ...prev,
+      loaded: true,
+      error: fixedCompanyError?.message || 'Unable to resolve Pezesha company.',
+    }));
+    setIsRefreshing(false);
+    return;
+  }
+
+  resolvedCompanyId = String(fixedCompany.id);
+}
+
+setProfile({
+  ...(userProfile as AuthProfile),
+  company_id: resolvedCompanyId,
+});
+
+const normalizedRole = normalizeRole((userProfile as any).role);
+const isAgent = normalizedRole === 'agent';
+const collectorScope = normalizeText((userProfile as any).name);
+
+const [accounts, payments, ptps] = await Promise.all([
+  fetchAllRows('accounts', {
+    companyId: resolvedCompanyId,
+    collectorName: collectorScope,
+    restrictToCollector: isAgent,
+  }),
+  fetchAllRows('payments', {
+    companyId: resolvedCompanyId,
+    collectorName: collectorScope,
+    restrictToCollector: isAgent,
+  }),
+  fetchAllRows('ptps', {
+    companyId: resolvedCompanyId,
+    collectorName: collectorScope,
+    restrictToCollector: isAgent,
+  }),
+]);
 
         if (!mounted) return;
 
