@@ -1,12 +1,16 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { Sidebar } from '@/components/Sidebar';
 import { Topbar } from '@/components/Topbar';
 import { supabase } from '@/lib/supabase';
+
 const FIXED_COMPANY_NAME = 'Pezesha';
+const IDLE_TIMEOUT_MS = 30 * 60 * 1000;
+const WARNING_DURATION_MS = 60 * 1000;
+const WARNING_START_MS = IDLE_TIMEOUT_MS - WARNING_DURATION_MS;
 
 type UserProfile = {
   id: string;
@@ -107,6 +111,116 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     overdueCallbacks: 0,
     staleAccounts: 0,
   });
+
+  const [idleWarningOpen, setIdleWarningOpen] = useState(false);
+  const [warningCountdown, setWarningCountdown] = useState(Math.floor(WARNING_DURATION_MS / 1000));
+
+  const warningTimerRef = useRef<number | null>(null);
+  const logoutTimerRef = useRef<number | null>(null);
+  const countdownIntervalRef = useRef<number | null>(null);
+  const isLoggingOutRef = useRef(false);
+
+  function clearIdleTimers() {
+    if (warningTimerRef.current) {
+      window.clearTimeout(warningTimerRef.current);
+      warningTimerRef.current = null;
+    }
+
+    if (logoutTimerRef.current) {
+      window.clearTimeout(logoutTimerRef.current);
+      logoutTimerRef.current = null;
+    }
+
+    if (countdownIntervalRef.current) {
+      window.clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+  }
+
+  async function performIdleLogout() {
+    if (isLoggingOutRef.current) return;
+    isLoggingOutRef.current = true;
+
+    clearIdleTimers();
+    setIdleWarningOpen(false);
+
+    try {
+      if (supabase) {
+        await supabase.auth.signOut();
+      }
+    } catch (error) {
+      console.error('Idle logout error:', error);
+    } finally {
+      setProfile(null);
+      setCheckingAuth(false);
+      router.replace('/login');
+    }
+  }
+
+  function startIdleTimers() {
+    clearIdleTimers();
+    setIdleWarningOpen(false);
+    setWarningCountdown(Math.floor(WARNING_DURATION_MS / 1000));
+
+    warningTimerRef.current = window.setTimeout(() => {
+      setIdleWarningOpen(true);
+      setWarningCountdown(Math.floor(WARNING_DURATION_MS / 1000));
+
+      countdownIntervalRef.current = window.setInterval(() => {
+        setWarningCountdown((prev) => {
+          if (prev <= 1) {
+            if (countdownIntervalRef.current) {
+              window.clearInterval(countdownIntervalRef.current);
+              countdownIntervalRef.current = null;
+            }
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }, WARNING_START_MS);
+
+    logoutTimerRef.current = window.setTimeout(() => {
+      void performIdleLogout();
+    }, IDLE_TIMEOUT_MS);
+  }
+
+  function handleUserActivity() {
+    if (checkingAuth || !profile || isLoggingOutRef.current) return;
+    startIdleTimers();
+  }
+
+  useEffect(() => {
+    if (checkingAuth || !profile) {
+      clearIdleTimers();
+      setIdleWarningOpen(false);
+      return;
+    }
+
+    startIdleTimers();
+
+    const events: Array<keyof WindowEventMap> = [
+      'mousemove',
+      'mousedown',
+      'keydown',
+      'scroll',
+      'touchstart',
+      'click',
+    ];
+
+    const onActivity = () => handleUserActivity();
+
+    for (const eventName of events) {
+      window.addEventListener(eventName, onActivity, { passive: true });
+    }
+
+    return () => {
+      for (const eventName of events) {
+        window.removeEventListener(eventName, onActivity);
+      }
+      clearIdleTimers();
+    };
+  }, [checkingAuth, profile]);
 
   useEffect(() => {
     let isMounted = true;
@@ -234,9 +348,10 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         }
 
         const userProfile = {
-  ...(profileData as UserProfile),
-  company_name: FIXED_COMPANY_NAME,
-};
+          ...(profileData as UserProfile),
+          company_name: FIXED_COMPANY_NAME,
+        };
+
         const role = normalizeRole(userProfile.role);
 
         if (!isAllowedRoute(role, pathname)) {
@@ -248,20 +363,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         }
 
         if (isMounted) {
-  setProfile(userProfile);
-  setCheckingAuth(false);
-}
+          setProfile(userProfile);
+          setCheckingAuth(false);
+        }
 
-if (userProfile.company_id) {
-  await loadAttention(userProfile);
-} else {
-  setAttention({
-    dueTodayPtps: 0,
-    brokenPtps: 0,
-    overdueCallbacks: 0,
-    staleAccounts: 0,
-  });
-}
+        if (userProfile.company_id) {
+          await loadAttention(userProfile);
+        } else {
+          setAttention({
+            dueTodayPtps: 0,
+            brokenPtps: 0,
+            overdueCallbacks: 0,
+            staleAccounts: 0,
+          });
+        }
       } catch (err) {
         console.error('Dashboard layout unexpected auth error:', err);
         if (isMounted) {
@@ -278,6 +393,8 @@ if (userProfile.company_id) {
     } = client.auth.onAuthStateChange(async (_event, session) => {
       try {
         if (!session) {
+          clearIdleTimers();
+          setIdleWarningOpen(false);
           setCheckingAuth(false);
           router.replace('/login');
           return;
@@ -285,6 +402,8 @@ if (userProfile.company_id) {
 
         const userId = session.user?.id;
         if (!userId) {
+          clearIdleTimers();
+          setIdleWarningOpen(false);
           setCheckingAuth(false);
           router.replace('/login');
           return;
@@ -298,6 +417,8 @@ if (userProfile.company_id) {
 
         if (error) {
           console.error('Dashboard layout auth state profile error:', error);
+          clearIdleTimers();
+          setIdleWarningOpen(false);
           setCheckingAuth(false);
           router.replace('/login');
           return;
@@ -311,7 +432,13 @@ if (userProfile.company_id) {
           return;
         }
 
-        const nextProfile = (profileData as UserProfile) || null;
+        const nextProfile = profileData
+          ? ({
+              ...(profileData as UserProfile),
+              company_name: FIXED_COMPANY_NAME,
+            } as UserProfile)
+          : null;
+
         setProfile(nextProfile);
         setCheckingAuth(false);
 
@@ -320,6 +447,8 @@ if (userProfile.company_id) {
         }
       } catch (err) {
         console.error('Dashboard layout auth state unexpected error:', err);
+        clearIdleTimers();
+        setIdleWarningOpen(false);
         setCheckingAuth(false);
         router.replace('/login');
       }
@@ -327,6 +456,7 @@ if (userProfile.company_id) {
 
     return () => {
       isMounted = false;
+      clearIdleTimers();
       subscription.unsubscribe();
     };
   }, [router, pathname]);
@@ -351,51 +481,76 @@ if (userProfile.company_id) {
   }
 
   return (
-    <div className="flex min-h-screen bg-slate-50">
-      <Sidebar />
-      <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar />
+    <>
+      {idleWarningOpen ? (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h2 className="text-lg font-semibold text-slate-900">Session timeout warning</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              You have been inactive for a while. You will be logged out in{' '}
+              <span className="font-semibold text-slate-900">{warningCountdown}</span> second
+              {warningCountdown === 1 ? '' : 's'} unless activity resumes.
+            </p>
 
-        {profile ? (
-          <div className="border-b border-slate-200 bg-white px-6 py-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
-                Attention Items: {totalAttention}
-              </span>
-
-              <Link
-                href="/accounts?filter=ptps-due-today"
-                className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+            <div className="mt-5 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => handleUserActivity()}
+                className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
               >
-                PTPs Due Today: {attention.dueTodayPtps}
-              </Link>
-
-              <Link
-                href="/ptps?filter=broken"
-                className="rounded-full bg-red-50 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
-              >
-                Broken PTPs: {attention.brokenPtps}
-              </Link>
-
-              <Link
-                href="/accounts?status=Callback%20Requested"
-                className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100"
-              >
-                Overdue Callbacks: {attention.overdueCallbacks}
-              </Link>
-
-              <Link
-                href="/accounts"
-                className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
-              >
-                Stale Accounts: {attention.staleAccounts}
-              </Link>
+                Stay logged in
+              </button>
             </div>
           </div>
-        ) : null}
+        </div>
+      ) : null}
 
-        <main className="flex-1 p-6">{children}</main>
+      <div className="flex min-h-screen bg-slate-50">
+        <Sidebar />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <Topbar />
+
+          {profile ? (
+            <div className="border-b border-slate-200 bg-white px-6 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="rounded-full bg-slate-900 px-3 py-1 text-xs font-semibold text-white">
+                  Attention Items: {totalAttention}
+                </span>
+
+                <Link
+                  href="/accounts?filter=ptps-due-today"
+                  className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                >
+                  PTPs Due Today: {attention.dueTodayPtps}
+                </Link>
+
+                <Link
+                  href="/ptps?filter=broken"
+                  className="rounded-full bg-red-50 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-100"
+                >
+                  Broken PTPs: {attention.brokenPtps}
+                </Link>
+
+                <Link
+                  href="/accounts?status=Callback%20Requested"
+                  className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                >
+                  Overdue Callbacks: {attention.overdueCallbacks}
+                </Link>
+
+                <Link
+                  href="/accounts"
+                  className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  Stale Accounts: {attention.staleAccounts}
+                </Link>
+              </div>
+            </div>
+          ) : null}
+
+          <main className="flex-1 p-6">{children}</main>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
