@@ -159,6 +159,27 @@ function parseDateOnly(value: string | null | undefined) {
   return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 }
 
+function toDateOnly(value: string | null | undefined) {
+  if (!value) return '';
+  return String(value).slice(0, 10);
+}
+
+function isPastDue(dateValue: string | null | undefined) {
+  if (!dateValue) return false;
+  const dateOnly = toDateOnly(dateValue);
+  const today = toDateOnly(new Date().toISOString());
+  return Boolean(dateOnly) && dateOnly < today;
+}
+
+function monthKeyFromDate(value: string | null | undefined) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
 function daysBetween(start: Date, end: Date) {
   const diffMs = end.getTime() - start.getTime();
   return Math.round(diffMs / (1000 * 60 * 60 * 24));
@@ -270,6 +291,69 @@ function isUnreachableAccount(account: any) {
   );
 }
 
+function buildOperationalPtpKey(row: any) {
+  const accountId = String(row?.account_id || '').trim();
+  const promisedDate = toDateOnly(row?.promised_date);
+  if (!accountId || !promisedDate) {
+    return String(row?.id || '');
+  }
+  return `${accountId}::${promisedDate}`;
+}
+
+function dedupeOperationalRows(rows: any[]) {
+  const byKey = new Map<string, any>();
+
+  for (const row of rows) {
+    const key = buildOperationalPtpKey(row);
+    const existing = byKey.get(key);
+
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+
+    const existingTime = new Date(existing.created_at || existing.updated_at || 0).getTime();
+    const currentTime = new Date(row.created_at || row.updated_at || 0).getTime();
+
+    if (currentTime >= existingTime) {
+      byKey.set(key, row);
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => {
+    const at = new Date(a.created_at || a.updated_at || 0).getTime();
+    const bt = new Date(b.created_at || b.updated_at || 0).getTime();
+    return bt - at;
+  });
+}
+
+function resolvePtpOutcomeFromPayments(
+  ptp: any,
+  payments: Array<{ amount: number | null; paid_on: string | null }>
+) {
+  const bookedOn = toDateOnly(ptp.created_at);
+  const promisedDate = toDateOnly(ptp.promised_date);
+  const promisedAmount = Number(ptp.promised_amount || 0);
+
+  const paymentsWithinWindow = (payments ?? []).filter((payment) => {
+    const paidOn = toDateOnly(payment.paid_on);
+    if (!paidOn) return false;
+    return paidOn >= bookedOn && paidOn <= promisedDate;
+  });
+
+  const paidWithinWindow = paymentsWithinWindow.reduce(
+    (sum, payment) => sum + Number(payment.amount || 0),
+    0
+  );
+
+  const effectiveStatus = paidWithinWindow >= promisedAmount ? 'Kept' : 'Broken';
+
+  return {
+    effectiveStatus,
+    effectiveKeptAmount: effectiveStatus === 'Kept' ? paidWithinWindow : 0,
+  };
+}
+
 function getPtpStatusForAccount(accountId: string, ptps: any[]) {
   const related = ptps
     .filter((ptp) => String(ptp.account_id || '') === accountId)
@@ -282,14 +366,7 @@ function getPtpStatusForAccount(accountId: string, ptps: any[]) {
   if (!related.length) return 'No PTP';
 
   const latest = related[0];
-  const resolution = normalizeText(latest.resolution_type).toLowerCase();
-  const status = normalizeText(latest.status);
-
-  if (resolution === 'broken') return 'Broken';
-  if (resolution === 'kept') return 'Kept';
-  if (status === 'Promise To Pay') return 'Promise To Pay';
-
-  return status || 'PTP Logged';
+  return normalizeText(latest.effectiveStatus || latest.status) || 'PTP Logged';
 }
 
 function getDispositionLabel(account: any) {
@@ -681,7 +758,62 @@ function ReportsPageClient() {
     }
   }, [drilldownRows]);
 
-  const { accounts, ptps } = reportData;
+  const { accounts, payments, ptps } = reportData;
+
+  const paymentsByAccountId = useMemo(() => {
+    const map = new Map<string, Array<{ amount: number | null; paid_on: string | null }>>();
+
+    for (const payment of payments) {
+      const key = String(payment.account_id || '');
+      if (!key) continue;
+
+      const current = map.get(key) || [];
+      current.push({
+        amount: payment.amount ?? null,
+        paid_on: payment.paid_on ?? null,
+      });
+      map.set(key, current);
+    }
+
+    return map;
+  }, [payments]);
+
+  const normalizedPtps = useMemo(() => {
+    const deduped = dedupeOperationalRows(ptps);
+
+    return deduped.map((ptp) => {
+      const accountPayments = ptp.account_id
+        ? paymentsByAccountId.get(String(ptp.account_id)) || []
+        : [];
+
+      let effectiveStatus = ptp.status || '-';
+      let effectiveKeptAmount = Number(ptp.kept_amount || 0);
+
+      const needsDerivedOutcome =
+        ptp.status === 'Promise To Pay' && isPastDue(ptp.promised_date);
+
+      const needsDerivedKeptAmount =
+        ptp.status === 'Kept' && Number(ptp.kept_amount || 0) <= 0;
+
+      if (needsDerivedOutcome || needsDerivedKeptAmount) {
+        const derived = resolvePtpOutcomeFromPayments(ptp, accountPayments);
+
+        if (needsDerivedOutcome) {
+          effectiveStatus = derived.effectiveStatus;
+        }
+
+        if (ptp.status === 'Kept' || derived.effectiveStatus === 'Kept') {
+          effectiveKeptAmount = derived.effectiveKeptAmount;
+        }
+      }
+
+      return {
+        ...ptp,
+        effectiveStatus,
+        effectiveKeptAmount,
+      };
+    });
+  }, [ptps, paymentsByAccountId]);
 
   const totalBalance = accounts.reduce((sum, item) => sum + Number(item.balance || 0), 0);
 
@@ -696,16 +828,16 @@ function ReportsPageClient() {
     )
     .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
-  const openPtps = ptps.filter((item) => item.status === 'Promise To Pay').length;
-  const keptPtps = ptps.filter((item) => item.resolution_type === 'kept').length;
-  const brokenPtps = ptps.filter((item) => item.resolution_type === 'broken').length;
+  const openPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Promise To Pay').length;
+  const keptPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Kept').length;
+  const brokenPtps = normalizedPtps.filter((item) => item.effectiveStatus === 'Broken').length;
 
-  const resolvedPtps = ptps.filter(
-    (item) => item.resolution_type === 'kept' || item.resolution_type === 'broken'
+  const resolvedPtps = normalizedPtps.filter(
+    (item) => item.effectiveStatus === 'Kept' || item.effectiveStatus === 'Broken'
   ).length;
 
   const ptpKeptRate = resolvedPtps > 0 ? (keptPtps / resolvedPtps) * 100 : 0;
-  const ptpConversionRate = ptps.length > 0 ? (keptPtps / ptps.length) * 100 : 0;
+  const ptpConversionRate = normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
 
   const callbackAccounts = accounts.filter(
     (item) => item.status === 'Callback Requested'
@@ -781,20 +913,20 @@ function ReportsPageClient() {
       0
     );
 
-    const collectorPtps = ptps.filter(
+    const collectorPtps = normalizedPtps.filter(
       (item) => normalizeCollectorName(item.collector_name) === collector
     );
 
     const collectorKeptPtps = collectorPtps.filter(
-      (item) => item.resolution_type === 'kept'
+      (item) => item.effectiveStatus === 'Kept'
     ).length;
 
     const collectorBrokenPtps = collectorPtps.filter(
-      (item) => item.resolution_type === 'broken'
+      (item) => item.effectiveStatus === 'Broken'
     ).length;
 
     const collectorResolvedPtps = collectorPtps.filter(
-      (item) => item.resolution_type === 'kept' || item.resolution_type === 'broken'
+      (item) => item.effectiveStatus === 'Kept' || item.effectiveStatus === 'Broken'
     ).length;
 
     const accountsCount = collectorAccounts.length;
@@ -809,7 +941,7 @@ function ReportsPageClient() {
           isCurrentMonth(item.last_action_date || item.updated_at || item.created_at)
         )
         .reduce((sum, item) => sum + Number(item.amount_paid || 0), 0),
-      openPtps: collectorPtps.filter((item) => item.status === 'Promise To Pay').length,
+      openPtps: collectorPtps.filter((item) => item.effectiveStatus === 'Promise To Pay').length,
       keptPtps: collectorKeptPtps,
       brokenPtps: collectorBrokenPtps,
       ptpKeptRate:
@@ -847,7 +979,7 @@ function ReportsPageClient() {
 
         const currentBucket = getBucketLabel(account.dpd);
         const nextBucket = getNextBucketLabel(currentBucket);
-        const ptpStatus = getPtpStatusForAccount(String(account.id || ''), ptps);
+        const ptpStatus = getPtpStatusForAccount(String(account.id || ''), normalizedPtps);
         const disposition = getDispositionLabel(account);
         const priorityMeta = getPriorityMeta({
           account,
@@ -881,7 +1013,7 @@ function ReportsPageClient() {
         if (a.daysToRollover !== b.daysToRollover) return a.daysToRollover - b.daysToRollover;
         return b.balance - a.balance;
       });
-  }, [accounts, ptps]);
+  }, [accounts, normalizedPtps]);
 
   const filteredEarlyWarningRows = useMemo(() => {
     return earlyWarningRows.filter((row) => {
@@ -1189,6 +1321,23 @@ function ReportsPageClient() {
         };
       });
   }, [selectedProductSet, filteredAccountsByProduct]);
+
+  const currentMonthKey = useMemo(() => monthKeyFromDate(new Date().toISOString()), []);
+  const activePtpExportMonth = periodWindow === 'current_month' ? currentMonthKey : '';
+
+  const ptpOverviewExportHref = useMemo(() => {
+    const params = new URLSearchParams();
+    if (activePtpExportMonth) params.set('month', activePtpExportMonth);
+    return `/api/ptps/report/export${params.toString() ? `?${params.toString()}` : ''}`;
+  }, [activePtpExportMonth]);
+
+  const ptpEarlyWarningExportHref = useMemo(() => {
+    const params = new URLSearchParams();
+    if (collectorFilter !== 'all') params.set('collector', collectorFilter);
+    params.set('status', 'Broken');
+    if (activePtpExportMonth) params.set('month', activePtpExportMonth);
+    return `/api/ptps/report/export?${params.toString()}`;
+  }, [collectorFilter, activePtpExportMonth]);
 
   if (!reportData.loaded && !restoredFromCache) {
     return (
@@ -1507,14 +1656,28 @@ function ReportsPageClient() {
               >
                 Download Status Report
               </button>
+              <a
+                href={ptpOverviewExportHref}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Download PTP Export
+              </a>
             </>
           ) : activeTab === 'early_warning' ? (
-            <button
-              onClick={handleDownloadEarlyWarningReport}
-              className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
-            >
-              Download Early Warning Report
-            </button>
+            <>
+              <button
+                onClick={handleDownloadEarlyWarningReport}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Download Early Warning Report
+              </button>
+              <a
+                href={ptpEarlyWarningExportHref}
+                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+              >
+                Download Broken PTP Export
+              </a>
+            </>
           ) : activeTab === 'roll_rates' ? (
             <button
               onClick={handleDownloadRollRatesReport}
@@ -1858,7 +2021,7 @@ function ReportsPageClient() {
                 <p className="text-sm text-slate-500">PTP Resolution Rate</p>
                 <p className="mt-1 text-xl font-semibold text-slate-900">
                   {resolvedPtps > 0
-                    ? formatPercent((resolvedPtps / ptps.length) * 100)
+                    ? formatPercent((resolvedPtps / normalizedPtps.length) * 100)
                     : '0.0%'}
                 </p>
               </div>
