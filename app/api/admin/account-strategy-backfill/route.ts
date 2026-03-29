@@ -95,7 +95,15 @@ function getBucketMeta(dpd: number | null) {
   return {
     key: '121_plus',
     label: '121+',
-    aliases: ['121+', '121 plus', '120+', '120 plus', '121_and_above', '121 and above', 'over 120'],
+    aliases: [
+      '121+',
+      '121 plus',
+      '120+',
+      '120 plus',
+      '121_and_above',
+      '121 and above',
+      'over 120',
+    ],
   };
 }
 
@@ -111,7 +119,7 @@ async function resolveAutoStrategy(accountId: string) {
 
   const { data: acct, error: acctErr } = await supabaseAdmin
     .from(ACCOUNTS_TABLE)
-    .select('id,product_code,dpd')
+    .select('id,product_code,dpd,status')
     .eq('id', accountId)
     .maybeSingle();
 
@@ -121,6 +129,15 @@ async function resolveAutoStrategy(accountId: string) {
 
   if (!acct) {
     return { error: 'Account not found.', status: 404 as const };
+  }
+
+  const accountStatus = normalize(acct.status);
+  if (accountStatus === 'closed') {
+    return {
+      error: 'Closed account skipped.',
+      status: 400 as const,
+      skipped: true as const,
+    };
   }
 
   const productCode = normalize(acct.product_code);
@@ -225,7 +242,7 @@ export async function POST(req: NextRequest) {
 
   const { data: accounts, error: accountsErr } = await supabaseAdmin
     .from(ACCOUNTS_TABLE)
-    .select('id,product_code,dpd')
+    .select('id,product_code,dpd,status,created_at')
     .order('created_at', { ascending: false })
     .limit(limit);
 
@@ -237,17 +254,41 @@ export async function POST(req: NextRequest) {
   const results: Array<Record<string, unknown>> = [];
 
   let assignedCount = 0;
-  let alreadyAssignedCount = 0;
+  let unchangedCount = 0;
+  let reassignedCount = 0;
+  let skippedCount = 0;
   let failedCount = 0;
 
   for (const acct of rows) {
     const accountId = String(acct.id);
+
+    const resolved = await resolveAutoStrategy(accountId);
+
+    if ('error' in resolved) {
+      if ((resolved as any).skipped) {
+        skippedCount += 1;
+        results.push({
+          accountId,
+          status: 'skipped',
+          reason: resolved.error,
+        });
+      } else {
+        failedCount += 1;
+        results.push({
+          accountId,
+          status: 'failed',
+          error: resolved.error,
+        });
+      }
+      continue;
+    }
 
     const { data: existing, error: existingErr } = await supabaseAdmin
       .from(ASSIGN_TABLE)
       .select('id,strategy_id,is_active')
       .eq('account_id', accountId)
       .eq('is_active', true)
+      .order('assigned_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
@@ -261,30 +302,38 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    if (existing) {
-      alreadyAssignedCount += 1;
+    if (existing && String(existing.strategy_id) === resolved.strategyId) {
+      unchangedCount += 1;
       results.push({
         accountId,
-        status: 'skipped',
-        reason: 'Account already has an active strategy.',
+        status: 'unchanged',
+        strategyId: resolved.strategyId,
+        strategyName: resolved.meta.strategyName,
+        meta: resolved.meta,
       });
       continue;
     }
 
-    const resolved = await resolveAutoStrategy(accountId);
+    if (existing) {
+      const { error: deactivateErr } = await supabaseAdmin
+        .from(ASSIGN_TABLE)
+        .update({ is_active: false })
+        .eq('account_id', accountId)
+        .eq('is_active', true);
 
-    if ('error' in resolved) {
-      failedCount += 1;
-      results.push({
-        accountId,
-        status: 'failed',
-        error: resolved.error,
-      });
-      continue;
+      if (deactivateErr) {
+        failedCount += 1;
+        results.push({
+          accountId,
+          status: 'failed',
+          error: deactivateErr.message,
+        });
+        continue;
+      }
     }
 
     const autoNote = [
-      'Auto-assigned by product/bucket.',
+      existing ? 'Auto-reassigned by product/bucket change.' : 'Auto-assigned by product/bucket.',
       `product=${resolved.meta.productCode}`,
       `dpd=${resolved.meta.dpd ?? 'unknown'}`,
       `bucket=${resolved.meta.bucket}`,
@@ -313,21 +362,35 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    assignedCount += 1;
-    results.push({
-      accountId,
-      status: 'assigned',
-      strategyId: inserted.strategy_id,
-      strategyName: resolved.meta.strategyName,
-      meta: resolved.meta,
-    });
+    if (existing) {
+      reassignedCount += 1;
+      results.push({
+        accountId,
+        status: 'reassigned',
+        previousStrategyId: existing.strategy_id,
+        strategyId: inserted.strategy_id,
+        strategyName: resolved.meta.strategyName,
+        meta: resolved.meta,
+      });
+    } else {
+      assignedCount += 1;
+      results.push({
+        accountId,
+        status: 'assigned',
+        strategyId: inserted.strategy_id,
+        strategyName: resolved.meta.strategyName,
+        meta: resolved.meta,
+      });
+    }
   }
 
   return NextResponse.json({
     success: true,
     scannedCount: rows.length,
     assignedCount,
-    alreadyAssignedCount,
+    reassignedCount,
+    unchangedCount,
+    skippedCount,
     failedCount,
     results,
   });
