@@ -1040,33 +1040,33 @@ export default async function AccountDetailPage({ params }: PageProps) {
     redirect(`/accounts/${targetAccountId}`);
   }
 
-  let accountQuery = supabaseAdmin
+  let account: any = null;
+let error: any = null;
+
+if (isAgent && collectorScope) {
+  const scopedResult = await supabaseAdmin
     .from('accounts')
     .select(ACCOUNT_DETAIL_SELECT)
     .eq('id', id)
-    .eq('company_id', String(profile.company_id || resolvedCompanyId));
+    .eq('collector_name', collectorScope)
+    .maybeSingle();
 
-  if (isAgent && collectorScope) {
-    accountQuery = accountQuery.eq('collector_name', collectorScope);
-  }
+  account = scopedResult.data;
+  error = scopedResult.error;
+} else {
+  const adminResult = await supabaseAdmin
+    .from('accounts')
+    .select(ACCOUNT_DETAIL_SELECT)
+    .eq('id', id)
+    .maybeSingle();
 
-  let { data: account, error } = await accountQuery.maybeSingle();
+  account = adminResult.data;
+  error = adminResult.error;
+}
 
-  if ((!account || error) && isAgent) {
-    const fallback = await supabaseAdmin
-      .from('accounts')
-      .select(ACCOUNT_DETAIL_SELECT)
-      .eq('id', id)
-      .eq('company_id', String(profile.company_id || resolvedCompanyId))
-      .maybeSingle();
-
-    account = fallback.data;
-    error = fallback.error;
-  }
-
-  if (error || !account) {
-    notFound();
-  }
+if (error || !account) {
+  notFound();
+}
 
   const isClosed = isClosedStatus(account.status);
 
