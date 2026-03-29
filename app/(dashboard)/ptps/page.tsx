@@ -7,6 +7,7 @@ import { supabase } from '@/lib/supabase';
 import { currency, formatDate } from '@/lib/utils';
 
 const TOP_TABLE_LIMIT = 15;
+const CACHE_VERSION = 'v2';
 
 function normalizeRole(role: string | null | undefined) {
   return String(role || '').trim().toLowerCase();
@@ -89,6 +90,42 @@ function resolvePtpOutcomeFromPayments(
   };
 }
 
+function buildOperationalPtpKey(row: any) {
+  const accountId = String(row?.account_id || '').trim();
+  const promisedDate = toDateOnly(row?.promised_date);
+  if (!accountId || !promisedDate) {
+    return String(row?.id || '');
+  }
+  return `${accountId}::${promisedDate}`;
+}
+
+function dedupeOperationalRows(rows: any[]) {
+  const byKey = new Map<string, any>();
+
+  for (const row of rows) {
+    const key = buildOperationalPtpKey(row);
+    const existing = byKey.get(key);
+
+    if (!existing) {
+      byKey.set(key, row);
+      continue;
+    }
+
+    const existingTime = new Date(existing.created_at || 0).getTime();
+    const currentTime = new Date(row.created_at || 0).getTime();
+
+    if (currentTime >= existingTime) {
+      byKey.set(key, row);
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => {
+    const at = new Date(a.created_at || 0).getTime();
+    const bt = new Date(b.created_at || 0).getTime();
+    return bt - at;
+  });
+}
+
 type AgentSummaryRow = {
   collectorName: string;
   totalBooked: number;
@@ -121,6 +158,13 @@ type AuthProfile = {
   company_id: string | null;
 };
 
+type CachedState = {
+  profile: AuthProfile | null;
+  rows: any[];
+  allRows: any[];
+  cachedAt: string;
+};
+
 export default function PtpsPage({
   searchParams,
 }: {
@@ -128,6 +172,7 @@ export default function PtpsPage({
 }) {
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [profile, setProfile] = useState<AuthProfile | null>(null);
   const [rows, setRows] = useState<any[]>([]);
@@ -177,6 +222,24 @@ export default function PtpsPage({
           return;
         }
 
+        const cacheKey = `ptps_page_cache_${CACHE_VERSION}:${userId}`;
+
+        try {
+          const raw = window.sessionStorage.getItem(cacheKey);
+          if (raw) {
+            const parsed = JSON.parse(raw) as CachedState;
+            if (mounted && parsed?.allRows && parsed?.profile) {
+              setProfile(parsed.profile);
+              setAllRows(parsed.allRows);
+              setRows(parsed.rows || parsed.allRows);
+              setLoading(false);
+              setRefreshing(true);
+            }
+          }
+        } catch {
+          // ignore cache read errors
+        }
+
         const { data: profileData, error: profileError } = await supabase
           .from('user_profiles')
           .select('id,name,role,company_id')
@@ -187,6 +250,7 @@ export default function PtpsPage({
           if (mounted) {
             setErrorMessage('Unable to load user profile.');
             setLoading(false);
+            setRefreshing(false);
           }
           return;
         }
@@ -205,6 +269,7 @@ export default function PtpsPage({
             if (mounted) {
               setErrorMessage('Unable to resolve Pezesha company.');
               setLoading(false);
+              setRefreshing(false);
             }
             return;
           }
@@ -232,12 +297,15 @@ export default function PtpsPage({
           if (mounted) {
             setErrorMessage(`Failed to load PTPs: ${initialError.message}`);
             setLoading(false);
+            setRefreshing(false);
           }
           return;
         }
 
-        const overdueOpenPtps = (initialRows ?? []).filter(
-          (row: any) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
+        const overdueOpenPtps = dedupeOperationalRows(
+          (initialRows ?? []).filter(
+            (row: any) => row.status === 'Promise To Pay' && isPastDue(row.promised_date)
+          )
         );
 
         for (const ptp of overdueOpenPtps) {
@@ -303,12 +371,15 @@ export default function PtpsPage({
           if (mounted) {
             setErrorMessage(`Failed to load PTPs: ${error.message}`);
             setLoading(false);
+            setRefreshing(false);
           }
           return;
         }
 
+        const dedupedPtpRows = dedupeOperationalRows(ptpRows ?? []);
+
         const accountIds = Array.from(
-          new Set((ptpRows ?? []).map((row: any) => row.account_id).filter(Boolean))
+          new Set(dedupedPtpRows.map((row: any) => row.account_id).filter(Boolean))
         );
 
         const accountsById = new Map<
@@ -364,7 +435,7 @@ export default function PtpsPage({
           }
         }
 
-        const normalizedRows = (ptpRows ?? []).map((row: any) => {
+        const normalizedRows = dedupedPtpRows.map((row: any) => {
           const account = row.account_id ? accountsById.get(String(row.account_id)) : null;
           const payments = row.account_id
             ? paymentsByAccountId.get(String(row.account_id)) || []
@@ -399,21 +470,38 @@ export default function PtpsPage({
           };
         });
 
+        const nextProfile = {
+          id: String(profileData.id),
+          name: profileData.name ?? null,
+          role: profileData.role ?? null,
+          company_id: resolvedCompanyId,
+        };
+
         if (mounted) {
-          setProfile({
-            id: String(profileData.id),
-            name: profileData.name ?? null,
-            role: profileData.role ?? null,
-            company_id: resolvedCompanyId,
-          });
+          setProfile(nextProfile);
           setAllRows(normalizedRows);
           setRows(normalizedRows);
+          setErrorMessage('');
           setLoading(false);
+          setRefreshing(false);
+        }
+
+        try {
+          const payload: CachedState = {
+            profile: nextProfile,
+            rows: normalizedRows,
+            allRows: normalizedRows,
+            cachedAt: new Date().toISOString(),
+          };
+          window.sessionStorage.setItem(cacheKey, JSON.stringify(payload));
+        } catch {
+          // ignore cache write errors
         }
       } catch (error: any) {
         if (mounted) {
           setErrorMessage(error?.message || 'Failed to load PTPs.');
           setLoading(false);
+          setRefreshing(false);
         }
       }
     }
@@ -612,7 +700,14 @@ export default function PtpsPage({
     <div className="space-y-6">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold">PTPs</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-3xl font-semibold">PTPs</h1>
+            {refreshing ? (
+              <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                Refreshing…
+              </span>
+            ) : null}
+          </div>
           <p className="mt-1 text-slate-500">
             {isAgent
               ? 'Live promise-to-pay activity for your assigned portfolio.'
@@ -719,7 +814,7 @@ export default function PtpsPage({
           <div>
             <h2 className="text-lg font-semibold text-slate-900">Recent PTP Activity</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Showing {topRows.length} of {filteredRows.length} PTP records for the selected filter.
+              Showing {topRows.length} of {filteredRows.length} effective PTP records for the selected filter.
             </p>
           </div>
         </div>

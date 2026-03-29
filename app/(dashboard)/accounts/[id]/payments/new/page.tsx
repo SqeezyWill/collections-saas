@@ -24,6 +24,10 @@ function toMoney(value: unknown) {
   return Number.isFinite(num) ? num : 0;
 }
 
+function normalizeText(value: unknown) {
+  return String(value || '').trim();
+}
+
 async function savePayment(formData: FormData) {
   'use server';
 
@@ -38,8 +42,8 @@ async function savePayment(formData: FormData) {
   const amountRaw = String(formData.get('amount') || '').replace(/,/g, '').trim();
   const paidOn = String(formData.get('paidOn') || '').trim();
 
-  const paymentChannel = String(formData.get('paymentChannel') || '').trim();
-  const transactionCode = String(formData.get('transactionCode') || '').trim();
+  const paymentChannel = normalizeText(formData.get('paymentChannel'));
+  const transactionCode = normalizeText(formData.get('transactionCode'));
   const bankSlip = formData.get('bankSlip');
 
   const amount = Number(amountRaw);
@@ -81,6 +85,27 @@ async function savePayment(formData: FormData) {
     throw new Error(
       `Payment cannot exceed the remaining payable amount of ${currency(payableAmount)}.`
     );
+  }
+
+  const { data: existingDuplicatePayment, error: duplicateCheckError } = await supabase
+    .from('payments')
+    .select('id')
+    .eq('account_id', accountId)
+    .eq('paid_on', paidOn)
+    .eq('amount', amount)
+    .eq('product', product)
+    .eq('payment_channel', paymentChannel || null)
+    .eq('transaction_code', transactionCode || null)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (duplicateCheckError) {
+    throw new Error(duplicateCheckError.message);
+  }
+
+  if (existingDuplicatePayment?.id) {
+    redirect(`/accounts/${accountId}`);
   }
 
   let appliedToBalance = 0;
@@ -182,18 +207,18 @@ async function savePayment(formData: FormData) {
 
   let derivedStatus = String(account.status || 'Open').trim() || 'Open';
 
-if (newBalance <= 0 && newTotalDue <= 0) {
-  derivedStatus = 'Closed';
-} else if ((remainingOpenPtps || []).length > 0) {
-  derivedStatus = 'PTP';
-} else if (
-  normalizeStatus(account.status) === 'ptp' ||
-  normalizeStatus(account.status) === 'promise to pay' ||
-  normalizeStatus(account.status) === 'paid' ||
-  normalizeStatus(account.status) === 'closed'
-) {
-  derivedStatus = 'Open';
-}
+  if (newBalance <= 0 && newTotalDue <= 0) {
+    derivedStatus = 'Closed';
+  } else if ((remainingOpenPtps || []).length > 0) {
+    derivedStatus = 'PTP';
+  } else if (
+    normalizeStatus(account.status) === 'ptp' ||
+    normalizeStatus(account.status) === 'promise to pay' ||
+    normalizeStatus(account.status) === 'paid' ||
+    normalizeStatus(account.status) === 'closed'
+  ) {
+    derivedStatus = 'Open';
+  }
 
   const { error: accountUpdateError } = await supabase
     .from('accounts')
@@ -393,6 +418,10 @@ export default async function NewPaymentPage({ params }: PageProps) {
                   className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                 />
               </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+              If the same payment is submitted again because of lag or retry, the system will detect the duplicate and return to the account without creating another payment row.
             </div>
 
             <div className="flex flex-wrap gap-3 pt-2">

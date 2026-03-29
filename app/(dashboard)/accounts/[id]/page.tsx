@@ -4,6 +4,7 @@ import { currency, formatDate } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { AccountStrategyActions } from '@/components/AccountStrategyActions';
+import { getRequestUserProfile } from '@/lib/server-auth';
 
 type PageProps = {
   params: Promise<{ id: string }>;
@@ -246,8 +247,8 @@ function getDueState(dateValue: unknown) {
   return {
     label: `Due in ${delta} day(s)`,
     tone: 'bg-emerald-100 text-emerald-700',
-      delta,
-    };
+    delta,
+  };
 }
 
 function getPriorityMeta(account: any, effectiveDpd: number | null) {
@@ -529,6 +530,21 @@ export default async function AccountDetailPage({ params }: PageProps) {
     );
   }
 
+  const authResult = await getRequestUserProfile();
+
+  if ('error' in authResult) {
+    if (authResult.status === 401) {
+      redirect('/login');
+    }
+
+    return (
+      <div className="space-y-4">
+        <h1 className="text-3xl font-semibold">Account Workspace</h1>
+        <p className="text-red-600">{authResult.error}</p>
+      </div>
+    );
+  }
+
   const { data: accountOnly, error: accountOnlyError } = await supabaseAdmin
     .from('accounts')
     .select('*')
@@ -539,16 +555,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
     notFound();
   }
 
-  const userId = 'single-company-bypass';
-
-  let profileData: UserProfile | null = {
-    id: userId,
-    name: null,
-    role: 'super_admin',
-    company_id: String(accountOnly.company_id || '').trim() || null,
-  };
-
-  let resolvedCompanyId = String(profileData?.company_id || '').trim();
+  let resolvedCompanyId = String(authResult.company_id || '').trim();
 
   if (!resolvedCompanyId) {
     resolvedCompanyId = String(accountOnly.company_id || '').trim();
@@ -574,10 +581,13 @@ export default async function AccountDetailPage({ params }: PageProps) {
     }
   }
 
-  const profile = {
-    ...(profileData as UserProfile),
+  const profile: UserProfile = {
+    id: String(authResult.id),
+    name: authResult.name ?? null,
+    role: authResult.role ?? null,
     company_id: resolvedCompanyId,
-  } as UserProfile;
+  };
+
   const normalizedRole = normalizeRole(profile.role);
   const isAgent = normalizedRole === 'agent';
   const canManageAssignments =
@@ -754,199 +764,195 @@ export default async function AccountDetailPage({ params }: PageProps) {
   }
 
   async function saveBalanceCorrection(formData: FormData) {
-  'use server';
+    'use server';
 
-  if (!supabaseAdmin) {
-    throw new Error('Supabase admin is not configured.');
+    if (!supabaseAdmin) {
+      throw new Error('Supabase admin is not configured.');
+    }
+
+    if (!canEditBalances) {
+      throw new Error('You do not have permission to edit balances.');
+    }
+
+    const targetAccountId = String(formData.get('accountId') || '').trim();
+    const newBalanceRaw = String(formData.get('balance') || '').replace(/,/g, '').trim();
+    const newTotalDueRaw = String(formData.get('totalDue') || '').replace(/,/g, '').trim();
+    const newAmountPaidRaw = String(formData.get('amountPaid') || '').replace(/,/g, '').trim();
+    const reason = String(formData.get('reason') || '').trim();
+
+    const newBalance = Number(newBalanceRaw);
+    const newTotalDue = Number(newTotalDueRaw);
+    const newAmountPaid = Number(newAmountPaidRaw);
+
+    if (!targetAccountId) {
+      throw new Error('Missing account id.');
+    }
+
+    if (!Number.isFinite(newBalance) || newBalance < 0) {
+      throw new Error('Balance must be a valid number greater than or equal to 0.');
+    }
+
+    if (!Number.isFinite(newTotalDue) || newTotalDue < 0) {
+      throw new Error('Total due must be a valid number greater than or equal to 0.');
+    }
+
+    if (!Number.isFinite(newAmountPaid) || newAmountPaid < 0) {
+      throw new Error('Amount paid must be a valid number greater than or equal to 0.');
+    }
+
+    if (!reason) {
+      throw new Error('Please provide a reason for the account correction.');
+    }
+
+    const { data: currentAccount, error: readError } = await supabaseAdmin
+      .from('accounts')
+      .select('id,company_id,balance,total_due,amount_paid')
+      .eq('id', targetAccountId)
+      .maybeSingle();
+
+    if (readError || !currentAccount) {
+      throw new Error(readError?.message || 'Account not found.');
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { error: updateError } = await supabaseAdmin
+      .from('accounts')
+      .update({
+        balance: newBalance,
+        total_due: newTotalDue,
+        amount_paid: newAmountPaid,
+        last_action_date: today,
+      })
+      .eq('id', targetAccountId);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    await supabaseAdmin.from('notes').insert({
+      company_id: currentAccount.company_id,
+      account_id: targetAccountId,
+      created_by_name: 'System User',
+      body: [
+        'Admin account totals correction applied.',
+        `Previous Balance: ${currency(Number(currentAccount.balance || 0))}`,
+        `New Balance: ${currency(newBalance)}`,
+        `Previous Total Due: ${currency(Number(currentAccount.total_due || 0))}`,
+        `New Total Due: ${currency(newTotalDue)}`,
+        `Previous Amount Paid: ${currency(Number(currentAccount.amount_paid || 0))}`,
+        `New Amount Paid: ${currency(newAmountPaid)}`,
+        `Reason: ${reason}`,
+      ].join(' | '),
+    });
+
+    redirect(`/accounts/${targetAccountId}`);
   }
 
-  if (!canEditBalances) {
-    throw new Error('You do not have permission to edit balances.');
+  async function reversePayment(formData: FormData) {
+    'use server';
+
+    if (!supabaseAdmin) {
+      throw new Error('Supabase admin is not configured.');
+    }
+
+    if (!canEditBalances) {
+      throw new Error('You do not have permission to reverse payments.');
+    }
+
+    const targetAccountId = String(formData.get('accountId') || '').trim();
+    const paymentId = String(formData.get('paymentId') || '').trim();
+    const reason = String(formData.get('reason') || '').trim();
+
+    if (!targetAccountId || !paymentId) {
+      throw new Error('Missing account or payment id.');
+    }
+
+    if (!reason) {
+      throw new Error('Please provide a reason for unlogging the payment.');
+    }
+
+    const { data: payment, error: paymentError } = await supabaseAdmin
+      .from('payments')
+      .select('id, account_id, amount, paid_on, product')
+      .eq('id', paymentId)
+      .eq('account_id', targetAccountId)
+      .maybeSingle();
+
+    if (paymentError || !payment) {
+      throw new Error(paymentError?.message || 'Payment not found.');
+    }
+
+    const { data: currentAccount, error: accountError } = await supabaseAdmin
+      .from('accounts')
+      .select('id, company_id, balance, total_due, amount_paid, last_action_date')
+      .eq('id', targetAccountId)
+      .maybeSingle();
+
+    if (accountError || !currentAccount) {
+      throw new Error(accountError?.message || 'Account not found.');
+    }
+
+    const paymentAmount = Number(payment.amount || 0);
+    const currentBalance = Number(currentAccount.balance || 0);
+    const currentTotalDue = Number(currentAccount.total_due || 0);
+    const currentAmountPaid = Number(currentAccount.amount_paid || 0);
+
+    const updatedAmountPaid = Math.max(0, currentAmountPaid - paymentAmount);
+
+    let newBalance = currentBalance;
+    let newTotalDue = currentTotalDue;
+
+    if (currentBalance > 0) {
+      newBalance = currentBalance + paymentAmount;
+    } else {
+      newTotalDue = currentTotalDue + paymentAmount;
+    }
+
+    const { error: deleteError } = await supabaseAdmin
+      .from('payments')
+      .delete()
+      .eq('id', paymentId);
+
+    if (deleteError) {
+      throw new Error(deleteError.message);
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+
+    const { error: updateError } = await supabaseAdmin
+      .from('accounts')
+      .update({
+        amount_paid: updatedAmountPaid,
+        balance: newBalance,
+        total_due: newTotalDue,
+        last_action_date: today,
+      })
+      .eq('id', targetAccountId);
+
+    if (updateError) {
+      throw new Error(updateError.message);
+    }
+
+    await supabaseAdmin.from('notes').insert({
+      company_id: currentAccount.company_id,
+      account_id: targetAccountId,
+      created_by_name: 'System User',
+      body: [
+        'Admin payment reversal applied.',
+        `Removed Payment: ${currency(paymentAmount)}`,
+        `Payment Date: ${payment.paid_on || '-'}`,
+        `Product: ${payment.product || '-'}`,
+        `New Amount Paid: ${currency(updatedAmountPaid)}`,
+        `New Balance: ${currency(newBalance)}`,
+        `New Total Due: ${currency(newTotalDue)}`,
+        `Reason: ${reason}`,
+      ].join(' | '),
+    });
+
+    redirect(`/accounts/${targetAccountId}`);
   }
 
-  const targetAccountId = String(formData.get('accountId') || '').trim();
-  const newBalanceRaw = String(formData.get('balance') || '').replace(/,/g, '').trim();
-  const newTotalDueRaw = String(formData.get('totalDue') || '').replace(/,/g, '').trim();
-  const newAmountPaidRaw = String(formData.get('amountPaid') || '').replace(/,/g, '').trim();
-  const reason = String(formData.get('reason') || '').trim();
-
-  const newBalance = Number(newBalanceRaw);
-  const newTotalDue = Number(newTotalDueRaw);
-  const newAmountPaid = Number(newAmountPaidRaw);
-
-  if (!targetAccountId) {
-    throw new Error('Missing account id.');
-  }
-
-  if (!Number.isFinite(newBalance) || newBalance < 0) {
-    throw new Error('Balance must be a valid number greater than or equal to 0.');
-  }
-
-  if (!Number.isFinite(newTotalDue) || newTotalDue < 0) {
-    throw new Error('Total due must be a valid number greater than or equal to 0.');
-  }
-
-  if (!Number.isFinite(newAmountPaid) || newAmountPaid < 0) {
-    throw new Error('Amount paid must be a valid number greater than or equal to 0.');
-  }
-
-  if (!reason) {
-    throw new Error('Please provide a reason for the account correction.');
-  }
-
-  const { data: currentAccount, error: readError } = await supabaseAdmin
-    .from('accounts')
-    .select('id,company_id,balance,total_due,amount_paid')
-    .eq('id', targetAccountId)
-    .maybeSingle();
-
-  if (readError || !currentAccount) {
-    throw new Error(readError?.message || 'Account not found.');
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-
-  const { error: updateError } = await supabaseAdmin
-    .from('accounts')
-    .update({
-      balance: newBalance,
-      total_due: newTotalDue,
-      amount_paid: newAmountPaid,
-      last_action_date: today,
-    })
-    .eq('id', targetAccountId);
-
-  if (updateError) {
-    throw new Error(updateError.message);
-  }
-
-  await supabaseAdmin.from('notes').insert({
-    company_id: currentAccount.company_id,
-    account_id: targetAccountId,
-    created_by_name: 'System User',
-    body: [
-      'Admin account totals correction applied.',
-      `Previous Balance: ${currency(Number(currentAccount.balance || 0))}`,
-      `New Balance: ${currency(newBalance)}`,
-      `Previous Total Due: ${currency(Number(currentAccount.total_due || 0))}`,
-      `New Total Due: ${currency(newTotalDue)}`,
-      `Previous Amount Paid: ${currency(Number(currentAccount.amount_paid || 0))}`,
-      `New Amount Paid: ${currency(newAmountPaid)}`,
-      `Reason: ${reason}`,
-    ].join(' | '),
-  });
-
-  redirect(`/accounts/${targetAccountId}`);
-}
-
-async function reversePayment(formData: FormData) {
-  'use server';
-
-  if (!supabaseAdmin) {
-    throw new Error('Supabase admin is not configured.');
-  }
-
-  if (!canEditBalances) {
-    throw new Error('You do not have permission to reverse payments.');
-  }
-
-  const targetAccountId = String(formData.get('accountId') || '').trim();
-  const paymentId = String(formData.get('paymentId') || '').trim();
-  const reason = String(formData.get('reason') || '').trim();
-
-  if (!targetAccountId || !paymentId) {
-    throw new Error('Missing account or payment id.');
-  }
-
-  if (!reason) {
-    throw new Error('Please provide a reason for unlogging the payment.');
-  }
-
-  const { data: payment, error: paymentError } = await supabaseAdmin
-    .from('payments')
-    .select('id, account_id, amount, paid_on, product')
-    .eq('id', paymentId)
-    .eq('account_id', targetAccountId)
-    .maybeSingle();
-
-  if (paymentError || !payment) {
-    throw new Error(paymentError?.message || 'Payment not found.');
-  }
-
-  const { data: currentAccount, error: accountError } = await supabaseAdmin
-    .from('accounts')
-    .select('id, company_id, balance, total_due, amount_paid, last_action_date')
-    .eq('id', targetAccountId)
-    .maybeSingle();
-
-  if (accountError || !currentAccount) {
-    throw new Error(accountError?.message || 'Account not found.');
-  }
-
-  const paymentAmount = Number(payment.amount || 0);
-  const currentBalance = Number(currentAccount.balance || 0);
-  const currentTotalDue = Number(currentAccount.total_due || 0);
-  const currentAmountPaid = Number(currentAccount.amount_paid || 0);
-
-  const updatedAmountPaid = Math.max(0, currentAmountPaid - paymentAmount);
-
-  // Safe restoration rule:
-  // If balance currently has value, restore there first.
-  // If balance is already zero, restore into total_due.
-  // Admin can still fine-tune all totals from the correction section if needed.
-  let newBalance = currentBalance;
-  let newTotalDue = currentTotalDue;
-
-  if (currentBalance > 0) {
-    newBalance = currentBalance + paymentAmount;
-  } else {
-    newTotalDue = currentTotalDue + paymentAmount;
-  }
-
-  const { error: deleteError } = await supabaseAdmin
-    .from('payments')
-    .delete()
-    .eq('id', paymentId);
-
-  if (deleteError) {
-    throw new Error(deleteError.message);
-  }
-
-  const today = new Date().toISOString().slice(0, 10);
-
-  const { error: updateError } = await supabaseAdmin
-    .from('accounts')
-    .update({
-      amount_paid: updatedAmountPaid,
-      balance: newBalance,
-      total_due: newTotalDue,
-      last_action_date: today,
-    })
-    .eq('id', targetAccountId);
-
-  if (updateError) {
-    throw new Error(updateError.message);
-  }
-
-  await supabaseAdmin.from('notes').insert({
-    company_id: currentAccount.company_id,
-    account_id: targetAccountId,
-    created_by_name: 'System User',
-    body: [
-      'Admin payment reversal applied.',
-      `Removed Payment: ${currency(paymentAmount)}`,
-      `Payment Date: ${payment.paid_on || '-'}`,
-      `Product: ${payment.product || '-'}`,
-      `New Amount Paid: ${currency(updatedAmountPaid)}`,
-      `New Balance: ${currency(newBalance)}`,
-      `New Total Due: ${currency(newTotalDue)}`,
-      `Reason: ${reason}`,
-    ].join(' | '),
-  });
-
-  redirect(`/accounts/${targetAccountId}`);
-}
-  
   let accountQuery = supabaseAdmin
     .from('accounts')
     .select('*')
@@ -1123,9 +1129,9 @@ async function reversePayment(formData: FormData) {
     { label: 'Amount Paid', value: currency(Number(account.amount_paid || 0)) },
     { label: 'Status', value: detailValue(account.status) },
     {
-  label: 'Current / Effective DPD',
-  value: isClosed ? 'Closed' : detailValue(effectiveDpd),
-},
+      label: 'Current / Effective DPD',
+      value: isClosed ? 'Closed' : detailValue(effectiveDpd),
+    },
     { label: 'Current Bucket', value: bucketLabel },
     { label: 'Last Pay Date', value: formatDate(account.last_pay_date) },
     { label: 'Last Payment Amount', value: currency(Number(account.last_pay_amount || 0)) },
@@ -1260,42 +1266,42 @@ async function reversePayment(formData: FormData) {
             <input type="hidden" name="accountId" value={account.id} />
 
             <div className="grid gap-4 md:grid-cols-3">
-  <div>
-    <label className="mb-2 block text-sm font-medium text-slate-700">Balance</label>
-    <input
-      type="number"
-      name="balance"
-      step="0.01"
-      min="0"
-      defaultValue={Number(account.balance || 0)}
-      className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-    />
-  </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Balance</label>
+                <input
+                  type="number"
+                  name="balance"
+                  step="0.01"
+                  min="0"
+                  defaultValue={Number(account.balance || 0)}
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
 
-  <div>
-    <label className="mb-2 block text-sm font-medium text-slate-700">Total Due</label>
-    <input
-      type="number"
-      name="totalDue"
-      step="0.01"
-      min="0"
-      defaultValue={Number(account.total_due || 0)}
-      className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-    />
-  </div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Total Due</label>
+                <input
+                  type="number"
+                  name="totalDue"
+                  step="0.01"
+                  min="0"
+                  defaultValue={Number(account.total_due || 0)}
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
 
-  <div>
-    <label className="mb-2 block text-sm font-medium text-slate-700">Amount Paid</label>
-    <input
-      type="number"
-      name="amountPaid"
-      step="0.01"
-      min="0"
-      defaultValue={Number(account.amount_paid || 0)}
-      className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-    />
-  </div>
-</div>
+              <div>
+                <label className="mb-2 block text-sm font-medium text-slate-700">Amount Paid</label>
+                <input
+                  type="number"
+                  name="amountPaid"
+                  step="0.01"
+                  min="0"
+                  defaultValue={Number(account.amount_paid || 0)}
+                  className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                />
+              </div>
+            </div>
 
             <div>
               <label className="mb-2 block text-sm font-medium text-slate-700">Reason for correction</label>
@@ -1357,62 +1363,67 @@ async function reversePayment(formData: FormData) {
 
       {account.customer_id ? (
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-lg font-semibold text-slate-900">Other Facilities for This Customer</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                {isAgent
-                  ? `Other visible accounts in your portfolio linked to customer ID ${account.customer_id}.`
-                  : `Other accounts linked to customer ID ${account.customer_id}.`}
-              </p>
-            </div>
-          </div>
+          <details className="group" open={false}>
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Other Facilities for This Customer</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  {isAgent
+                    ? `Other visible accounts in your portfolio linked to customer ID ${account.customer_id}.`
+                    : `Other accounts linked to customer ID ${account.customer_id}.`}
+                </p>
+              </div>
+              <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 group-open:bg-slate-900 group-open:text-white">
+                Expand
+              </span>
+            </summary>
 
-          <div className="mt-4">
-            {relatedFacilities.length > 0 ? (
-              <div className="overflow-x-auto rounded-2xl border border-slate-200">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-left text-slate-600">
-                    <tr>
-                      <th className="px-4 py-3">Debtor</th>
-                      <th className="px-4 py-3">Loan ID</th>
-                      <th className="px-4 py-3">Product</th>
-                      <th className="px-4 py-3">Portfolio Category</th>
-                      <th className="px-4 py-3">Balance</th>
-                      <th className="px-4 py-3">Status</th>
-                      <th className="px-4 py-3">DPD</th>
-                      <th className="px-4 py-3">Open</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {relatedFacilities.map((facility: any) => (
-                      <tr key={facility.id} className="border-t border-slate-200">
-                        <td className="px-4 py-3">{facility.debtor_name || '-'}</td>
-                        <td className="px-4 py-3">{facility.account_no || '-'}</td>
-                        <td className="px-4 py-3">{facility.product || '-'}</td>
-                        <td className="px-4 py-3">{facility.portfolio_category || '-'}</td>
-                        <td className="px-4 py-3">{currency(Number(facility.balance || 0))}</td>
-                        <td className="px-4 py-3">{facility.status || '-'}</td>
-                        <td className="px-4 py-3">{detailValue(facility.dpd)}</td>
-                        <td className="px-4 py-3">
-                          <Link
-                            href={`/accounts/${facility.id}`}
-                            className="text-sm font-medium text-slate-700 hover:text-slate-900 hover:underline"
-                          >
-                            View account
-                          </Link>
-                        </td>
+            <div className="mt-4">
+              {relatedFacilities.length > 0 ? (
+                <div className="overflow-x-auto rounded-2xl border border-slate-200">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-50 text-left text-slate-600">
+                      <tr>
+                        <th className="px-4 py-3">Debtor</th>
+                        <th className="px-4 py-3">Loan ID</th>
+                        <th className="px-4 py-3">Product</th>
+                        <th className="px-4 py-3">Portfolio Category</th>
+                        <th className="px-4 py-3">Balance</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3">DPD</th>
+                        <th className="px-4 py-3">Open</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-                No other facilities found for this customer.
-              </div>
-            )}
-          </div>
+                    </thead>
+                    <tbody>
+                      {relatedFacilities.map((facility: any) => (
+                        <tr key={facility.id} className="border-t border-slate-200">
+                          <td className="px-4 py-3">{facility.debtor_name || '-'}</td>
+                          <td className="px-4 py-3">{facility.account_no || '-'}</td>
+                          <td className="px-4 py-3">{facility.product || '-'}</td>
+                          <td className="px-4 py-3">{facility.portfolio_category || '-'}</td>
+                          <td className="px-4 py-3">{currency(Number(facility.balance || 0))}</td>
+                          <td className="px-4 py-3">{facility.status || '-'}</td>
+                          <td className="px-4 py-3">{detailValue(facility.dpd)}</td>
+                          <td className="px-4 py-3">
+                            <Link
+                              href={`/accounts/${facility.id}`}
+                              className="text-sm font-medium text-slate-700 hover:text-slate-900 hover:underline"
+                            >
+                              View account
+                            </Link>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+                  No other facilities found for this customer.
+                </div>
+              )}
+            </div>
+          </details>
         </div>
       ) : null}
 
@@ -1798,43 +1809,43 @@ async function reversePayment(formData: FormData) {
 
           <div className="mt-4 space-y-3">
             {payments && payments.length > 0 ? (
-  payments.slice(0, 3).map((payment) => (
-    <div key={payment.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-sm font-semibold text-slate-900">
-          {currency(Number(payment.amount || 0))}
-        </p>
-        <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
-          {payment.product || '-'}
-        </span>
-      </div>
+              payments.slice(0, 3).map((payment) => (
+                <div key={payment.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {currency(Number(payment.amount || 0))}
+                    </p>
+                    <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                      {payment.product || '-'}
+                    </span>
+                  </div>
 
-      <p className="mt-2 text-sm text-slate-600">Paid on: {formatDate(payment.paid_on)}</p>
+                  <p className="mt-2 text-sm text-slate-600">Paid on: {formatDate(payment.paid_on)}</p>
 
-      {canEditBalances ? (
-        <form action={reversePayment} className="mt-4 space-y-3">
-          <input type="hidden" name="accountId" value={account.id} />
-          <input type="hidden" name="paymentId" value={payment.id} />
+                  {canEditBalances ? (
+                    <form action={reversePayment} className="mt-4 space-y-3">
+                      <input type="hidden" name="accountId" value={account.id} />
+                      <input type="hidden" name="paymentId" value={payment.id} />
 
-          <textarea
-            name="reason"
-            required
-            rows={2}
-            placeholder="Reason for unlogging this payment..."
-            className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
-          />
+                      <textarea
+                        name="reason"
+                        required
+                        rows={2}
+                        placeholder="Reason for unlogging this payment..."
+                        className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
+                      />
 
-          <button
-            type="submit"
-            className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
-          >
-            Unlog Payment
-          </button>
-        </form>
-      ) : null}
-    </div>
-  ))
-) : (
+                      <button
+                        type="submit"
+                        className="rounded-xl border border-red-300 bg-white px-4 py-2 text-sm font-medium text-red-700 hover:bg-red-50"
+                      >
+                        Unlog Payment
+                      </button>
+                    </form>
+                  ) : null}
+                </div>
+              ))
+            ) : (
               <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
                 No payments yet.
               </div>

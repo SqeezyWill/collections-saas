@@ -117,6 +117,23 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
       throw new Error('Note details are required.');
     }
 
+    const { data: existingDuplicateNote, error: duplicateCheckError } = await supabase
+      .from('notes')
+      .select('id')
+      .eq('account_id', id)
+      .eq('body', noteDetails)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (duplicateCheckError) {
+      throw new Error(duplicateCheckError.message);
+    }
+
+    if (existingDuplicateNote?.id) {
+      redirect(`/accounts/${id}/notes/new`);
+    }
+
     const { error } = await supabase.from('notes').insert({
       company_id: account.company_id ?? 'b4f07164-1706-4904-a304-b38efb88ebf3',
       account_id: id,
@@ -271,6 +288,10 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
                     <p>• Third party answered and confirmed debtor is reachable after 5 PM.</p>
                     <p>• Customer acknowledged debt and will pay part amount on a specific date.</p>
                   </div>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  If the same note is submitted again because of lag or retry, the system will detect the duplicate and return to history without creating another note row.
                 </div>
 
                 <div className="flex flex-wrap gap-3 pt-2">

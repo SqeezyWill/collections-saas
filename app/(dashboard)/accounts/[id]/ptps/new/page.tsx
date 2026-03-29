@@ -14,6 +14,11 @@ function todayDateString() {
   return `${year}-${month}-${day}`;
 }
 
+function normalizeAmount(value: unknown) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) ? num : 0;
+}
+
 export default async function NewPtpPage({ params }: PageProps) {
   const { id } = await params;
   const today = todayDateString();
@@ -44,7 +49,7 @@ export default async function NewPtpPage({ params }: PageProps) {
       throw new Error('Supabase is not configured.');
     }
 
-    const promisedAmount = Number(formData.get('promisedAmount') || 0);
+    const promisedAmount = normalizeAmount(formData.get('promisedAmount'));
     const promisedDate = String(formData.get('promisedDate') || '').trim();
     const today = todayDateString();
 
@@ -56,7 +61,21 @@ export default async function NewPtpPage({ params }: PageProps) {
       throw new Error('Promised date cannot be in the past.');
     }
 
-    const { data: lastBrokenPtp } = await supabase
+    const { data: existingSameDayOpenPtp, error: existingSameDayError } = await supabase
+      .from('ptps')
+      .select('id,status,created_at,promised_amount,promised_date,parent_ptp_id,is_rebooked')
+      .eq('account_id', id)
+      .eq('promised_date', promisedDate)
+      .eq('status', 'Promise To Pay')
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingSameDayError) {
+      throw new Error(existingSameDayError.message);
+    }
+
+    const { data: lastBrokenPtp, error: lastBrokenError } = await supabase
       .from('ptps')
       .select('id,status,created_at')
       .eq('account_id', id)
@@ -65,27 +84,61 @@ export default async function NewPtpPage({ params }: PageProps) {
       .limit(1)
       .maybeSingle();
 
+    if (lastBrokenError) {
+      throw new Error(lastBrokenError.message);
+    }
+
     const ptpStatus = 'Promise To Pay';
-    const isRebooked = Boolean(lastBrokenPtp?.id);
+    let noteBody = '';
+    let shouldInsertNote = true;
 
-    const { error: ptpError } = await supabase.from('ptps').insert({
-      company_id: account.company_id,
-      account_id: id,
-      collector_name: account.collector_name || null,
-      product: account.product || null,
-      promised_amount: promisedAmount,
-      promised_date: promisedDate,
-      status: ptpStatus,
-      parent_ptp_id: lastBrokenPtp?.id || null,
-      is_rebooked: isRebooked,
-      collector_id: null,
-      kept_amount: 0,
-      resolved_at: null,
-      resolution_source: null,
-    });
+    if (existingSameDayOpenPtp?.id) {
+      const previousAmount = normalizeAmount(existingSameDayOpenPtp.promised_amount);
 
-    if (ptpError) {
-      throw new Error(ptpError.message);
+      if (previousAmount === promisedAmount) {
+        noteBody = `Same-day PTP already existed: ${promisedAmount} due on ${promisedDate}. No duplicate PTP was created.`;
+      } else {
+        const { error: reviseError } = await supabase
+          .from('ptps')
+          .update({
+            promised_amount: promisedAmount,
+            collector_name: account.collector_name || null,
+            product: account.product || null,
+          })
+          .eq('id', existingSameDayOpenPtp.id);
+
+        if (reviseError) {
+          throw new Error(reviseError.message);
+        }
+
+        noteBody = `PTP revised for ${promisedDate}: amount changed from ${previousAmount} to ${promisedAmount}. Existing same-day PTP was updated instead of creating a duplicate.`;
+      }
+    } else {
+      const isRebooked = Boolean(lastBrokenPtp?.id);
+
+      const { error: ptpError } = await supabase.from('ptps').insert({
+        company_id: account.company_id,
+        account_id: id,
+        collector_name: account.collector_name || null,
+        product: account.product || null,
+        promised_amount: promisedAmount,
+        promised_date: promisedDate,
+        status: ptpStatus,
+        parent_ptp_id: lastBrokenPtp?.id || null,
+        is_rebooked: isRebooked,
+        collector_id: null,
+        kept_amount: 0,
+        resolved_at: null,
+        resolution_source: null,
+      });
+
+      if (ptpError) {
+        throw new Error(ptpError.message);
+      }
+
+      noteBody = isRebooked
+        ? `PTP rebooked: ${promisedAmount} due on ${promisedDate}`
+        : `PTP booked: ${promisedAmount} due on ${promisedDate}`;
     }
 
     const { error: accountUpdateError } = await supabase
@@ -101,20 +154,18 @@ export default async function NewPtpPage({ params }: PageProps) {
       throw new Error(accountUpdateError.message);
     }
 
-    const noteBody = isRebooked
-      ? `PTP rebooked: ${promisedAmount} due on ${promisedDate}`
-      : `PTP booked: ${promisedAmount} due on ${promisedDate}`;
+    if (shouldInsertNote && noteBody) {
+      const { error: noteError } = await supabase.from('notes').insert({
+        company_id: account.company_id,
+        account_id: id,
+        author_id: '11111111-1111-1111-1111-111111111111',
+        created_by_name: 'System User',
+        body: noteBody,
+      });
 
-    const { error: noteError } = await supabase.from('notes').insert({
-      company_id: account.company_id,
-      account_id: id,
-      author_id: '11111111-1111-1111-1111-111111111111',
-      created_by_name: 'System User',
-      body: noteBody,
-    });
-
-    if (noteError) {
-      throw new Error(noteError.message);
+      if (noteError) {
+        throw new Error(noteError.message);
+      }
     }
 
     redirect(`/accounts/${id}`);
@@ -172,9 +223,8 @@ export default async function NewPtpPage({ params }: PageProps) {
           </div>
 
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-            Each PTP is saved as a separate record for reporting. If a previous PTP on this
-            account was broken, the new booking is saved as a rebook linked to that earlier
-            broken promise.
+            If an open PTP already exists on this account for the same promised date, the system
+            will revise that existing booking instead of creating a duplicate record.
           </div>
 
           <div className="flex flex-wrap gap-3 pt-2">
