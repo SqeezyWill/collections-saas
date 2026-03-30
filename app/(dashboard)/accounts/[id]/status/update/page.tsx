@@ -32,6 +32,11 @@ function parseNumber(value: unknown): number | null {
   return Number.isFinite(num) ? num : null;
 }
 
+function normalizeAmount(value: unknown) {
+  const num = Number(value || 0);
+  return Number.isFinite(num) ? num : 0;
+}
+
 function startOfLocalDay(date: Date) {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
@@ -434,32 +439,101 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       throw new Error(updateError.message);
     }
 
+    let ptpNoteBody = '';
+
     if (isPtp) {
-  const { error: ptpError } = await supabase.from('ptps').insert({
-    company_id: account.company_id,
-    account_id: id,
-    promised_amount: Number(ptpAmount),
-    promised_date: ptpDueDate,
-    status: 'Promise To Pay',
-    collector_name: account.collector_name || null,
-    created_by_name: 'System User',
-    kept_amount: 0,
-    resolution_source: null,
-    is_rebooked: false,
-  });
+      const promisedAmount = normalizeAmount(ptpAmount);
+      const promisedDate = ptpDueDate;
+      const today = todayDateString();
 
-  if (ptpError) {
-    throw new Error(ptpError.message);
-  }
-}
+      if (promisedDate < today) {
+        throw new Error('PTP due date cannot be in the past.');
+      }
 
-try {
-  await reassignAccountStrategy(id);
-} catch (strategyError) {
-  console.error('Strategy reassignment skipped after status update:', strategyError);
-}
+      const { data: existingSameDayOpenPtp, error: existingSameDayError } = await supabase
+        .from('ptps')
+        .select('id,status,created_at,promised_amount,promised_date,parent_ptp_id,is_rebooked')
+        .eq('account_id', id)
+        .eq('promised_date', promisedDate)
+        .eq('status', 'Promise To Pay')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-const noteLines = [
+      if (existingSameDayError) {
+        throw new Error(existingSameDayError.message);
+      }
+
+      const { data: lastBrokenPtp, error: lastBrokenError } = await supabase
+        .from('ptps')
+        .select('id,status,created_at')
+        .eq('account_id', id)
+        .eq('status', 'Broken')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (lastBrokenError) {
+        throw new Error(lastBrokenError.message);
+      }
+
+      if (existingSameDayOpenPtp?.id) {
+        const previousAmount = normalizeAmount(existingSameDayOpenPtp.promised_amount);
+
+        if (previousAmount === promisedAmount) {
+          ptpNoteBody = `Same-day PTP already existed: ${promisedAmount} due on ${promisedDate}. No duplicate PTP was created.`;
+        } else {
+          const { error: reviseError } = await supabase
+            .from('ptps')
+            .update({
+              promised_amount: promisedAmount,
+              collector_name: account.collector_name || null,
+              product: account.product || null,
+            })
+            .eq('id', existingSameDayOpenPtp.id);
+
+          if (reviseError) {
+            throw new Error(reviseError.message);
+          }
+
+          ptpNoteBody = `PTP revised for ${promisedDate}: amount changed from ${previousAmount} to ${promisedAmount}. Existing same-day PTP was updated instead of creating a duplicate.`;
+        }
+      } else {
+        const isRebooked = Boolean(lastBrokenPtp?.id);
+
+        const { error: ptpError } = await supabase.from('ptps').insert({
+          company_id: account.company_id,
+          account_id: id,
+          collector_name: account.collector_name || null,
+          product: account.product || null,
+          promised_amount: promisedAmount,
+          promised_date: promisedDate,
+          status: 'Promise To Pay',
+          parent_ptp_id: lastBrokenPtp?.id || null,
+          is_rebooked: isRebooked,
+          collector_id: null,
+          kept_amount: 0,
+          resolved_at: null,
+          resolution_source: null,
+        });
+
+        if (ptpError) {
+          throw new Error(ptpError.message);
+        }
+
+        ptpNoteBody = isRebooked
+          ? `PTP rebooked: ${promisedAmount} due on ${promisedDate}`
+          : `PTP booked: ${promisedAmount} due on ${promisedDate}`;
+      }
+    }
+
+    try {
+      await reassignAccountStrategy(id);
+    } catch (strategyError) {
+      console.error('Strategy reassignment skipped after status update:', strategyError);
+    }
+
+    const noteLines = [
       `Interaction Outcome: ${interactionOutcome}`,
       contactType ? `Contact Type: ${contactType}` : '',
       contactStatus ? `Contact Status: ${contactStatus}` : '',
@@ -469,6 +543,7 @@ const noteLines = [
       effectiveNextActionDate ? `Next Action Date: ${effectiveNextActionDate}` : '',
       isPtp && ptpAmount ? `PTP Amount: ${ptpAmount}` : '',
       isPtp && ptpDueDate ? `PTP Due Date: ${ptpDueDate}` : '',
+      ptpNoteBody,
       isDebtCleared
         ? 'Admin Review: Account marked as Debt Cleared and awaiting admin close decision.'
         : '',
