@@ -435,27 +435,31 @@ export default async function UpdateStatusPage({ params }: PageProps) {
     }
 
     if (isPtp) {
-      const { error: ptpError } = await supabase.from('ptps').insert({
-        company_id: account.company_id,
-        account_id: id,
-        promised_amount: Number(ptpAmount),
-        promised_date: ptpDueDate,
-        status: 'Promise To Pay',
-        collector_name: account.collector_name || null,
-        created_by_name: 'System User',
-        kept_amount: 0,
-        resolution_source: null,
-        is_rebooked: false,
-      });
+  const { error: ptpError } = await supabase.from('ptps').insert({
+    company_id: account.company_id,
+    account_id: id,
+    promised_amount: Number(ptpAmount),
+    promised_date: ptpDueDate,
+    status: 'Promise To Pay',
+    collector_name: account.collector_name || null,
+    created_by_name: 'System User',
+    kept_amount: 0,
+    resolution_source: null,
+    is_rebooked: false,
+  });
 
-      if (ptpError) {
-        throw new Error(ptpError.message);
-      }
-    }
+  if (ptpError) {
+    throw new Error(ptpError.message);
+  }
+}
 
-    await reassignAccountStrategy(id);
+try {
+  await reassignAccountStrategy(id);
+} catch (strategyError) {
+  console.error('Strategy reassignment skipped after status update:', strategyError);
+}
 
-    const noteLines = [
+const noteLines = [
       `Interaction Outcome: ${interactionOutcome}`,
       contactType ? `Contact Type: ${contactType}` : '',
       contactStatus ? `Contact Status: ${contactStatus}` : '',

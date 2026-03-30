@@ -251,11 +251,12 @@ async function savePayment(formData: FormData) {
   ].filter(Boolean);
 
   const { error: noteError } = await supabase.from('notes').insert({
-    company_id: companyId,
-    account_id: accountId,
-    created_by_name: 'System User',
-    body: noteParts.join(' | '),
-  });
+  company_id: companyId,
+  account_id: accountId,
+  author_id: '11111111-1111-1111-1111-111111111111',
+  created_by_name: 'System User',
+  body: noteParts.join(' | '),
+});
 
   if (noteError) {
     throw new Error(noteError.message);
