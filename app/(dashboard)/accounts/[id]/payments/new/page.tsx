@@ -72,7 +72,7 @@ async function savePayment(formData: FormData) {
   const currentBalance = Math.max(0, toMoney(account.balance));
   const currentTotalDue = Math.max(0, toMoney((account as any).total_due));
 
-  const payableAmount = currentBalance > 0 ? currentBalance : currentTotalDue;
+  const payableAmount = Math.max(currentBalance, currentTotalDue);
 
   if (payableAmount <= 0) {
     throw new Error(
@@ -110,18 +110,18 @@ async function savePayment(formData: FormData) {
   let newBalance = currentBalance;
   let newTotalDue = currentTotalDue;
 
-  if (currentBalance > 0) {
+  if (currentBalance > 0 && currentTotalDue > 0) {
     appliedToBalance = Math.min(amount, currentBalance);
-    newBalance = Math.max(0, currentBalance - appliedToBalance);
-
-    const remainingAfterBalance = amount - appliedToBalance;
-    if (remainingAfterBalance > 0) {
-      appliedToTotalDue = Math.min(remainingAfterBalance, currentTotalDue);
-      newTotalDue = Math.max(0, currentTotalDue - appliedToTotalDue);
-    }
-  } else {
     appliedToTotalDue = Math.min(amount, currentTotalDue);
-    newTotalDue = Math.max(0, currentTotalDue - appliedToTotalDue);
+
+    newBalance = Math.max(0, currentBalance - amount);
+    newTotalDue = Math.max(0, currentTotalDue - amount);
+  } else if (currentBalance > 0) {
+    appliedToBalance = Math.min(amount, currentBalance);
+    newBalance = Math.max(0, currentBalance - amount);
+  } else if (currentTotalDue > 0) {
+    appliedToTotalDue = Math.min(amount, currentTotalDue);
+    newTotalDue = Math.max(0, currentTotalDue - amount);
   }
 
   const updatedAmountPaid = currentAmountPaid + amount;
@@ -285,7 +285,7 @@ export default async function NewPaymentPage({ params }: PageProps) {
 
   const balance = Math.max(0, toMoney(account.balance));
   const totalDue = Math.max(0, toMoney((account as any).total_due));
-  const payableAmount = balance > 0 ? balance : totalDue;
+  const payableAmount = Math.max(balance, totalDue);
   const isClosed = isClosedStatus(account.status);
 
   return (
@@ -332,9 +332,11 @@ export default async function NewPaymentPage({ params }: PageProps) {
         </div>
 
         <div className="mt-4 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-700">
-          Payment will reduce <span className="font-medium">Balance</span> first. If Balance is already zero,
-          it will reduce <span className="font-medium">Total Due</span>. The system will reject any payment
-          above the remaining payable amount.
+          If <span className="font-medium">Balance</span> and{' '}
+          <span className="font-medium">Total Due</span> are both positive, the payment will
+          reduce both at the same time, capped at zero. If only one is positive, the payment will
+          reduce that field only. The system will reject any payment above the remaining payable
+          amount.
         </div>
 
         {isClosed ? (
@@ -345,7 +347,8 @@ export default async function NewPaymentPage({ params }: PageProps) {
 
         {payableAmount <= 0 && !isClosed ? (
           <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
-            This account currently has no payable amount remaining. An admin must correct balances before a payment can be logged.
+            This account currently has no payable amount remaining. An admin must correct balances
+            before a payment can be logged.
           </div>
         ) : null}
 
@@ -416,7 +419,8 @@ export default async function NewPaymentPage({ params }: PageProps) {
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-              If the same payment is submitted again because of lag or retry, the system will detect the duplicate and return to the account without creating another payment row.
+              If the same payment is submitted again because of lag or retry, the system will
+              detect the duplicate and return to the account without creating another payment row.
             </div>
 
             <div className="flex flex-wrap gap-3 pt-2">
