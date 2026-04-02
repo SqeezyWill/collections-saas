@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { DataTable } from '@/components/DataTable';
 import { supabase } from '@/lib/supabase';
@@ -328,6 +328,7 @@ function downloadCsv(filename: string, rows: Record<string, any>[]) {
 }
 
 export default function AccountsPage() {
+  const router = useRouter();
   const searchParams = useSearchParams();
 
   const search = searchParams.get('search')?.trim() || '';
@@ -491,11 +492,11 @@ export default function AccountsPage() {
 
     while (true) {
       let query = supabase
-  .from('accounts')
-  .select('id')
-  .eq('company_id', companyId)
-  .neq('status', 'Closed')
-  .order('created_at', { ascending: false });
+        .from('accounts')
+        .select('id')
+        .eq('company_id', companyId)
+        .neq('status', 'Closed')
+        .order('created_at', { ascending: false });
 
       if (restrictToCollector) {
         query = query.eq('collector_name', restrictToCollector);
@@ -887,25 +888,25 @@ export default function AccountsPage() {
         }
 
         let query = supabase
-  .from('accounts')
-  .select('*', { count: 'exact' })
-  .eq('company_id', companyId)
-  .order('created_at', { ascending: false });
+          .from('accounts')
+          .select('*', { count: 'exact' })
+          .eq('company_id', companyId)
+          .order('created_at', { ascending: false });
 
-const shouldExcludeClosedByDefault =
-  !status &&
-  (filter === '' ||
-    filter === 'open-ptps' ||
-    filter === 'ptps-due-today' ||
-    filter === 'broken-ptps' ||
-    filter === 'callbacks-due-today' ||
-    filter === 'overdue-callbacks' ||
-    filter === 'next-actions-today' ||
-    filter === 'stale-accounts');
+        const shouldExcludeClosedByDefault =
+          !status &&
+          (filter === '' ||
+            filter === 'open-ptps' ||
+            filter === 'ptps-due-today' ||
+            filter === 'broken-ptps' ||
+            filter === 'callbacks-due-today' ||
+            filter === 'overdue-callbacks' ||
+            filter === 'next-actions-today' ||
+            filter === 'stale-accounts');
 
-if (shouldExcludeClosedByDefault) {
-  query = query.neq('status', 'Closed');
-}
+        if (shouldExcludeClosedByDefault) {
+          query = query.neq('status', 'Closed');
+        }
 
         if (restrictToCollector) {
           query = query.eq('collector_name', restrictToCollector);
@@ -1086,9 +1087,9 @@ if (shouldExcludeClosedByDefault) {
   );
 
   const openCases = useMemo(
-  () => rows.filter((row) => !isClosedStatus(row.status) && row.status !== 'Paid').length,
-  [rows]
-);
+    () => rows.filter((row) => !isClosedStatus(row.status) && row.status !== 'Paid').length,
+    [rows]
+  );
 
   const totalPages = totalAccounts > 0 ? Math.ceil(totalAccounts / pageSize) : 1;
 
@@ -1854,57 +1855,73 @@ if (shouldExcludeClosedByDefault) {
 
         {normalizedLimit !== 'all' && totalPages > 1 ? (
           <div className="flex flex-wrap gap-2">
-            <Link
-              href={buildPageUrl({
-                search,
-                searchField,
-                collector: isAgent ? '' : collector,
-                status,
-                minBalance,
-                maxBalance,
-                daysLateMin,
-                daysLateMax,
-                lastActionFrom,
-                lastActionTo,
-                limit: normalizedLimit,
-                columns: finalColumns.join(','),
-                filter,
-                page: Math.max(1, effectivePage - 1),
-              })}
+            <button
+              type="button"
+              onClick={() => {
+                if (effectivePage === 1) return;
+                router.push(
+                  buildPageUrl({
+                    search,
+                    searchField,
+                    collector: isAgent ? '' : collector,
+                    status,
+                    minBalance,
+                    maxBalance,
+                    daysLateMin,
+                    daysLateMax,
+                    lastActionFrom,
+                    lastActionTo,
+                    limit: normalizedLimit,
+                    columns: finalColumns.join(','),
+                    filter,
+                    page: Math.max(1, effectivePage - 1),
+                  }),
+                  { scroll: false }
+                );
+              }}
+              disabled={effectivePage === 1}
               className={`rounded-xl border px-4 py-2 text-sm font-medium ${
                 effectivePage === 1
-                  ? 'pointer-events-none border-slate-200 text-slate-300'
+                  ? 'cursor-not-allowed border-slate-200 text-slate-300'
                   : 'border-slate-300 text-slate-700 hover:bg-slate-50'
               }`}
             >
               Previous
-            </Link>
+            </button>
 
-            <Link
-              href={buildPageUrl({
-                search,
-                searchField,
-                collector: isAgent ? '' : collector,
-                status,
-                minBalance,
-                maxBalance,
-                daysLateMin,
-                daysLateMax,
-                lastActionFrom,
-                lastActionTo,
-                limit: normalizedLimit,
-                columns: finalColumns.join(','),
-                filter,
-                page: Math.min(totalPages, effectivePage + 1),
-              })}
+            <button
+              type="button"
+              onClick={() => {
+                if (effectivePage === totalPages) return;
+                router.push(
+                  buildPageUrl({
+                    search,
+                    searchField,
+                    collector: isAgent ? '' : collector,
+                    status,
+                    minBalance,
+                    maxBalance,
+                    daysLateMin,
+                    daysLateMax,
+                    lastActionFrom,
+                    lastActionTo,
+                    limit: normalizedLimit,
+                    columns: finalColumns.join(','),
+                    filter,
+                    page: Math.min(totalPages, effectivePage + 1),
+                  }),
+                  { scroll: false }
+                );
+              }}
+              disabled={effectivePage === totalPages}
               className={`rounded-xl border px-4 py-2 text-sm font-medium ${
                 effectivePage === totalPages
-                  ? 'pointer-events-none border-slate-200 text-slate-300'
+                  ? 'cursor-not-allowed border-slate-200 text-slate-300'
                   : 'border-slate-300 text-slate-700 hover:bg-slate-50'
               }`}
             >
               Next
-            </Link>
+            </button>
           </div>
         ) : (
           <p className="text-sm text-slate-500">
