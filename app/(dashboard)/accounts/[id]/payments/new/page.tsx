@@ -200,39 +200,40 @@ async function savePayment(formData: FormData) {
   }
 
   let derivedStatus = String(account.status || 'Open').trim() || 'Open';
-const isNowClosed = newBalance <= 0 && newTotalDue <= 0;
+  const isNowClosed = newBalance <= 0 && newTotalDue <= 0;
 
-if (isNowClosed) {
-  derivedStatus = 'Closed';
-} else if ((remainingOpenPtps || []).length > 0) {
-  derivedStatus = 'PTP';
-} else if (
-  normalizeStatus(account.status) === 'ptp' ||
-  normalizeStatus(account.status) === 'promise to pay' ||
-  normalizeStatus(account.status) === 'paid' ||
-  normalizeStatus(account.status) === 'closed'
-) {
-  derivedStatus = 'Open';
-}
+  if (isNowClosed) {
+    derivedStatus = 'Closed';
+  } else if ((remainingOpenPtps || []).length > 0) {
+    derivedStatus = 'PTP';
+  } else if (
+    normalizeStatus(account.status) === 'ptp' ||
+    normalizeStatus(account.status) === 'promise to pay' ||
+    normalizeStatus(account.status) === 'paid' ||
+    normalizeStatus(account.status) === 'closed'
+  ) {
+    derivedStatus = 'Open';
+  }
 
-const accountUpdatePayload: Record<string, unknown> = {
-  amount_paid: updatedAmountPaid,
-  balance: newBalance,
-  total_due: newTotalDue,
-  last_pay_amount: amount,
-  last_pay_date: paidOn,
-  last_action_date: postedOn,
-  status: derivedStatus,
-};
+  const accountUpdatePayload: Record<string, unknown> = {
+    amount_paid: updatedAmountPaid,
+    balance: newBalance,
+    total_due: newTotalDue,
+    last_pay_amount: amount,
+    last_pay_date: paidOn,
+    last_action_date: postedOn,
+    status: derivedStatus,
+  };
 
-if (isNowClosed) {
-  accountUpdatePayload.dpd = 0;
-}
+  if (isNowClosed) {
+    accountUpdatePayload.dpd = 0;
+    accountUpdatePayload.days_late_lastinstallment = 0;
+  }
 
-const { error: accountUpdateError } = await supabase
-  .from('accounts')
-  .update(accountUpdatePayload)
-  .eq('id', accountId);
+  const { error: accountUpdateError } = await supabase
+    .from('accounts')
+    .update(accountUpdatePayload)
+    .eq('id', accountId);
 
   if (accountUpdateError) {
     throw new Error(accountUpdateError.message);
@@ -246,6 +247,7 @@ const { error: accountUpdateError } = await supabase
     appliedToTotalDue > 0 ? `Applied to Total Due: ${currency(appliedToTotalDue)}` : '',
     `New Balance: ${currency(newBalance)}`,
     `New Total Due: ${currency(newTotalDue)}`,
+    `Derived Status: ${derivedStatus}`,
     paymentChannel ? `Channel: ${paymentChannel}` : '',
     transactionCode ? `Transaction Code: ${transactionCode}` : '',
     ptpOutcomeNote,
