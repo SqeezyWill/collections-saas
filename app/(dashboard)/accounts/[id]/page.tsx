@@ -65,6 +65,7 @@ const RELATED_FACILITIES_SELECT = `
   product,
   portfolio_category,
   balance,
+  total_due,
   status,
   dpd,
   collector_name
@@ -96,6 +97,20 @@ function parseNumber(value: unknown): number | null {
   if (value == null || value === '') return null;
   const num = Number(value);
   return Number.isFinite(num) ? num : null;
+}
+
+function getNumericBalance(value: unknown) {
+  return Math.max(0, Number(value || 0));
+}
+
+function isSettledAccount(account: any) {
+  const balance = getNumericBalance(account?.balance);
+  const totalDue = getNumericBalance(account?.total_due);
+  return isClosedStatus(account?.status) || (balance <= 0 && totalDue <= 0);
+}
+
+function getDisplayStatus(account: any) {
+  return isSettledAccount(account) ? 'Closed' : String(account?.status || '').trim() || 'Open';
 }
 
 function startOfLocalDay(date: Date) {
@@ -170,6 +185,8 @@ function getDpdAnchorDate(account: any): Date | null {
 }
 
 function getEffectiveDpd(account: any): number | null {
+  if (isSettledAccount(account)) return 0;
+
   const baseDpd = parseNumber(account?.dpd);
   if (baseDpd == null) return null;
 
@@ -183,7 +200,7 @@ function getEffectiveDpd(account: any): number | null {
 }
 
 function getBucketLabel(account: any, dpd: number | null) {
-  if (isClosedStatus(account?.status)) return 'Closed';
+  if (isSettledAccount(account)) return 'Closed';
   if (dpd == null) return 'Unknown';
   if (dpd <= 0) return 'Current';
   if (dpd >= 1 && dpd <= 30) return '1-30';
@@ -299,6 +316,14 @@ function getDueState(dateValue: unknown) {
 }
 
 function getPriorityMeta(account: any, effectiveDpd: number | null) {
+  if (isSettledAccount(account)) {
+    return {
+      label: 'Closed account',
+      tone: 'bg-slate-100 text-slate-700',
+      reason: 'Account is fully settled and closed from active follow-up.',
+    };
+  }
+
   const nextAction = getDueState(account?.next_action_date);
   const balance = Number(account?.balance || 0);
   const status = String(account?.status || '').trim();
@@ -485,12 +510,15 @@ async function resolveAutoStrategy(accountId: string) {
 
   const { data: acct, error: acctErr } = await supabaseAdmin
     .from(ACCOUNTS_TABLE)
-    .select('id,product_code,dpd,created_at,uploaded_at,outsource_date')
+    .select('id,product_code,dpd,status,balance,total_due,created_at,uploaded_at,outsource_date')
     .eq('id', accountId)
     .maybeSingle();
 
   if (acctErr) throw new Error(acctErr.message);
   if (!acct) throw new Error('Account not found.');
+  if (isSettledAccount(acct)) {
+    throw new Error('Closed or fully paid accounts cannot be re-evaluated.');
+  }
 
   const productCode = normalize(acct.product_code);
   if (!productCode) {
@@ -656,12 +684,12 @@ export default async function AccountDetailPage({ params }: PageProps) {
 
     const currentAccount = await supabaseAdmin
       .from('accounts')
-      .select('status')
+      .select('status,balance,total_due')
       .eq('id', id)
       .maybeSingle();
 
-    if (isClosedStatus(currentAccount.data?.status)) {
-      throw new Error('Closed accounts cannot be updated. Reopen the account first.');
+    if (isSettledAccount(currentAccount.data)) {
+      throw new Error('Closed or fully paid accounts cannot be updated. Reopen or correct the account first.');
     }
 
     const resolved = await resolveAutoStrategy(id);
@@ -860,6 +888,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
     }
 
     const today = new Date().toISOString().slice(0, 10);
+    const derivedStatus = newBalance <= 0 && newTotalDue <= 0 ? 'Closed' : 'Open';
 
     const { error: updateError } = await supabaseAdmin
       .from('accounts')
@@ -867,6 +896,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
         balance: newBalance,
         total_due: newTotalDue,
         amount_paid: newAmountPaid,
+        status: derivedStatus,
+        dpd: derivedStatus === 'Closed' ? 0 : currentAccount?.dpd,
         last_action_date: today,
       })
       .eq('id', targetAccountId);
@@ -887,6 +918,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
         `New Total Due: ${currency(newTotalDue)}`,
         `Previous Amount Paid: ${currency(Number(currentAccount.amount_paid || 0))}`,
         `New Amount Paid: ${currency(newAmountPaid)}`,
+        `Derived Status: ${derivedStatus}`,
         `Reason: ${reason}`,
       ].join(' | '),
     });
@@ -964,6 +996,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
     }
 
     const today = new Date().toISOString().slice(0, 10);
+    const derivedStatus = newBalance <= 0 && newTotalDue <= 0 ? 'Closed' : 'Open';
 
     const { error: updateError } = await supabaseAdmin
       .from('accounts')
@@ -971,6 +1004,8 @@ export default async function AccountDetailPage({ params }: PageProps) {
         amount_paid: updatedAmountPaid,
         balance: newBalance,
         total_due: newTotalDue,
+        status: derivedStatus,
+        dpd: derivedStatus === 'Closed' ? 0 : undefined,
         last_action_date: today,
       })
       .eq('id', targetAccountId);
@@ -991,6 +1026,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
         `New Amount Paid: ${currency(updatedAmountPaid)}`,
         `New Balance: ${currency(newBalance)}`,
         `New Total Due: ${currency(newTotalDue)}`,
+        `Derived Status: ${derivedStatus}`,
         `Reason: ${reason}`,
       ].join(' | '),
     });
@@ -999,34 +1035,35 @@ export default async function AccountDetailPage({ params }: PageProps) {
   }
 
   let account: any = null;
-let error: any = null;
+  let error: any = null;
 
-if (isAgent && collectorScope) {
-  const scopedResult = await supabaseAdmin
-    .from('accounts')
-    .select(ACCOUNT_DETAIL_SELECT)
-    .eq('id', id)
-    .eq('collector_name', collectorScope)
-    .maybeSingle();
+  if (isAgent && collectorScope) {
+    const scopedResult = await supabaseAdmin
+      .from('accounts')
+      .select(ACCOUNT_DETAIL_SELECT)
+      .eq('id', id)
+      .eq('collector_name', collectorScope)
+      .maybeSingle();
 
-  account = scopedResult.data;
-  error = scopedResult.error;
-} else {
-  const adminResult = await supabaseAdmin
-    .from('accounts')
-    .select(ACCOUNT_DETAIL_SELECT)
-    .eq('id', id)
-    .maybeSingle();
+    account = scopedResult.data;
+    error = scopedResult.error;
+  } else {
+    const adminResult = await supabaseAdmin
+      .from('accounts')
+      .select(ACCOUNT_DETAIL_SELECT)
+      .eq('id', id)
+      .maybeSingle();
 
-  account = adminResult.data;
-  error = adminResult.error;
-}
+    account = adminResult.data;
+    error = adminResult.error;
+  }
 
-if (error || !account) {
-  notFound();
-}
+  if (error || !account) {
+    notFound();
+  }
 
-  const isClosed = isClosedStatus(account.status);
+  const isClosed = isSettledAccount(account);
+  const displayStatus = getDisplayStatus(account);
 
   let relatedFacilitiesQuery = account.customer_id
     ? supabaseAdmin
@@ -1090,24 +1127,24 @@ if (error || !account) {
 
   const effectiveDpd = getEffectiveDpd(account);
   const bucketLabel = getBucketLabel(account, effectiveDpd);
-  const storedDpd = parseNumber(account.dpd);
+  const storedDpd = isClosed ? 0 : parseNumber(account.dpd);
   const stepsCount = Array.isArray(assignedStrategy?.steps) ? assignedStrategy.steps.length : 0;
   const dueMeta = getDueState(account.next_action_date);
   const priorityMeta = getPriorityMeta(account, effectiveDpd);
   const loanTimeline = getLoanTimelineMeta(account);
 
   const statusClasses =
-    account.status === 'PTP'
+    displayStatus === 'PTP'
       ? 'bg-amber-100 text-amber-700'
-      : account.status === 'Paid'
+      : displayStatus === 'Paid'
       ? 'bg-emerald-100 text-emerald-700'
-      : account.status === 'Escalated'
+      : displayStatus === 'Escalated'
       ? 'bg-rose-100 text-rose-700'
-      : account.status === 'Broken'
+      : displayStatus === 'Broken'
       ? 'bg-rose-100 text-rose-700'
-      : account.status === 'Closed'
+      : displayStatus === 'Closed'
       ? 'bg-slate-900 text-white'
-      : account.status === 'Pending Closure Approval'
+      : displayStatus === 'Pending Closure Approval'
       ? 'bg-blue-100 text-blue-700'
       : 'bg-slate-100 text-slate-700';
 
@@ -1175,15 +1212,15 @@ if (error || !account) {
     },
     {
       label: 'Days Late Last Installment',
-      value: detailValue(account.days_late_lastinstallment),
+      value: isClosed ? 0 : detailValue(account.days_late_lastinstallment),
     },
     { label: 'Total Due', value: currency(Number(account.total_due || 0)) },
     { label: 'Balance', value: currency(Number(account.balance || 0)) },
     { label: 'Amount Paid', value: currency(Number(account.amount_paid || 0)) },
-    { label: 'Status', value: detailValue(account.status) },
+    { label: 'Status', value: displayStatus },
     {
       label: 'Current / Effective DPD',
-      value: isClosed ? 'Closed' : detailValue(effectiveDpd),
+      value: isClosed ? 0 : detailValue(effectiveDpd),
     },
     { label: 'Current Bucket', value: bucketLabel },
     { label: 'Last Pay Date', value: formatDate(account.last_pay_date) },
@@ -1259,7 +1296,7 @@ if (error || !account) {
                 This account is closed. Notes and changes are locked until reopened by an admin.
               </p>
             ) : null}
-            {!isClosed && account.status === 'Pending Closure Approval' ? (
+            {!isClosed && displayStatus === 'Pending Closure Approval' ? (
               <p className="mt-2 inline-flex rounded-full bg-blue-50 px-3 py-1 text-sm font-medium text-blue-700">
                 Awaiting admin close decision
               </p>
@@ -1267,7 +1304,7 @@ if (error || !account) {
           </div>
 
           <span className={`inline-flex w-fit rounded-full px-3 py-1 text-sm font-medium ${statusClasses}`}>
-            {account.status}
+            {displayStatus}
           </span>
         </div>
       </div>
@@ -1310,7 +1347,7 @@ if (error || !account) {
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Admin Balance Correction</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Correct balance and total due when a payment was entered incorrectly. This does not close the account automatically.
+                Correct balance and total due when a payment was entered incorrectly. This can also normalize the account to closed when both values reach zero.
               </p>
             </div>
           </div>
@@ -1399,8 +1436,8 @@ if (error || !account) {
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
           <p className="text-sm text-slate-500">Current DPD</p>
-          <p className="mt-2 text-3xl font-semibold text-slate-900">{detailValue(effectiveDpd)}</p>
-          <p className="mt-1 text-xs text-slate-500">Stored: {detailValue(storedDpd)}</p>
+          <p className="mt-2 text-3xl font-semibold text-slate-900">{isClosed ? 0 : detailValue(effectiveDpd)}</p>
+          <p className="mt-1 text-xs text-slate-500">Stored: {isClosed ? 0 : detailValue(storedDpd)}</p>
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1455,8 +1492,8 @@ if (error || !account) {
                           <td className="px-4 py-3">{facility.product || '-'}</td>
                           <td className="px-4 py-3">{facility.portfolio_category || '-'}</td>
                           <td className="px-4 py-3">{currency(Number(facility.balance || 0))}</td>
-                          <td className="px-4 py-3">{facility.status || '-'}</td>
-                          <td className="px-4 py-3">{detailValue(facility.dpd)}</td>
+                          <td className="px-4 py-3">{getDisplayStatus(facility)}</td>
+                          <td className="px-4 py-3">{isSettledAccount(facility) ? 0 : detailValue(facility.dpd)}</td>
                           <td className="px-4 py-3">
                             <Link
                               href={`/accounts/${facility.id}`}
@@ -1497,7 +1534,7 @@ if (error || !account) {
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <p className="text-xs uppercase tracking-wide text-slate-500">Current Status</p>
-              <p className="mt-2 text-base font-semibold text-slate-900">{detailValue(account.status)}</p>
+              <p className="mt-2 text-base font-semibold text-slate-900">{displayStatus}</p>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
