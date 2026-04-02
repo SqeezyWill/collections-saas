@@ -119,7 +119,7 @@ async function resolveAutoStrategy(accountId: string) {
 
   const { data: acct, error: acctErr } = await supabaseAdmin
     .from(ACCOUNTS_TABLE)
-    .select('id,product_code,dpd,status')
+    .select('id,product_code,dpd,status,balance,total_due')
     .eq('id', accountId)
     .maybeSingle();
 
@@ -132,11 +132,18 @@ async function resolveAutoStrategy(accountId: string) {
   }
 
   const accountStatus = normalize(acct.status);
-  if (accountStatus === 'closed') {
+  const balance = parseNumber((acct as any).balance) ?? 0;
+  const totalDue = parseNumber((acct as any).total_due) ?? 0;
+
+  const isClosedAccount =
+    accountStatus === 'closed' || (balance <= 0 && totalDue <= 0);
+
+  if (isClosedAccount) {
     return {
-      error: 'Closed account skipped.',
+      error: 'Closed or fully paid account skipped.',
       status: 400 as const,
       skipped: true as const,
+      closedLike: true as const,
     };
   }
 
@@ -266,6 +273,32 @@ export async function POST(req: NextRequest) {
 
     if ('error' in resolved) {
       if ((resolved as any).skipped) {
+        if ((resolved as any).closedLike) {
+          const { error: deactivateClosedErr } = await supabaseAdmin
+            .from(ASSIGN_TABLE)
+            .update({ is_active: false })
+            .eq('account_id', accountId)
+            .eq('is_active', true);
+
+          if (deactivateClosedErr) {
+            failedCount += 1;
+            results.push({
+              accountId,
+              status: 'failed',
+              error: deactivateClosedErr.message,
+            });
+            continue;
+          }
+
+          skippedCount += 1;
+          results.push({
+            accountId,
+            status: 'closed_skipped',
+            reason: resolved.error,
+          });
+          continue;
+        }
+
         skippedCount += 1;
         results.push({
           accountId,
