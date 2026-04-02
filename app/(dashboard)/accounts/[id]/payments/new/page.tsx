@@ -200,32 +200,39 @@ async function savePayment(formData: FormData) {
   }
 
   let derivedStatus = String(account.status || 'Open').trim() || 'Open';
+const isNowClosed = newBalance <= 0 && newTotalDue <= 0;
 
-  if (newBalance <= 0 && newTotalDue <= 0) {
-    derivedStatus = 'Closed';
-  } else if ((remainingOpenPtps || []).length > 0) {
-    derivedStatus = 'PTP';
-  } else if (
-    normalizeStatus(account.status) === 'ptp' ||
-    normalizeStatus(account.status) === 'promise to pay' ||
-    normalizeStatus(account.status) === 'paid' ||
-    normalizeStatus(account.status) === 'closed'
-  ) {
-    derivedStatus = 'Open';
-  }
+if (isNowClosed) {
+  derivedStatus = 'Closed';
+} else if ((remainingOpenPtps || []).length > 0) {
+  derivedStatus = 'PTP';
+} else if (
+  normalizeStatus(account.status) === 'ptp' ||
+  normalizeStatus(account.status) === 'promise to pay' ||
+  normalizeStatus(account.status) === 'paid' ||
+  normalizeStatus(account.status) === 'closed'
+) {
+  derivedStatus = 'Open';
+}
 
-  const { error: accountUpdateError } = await supabase
-    .from('accounts')
-    .update({
-      amount_paid: updatedAmountPaid,
-      balance: newBalance,
-      total_due: newTotalDue,
-      last_pay_amount: amount,
-      last_pay_date: paidOn,
-      last_action_date: postedOn,
-      status: derivedStatus,
-    })
-    .eq('id', accountId);
+const accountUpdatePayload: Record<string, unknown> = {
+  amount_paid: updatedAmountPaid,
+  balance: newBalance,
+  total_due: newTotalDue,
+  last_pay_amount: amount,
+  last_pay_date: paidOn,
+  last_action_date: postedOn,
+  status: derivedStatus,
+};
+
+if (isNowClosed) {
+  accountUpdatePayload.dpd = 0;
+}
+
+const { error: accountUpdateError } = await supabase
+  .from('accounts')
+  .update(accountUpdatePayload)
+  .eq('id', accountId);
 
   if (accountUpdateError) {
     throw new Error(accountUpdateError.message);

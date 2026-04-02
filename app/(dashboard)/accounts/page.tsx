@@ -195,10 +195,14 @@ function toNumberOrNull(value: unknown) {
 }
 
 function getDaysLate(row: Partial<AccountRow>) {
+  if (isClosedStatus(row.status)) return 0;
+
   const lastInstallment = toNumberOrNull(row.days_late_lastinstallment);
   if (lastInstallment !== null) return lastInstallment;
+
   const dpd = toNumberOrNull(row.dpd);
   if (dpd !== null) return dpd;
+
   return 0;
 }
 
