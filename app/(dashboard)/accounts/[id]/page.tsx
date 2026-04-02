@@ -890,16 +890,21 @@ export default async function AccountDetailPage({ params }: PageProps) {
     const today = new Date().toISOString().slice(0, 10);
     const derivedStatus = newBalance <= 0 && newTotalDue <= 0 ? 'Closed' : 'Open';
 
+    const correctionPayload: Record<string, unknown> = {
+      balance: newBalance,
+      total_due: newTotalDue,
+      amount_paid: newAmountPaid,
+      status: derivedStatus,
+      last_action_date: today,
+    };
+
+    if (derivedStatus === 'Closed') {
+      correctionPayload.dpd = 0;
+    }
+
     const { error: updateError } = await supabaseAdmin
       .from('accounts')
-      .update({
-        balance: newBalance,
-        total_due: newTotalDue,
-        amount_paid: newAmountPaid,
-        status: derivedStatus,
-        dpd: derivedStatus === 'Closed' ? 0 : currentAccount?.dpd,
-        last_action_date: today,
-      })
+      .update(correctionPayload)
       .eq('id', targetAccountId);
 
     if (updateError) {
@@ -998,16 +1003,21 @@ export default async function AccountDetailPage({ params }: PageProps) {
     const today = new Date().toISOString().slice(0, 10);
     const derivedStatus = newBalance <= 0 && newTotalDue <= 0 ? 'Closed' : 'Open';
 
+    const reversePayload: Record<string, unknown> = {
+      amount_paid: updatedAmountPaid,
+      balance: newBalance,
+      total_due: newTotalDue,
+      status: derivedStatus,
+      last_action_date: today,
+    };
+
+    if (derivedStatus === 'Closed') {
+      reversePayload.dpd = 0;
+    }
+
     const { error: updateError } = await supabaseAdmin
       .from('accounts')
-      .update({
-        amount_paid: updatedAmountPaid,
-        balance: newBalance,
-        total_due: newTotalDue,
-        status: derivedStatus,
-        dpd: derivedStatus === 'Closed' ? 0 : undefined,
-        last_action_date: today,
-      })
+      .update(reversePayload)
       .eq('id', targetAccountId);
 
     if (updateError) {
