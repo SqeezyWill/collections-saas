@@ -646,20 +646,44 @@ export default async function AccountDetailPage({ params }: PageProps) {
     }
   }
 
-  const profile: UserProfile =
-    'error' in authResult
-      ? {
-          id: 'account-fallback-view',
-          name: null,
-          role: null,
-          company_id: resolvedCompanyId,
-        }
-      : {
-          id: String(authResult.id),
-          name: authResult.name ?? null,
-          role: authResult.role ?? null,
-          company_id: resolvedCompanyId,
-        };
+  let profile: UserProfile;
+
+if ('error' in authResult) {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+
+  const fallbackUserId = String(session?.user?.id || '').trim();
+
+  if (fallbackUserId) {
+    const { data: fallbackProfile } = await supabaseAdmin
+      .from('user_profiles')
+      .select('id,name,role,company_id')
+      .eq('id', fallbackUserId)
+      .maybeSingle();
+
+    profile = {
+      id: String(fallbackProfile?.id || fallbackUserId),
+      name: fallbackProfile?.name ?? null,
+      role: fallbackProfile?.role ?? null,
+      company_id: String(fallbackProfile?.company_id || resolvedCompanyId || '').trim() || resolvedCompanyId,
+    };
+  } else {
+    profile = {
+      id: 'account-fallback-view',
+      name: null,
+      role: null,
+      company_id: resolvedCompanyId,
+    };
+  }
+} else {
+  profile = {
+    id: String(authResult.id),
+    name: authResult.name ?? null,
+    role: authResult.role ?? null,
+    company_id: resolvedCompanyId,
+  };
+}
 
   const normalizedRole = normalizeRole(profile.role);
   const isAgent = normalizedRole === 'agent';
@@ -1328,7 +1352,7 @@ export default async function AccountDetailPage({ params }: PageProps) {
                   type="submit"
                   className="rounded-xl bg-slate-900 px-4 py-3 text-sm font-medium text-white hover:bg-slate-800"
                 >
-                  Close Account
+                  {displayStatus === 'Pending Closure Approval' ? 'Approve Closure' : 'Close Account'}
                 </button>
               </form>
             ) : (
