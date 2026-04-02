@@ -44,7 +44,6 @@ async function savePayment(formData: FormData) {
 
   const paymentChannel = normalizeText(formData.get('paymentChannel'));
   const transactionCode = normalizeText(formData.get('transactionCode'));
-  const bankSlip = formData.get('bankSlip');
 
   const amount = Number(amountRaw);
   const postedOn = todayDateString();
@@ -94,8 +93,6 @@ async function savePayment(formData: FormData) {
     .eq('paid_on', paidOn)
     .eq('amount', amount)
     .eq('product', product)
-    .eq('payment_channel', paymentChannel || null)
-    .eq('transaction_code', transactionCode || null)
     .order('created_at', { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -138,9 +135,6 @@ async function savePayment(formData: FormData) {
       product,
       amount,
       paid_on: paidOn,
-      payment_channel: paymentChannel || null,
-      transaction_code: transactionCode || null,
-      bank_slip: bankSlip && typeof bankSlip !== 'string' ? null : null,
     })
     .select('*')
     .single();
@@ -251,12 +245,12 @@ async function savePayment(formData: FormData) {
   ].filter(Boolean);
 
   const { error: noteError } = await supabase.from('notes').insert({
-  company_id: companyId,
-  account_id: accountId,
-  author_id: '11111111-1111-1111-1111-111111111111',
-  created_by_name: 'System User',
-  body: noteParts.join(' | '),
-});
+    company_id: companyId,
+    account_id: accountId,
+    author_id: '11111111-1111-1111-1111-111111111111',
+    created_by_name: 'System User',
+    body: noteParts.join(' | '),
+  });
 
   if (noteError) {
     throw new Error(noteError.message);
