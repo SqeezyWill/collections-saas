@@ -99,11 +99,17 @@ const SAVED_VIEWS = [
     buildHref: () => '/accounts?status=Paid',
   },
   {
-    key: 'escalated',
-    label: 'Escalated Accounts',
-    helper: 'Accounts needing management attention',
-    buildHref: () => '/accounts?status=Escalated',
-  },
+  key: 'escalated',
+  label: 'Escalated Accounts',
+  helper: 'Accounts needing management attention',
+  buildHref: () => '/accounts?status=Escalated',
+},
+{
+  key: 'pending_closure',
+  label: 'Pending Closure Approval',
+  helper: 'Accounts awaiting admin closure decision',
+  buildHref: () => '/accounts?status=Pending%20Closure%20Approval',
+},
 ] as const;
 
 type UserProfile = {

@@ -399,14 +399,18 @@ function buildPrimaryDashboardState(input: {
   );
 
   const staleAccounts = accountList.filter((item) => {
-    if (!item.last_action_date) return true;
-    const diff = diffDaysFromToday(item.last_action_date);
-    return diff !== null && diff <= -3;
-  });
+  if (!item.last_action_date) return true;
+  const diff = diffDaysFromToday(item.last_action_date);
+  return diff !== null && diff <= -3;
+});
 
-  const brokenPtpAccounts = normalizedPtps.filter(
-    (ptp) => ptp.effectiveStatus === 'Broken'
-  );
+const pendingClosureAccounts = accountList.filter(
+  (item) => String(item.status || '').trim() === 'Pending Closure Approval'
+).length;
+
+const brokenPtpAccounts = normalizedPtps.filter(
+  (ptp) => ptp.effectiveStatus === 'Broken'
+);
 
   const todayWorkQueue = [
     {
@@ -450,13 +454,21 @@ function buildPrimaryDashboardState(input: {
         : 'Callback actions missed and still pending',
     },
     {
-      title: isAgent ? 'My Stale Accounts' : 'Stale Accounts',
-      count: staleAccounts.length,
-      href: '/accounts',
-      helper: isAgent
-        ? 'Assigned accounts with no recent action in 3+ days'
-        : 'Accounts with no recent action in 3+ days',
-    },
+  title: isAgent ? 'My Stale Accounts' : 'Stale Accounts',
+  count: staleAccounts.length,
+  href: '/accounts',
+  helper: isAgent
+    ? 'Assigned accounts with no recent action in 3+ days'
+    : 'Accounts with no recent action in 3+ days',
+},
+{
+  title: isAgent ? 'My Pending Closures' : 'Pending Closure Approval',
+  count: pendingClosureAccounts,
+  href: '/accounts?status=Pending%20Closure%20Approval',
+  helper: isAgent
+    ? 'Assigned accounts awaiting admin closure decision'
+    : 'Accounts awaiting admin closure decision',
+},
   ];
 
   const alerts = [
@@ -479,11 +491,17 @@ function buildPrimaryDashboardState(input: {
       href: '/accounts?filter=ptps-due-today',
     },
     {
-      title: isAgent ? 'Your stale accounts' : 'Stale accounts',
-      count: staleAccounts.length,
-      tone: staleAccounts.length > 0 ? 'amber' : 'slate',
-      href: '/accounts',
-    },
+  title: isAgent ? 'Your stale accounts' : 'Stale accounts',
+  count: staleAccounts.length,
+  tone: staleAccounts.length > 0 ? 'amber' : 'slate',
+  href: '/accounts',
+},
+{
+  title: isAgent ? 'Pending closures in your portfolio' : 'Pending closure approvals',
+  count: pendingClosureAccounts,
+  tone: pendingClosureAccounts > 0 ? 'blue' : 'slate',
+  href: '/accounts?status=Pending%20Closure%20Approval',
+},
   ];
 
   const quickViews = [
@@ -519,10 +537,17 @@ function buildPrimaryDashboardState(input: {
       helper: isAgent ? 'Track payment activity on your accounts' : 'Track payment activity',
     },
     {
-      label: isAgent ? 'My Portfolio View' : 'Portfolio View',
-      href: '/accounts',
-      helper: isAgent ? 'Open your assigned accounts portfolio' : 'Open the full collections portfolio',
-    },
+  label: isAgent ? 'My Portfolio View' : 'Portfolio View',
+  href: '/accounts',
+  helper: isAgent ? 'Open your assigned accounts portfolio' : 'Open the full collections portfolio',
+},
+{
+  label: isAgent ? 'My Pending Closures' : 'Pending Closure Approval',
+  href: '/accounts?status=Pending%20Closure%20Approval',
+  helper: isAgent
+    ? 'Open assigned accounts awaiting admin closure decision'
+    : 'Open all accounts awaiting admin closure decision',
+},
   ];
 
   return {
@@ -579,8 +604,11 @@ function buildSecondaryDashboardState(input: {
   const ptpsDueToday = dueTodayPtpAccountIds.size;
 
   const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
-  const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
-  const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
+const pendingClosureAccounts = accountList.filter(
+  (item) => String(item.status || '').trim() === 'Pending Closure Approval'
+).length;
+const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
+const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
 
   const totalAssignedValue = outstanding + totalCollected;
   const collectionRate = totalAssignedValue > 0 ? (totalCollected / totalAssignedValue) * 100 : 0;
@@ -710,9 +738,12 @@ const collectorPerformance = collectors.map((collector) => {
       ],
     },
     {
-      category: 'Follow-up',
-      rows: [{ metric: 'Escalated Accounts', value: escalatedAccounts.toLocaleString() }],
-    },
+  category: 'Follow-up',
+  rows: [
+    { metric: 'Escalated Accounts', value: escalatedAccounts.toLocaleString() },
+    { metric: 'Pending Closure Approval', value: pendingClosureAccounts.toLocaleString() },
+  ],
+},
   ];
 
   return {
