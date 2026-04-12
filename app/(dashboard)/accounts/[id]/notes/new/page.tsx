@@ -74,6 +74,13 @@ function badgeClasses(type: HistoryItem['type']) {
   return 'bg-slate-100 text-slate-700';
 }
 
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return '-';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return '-';
+  return parsed.toLocaleString();
+}
+
 export default async function NotesHistoryPage({ params, searchParams }: PageProps) {
   const { id } = await params;
   const sp = (await searchParams) || {};
@@ -135,30 +142,30 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
     }
 
     const {
-  data: { session },
-} = await supabase.auth.getSession();
+      data: { session },
+    } = await supabase.auth.getSession();
 
-const userId = String(session?.user?.id || '').trim();
+    const userId = String(session?.user?.id || '').trim();
 
-let noteAuthorName = 'System User';
+    let noteAuthorName = 'System User';
 
-if (userId) {
-  const { data: noteProfile } = await supabase
-    .from('user_profiles')
-    .select('name')
-    .eq('id', userId)
-    .maybeSingle();
+    if (userId) {
+      const { data: noteProfile } = await supabase
+        .from('user_profiles')
+        .select('name')
+        .eq('id', userId)
+        .maybeSingle();
 
-  noteAuthorName = String(noteProfile?.name || '').trim() || 'System User';
-}
+      noteAuthorName = String(noteProfile?.name || '').trim() || 'System User';
+    }
 
-const { error } = await supabase.from('notes').insert({
-  company_id: account.company_id ?? 'b4f07164-1706-4904-a304-b38efb88ebf3',
-  account_id: id,
-  author_id: userId || '11111111-1111-1111-1111-111111111111',
-  created_by_name: noteAuthorName,
-  body: noteDetails,
-});
+    const { error } = await supabase.from('notes').insert({
+      company_id: account.company_id ?? 'b4f07164-1706-4904-a304-b38efb88ebf3',
+      account_id: id,
+      author_id: userId || '11111111-1111-1111-1111-111111111111',
+      created_by_name: noteAuthorName,
+      body: noteDetails,
+    });
 
     if (error) {
       throw new Error(error.message);
@@ -355,11 +362,7 @@ const { error } = await supabase.from('notes').insert({
                           <p className="mt-1 text-sm text-slate-600">{item.text}</p>
                           <p className="mt-2 text-xs text-slate-500">By: {item.user}</p>
                         </div>
-                        <p className="text-xs text-slate-500">
-  {item.created_at
-    ? new Date(item.created_at).toLocaleString()
-    : '-'}
-</p>
+                        <p className="text-xs text-slate-500">{formatDateTime(item.created_at)}</p>
                       </div>
                     </div>
                   ))
@@ -409,7 +412,7 @@ const { error } = await supabase.from('notes').insert({
                       <p className="mt-2 text-xs text-slate-500">By: {item.user}</p>
                     </div>
 
-                    <p className="text-xs text-slate-500">{formatDate(item.created_at)}</p>
+                    <p className="text-xs text-slate-500">{formatDateTime(item.created_at)}</p>
                   </div>
                 </div>
               ))}
