@@ -88,6 +88,7 @@ type SecondaryDashboardState = {
     brokenPtps: number;
     ptpKeptRate: string;
     callbacks: number;
+    closedAccounts: number;
   }>;
   accountCoverage: Array<{
     product: string;
@@ -608,13 +609,14 @@ function buildSecondaryDashboardState(input: {
   const ptpsDueToday = dueTodayPtpAccountIds.size;
 
   const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
-const pendingClosureAccounts = useFreshPendingClosureCounts
-  ? accountList.filter(
-      (item) => String(item.status || '').trim() === 'Pending Closure Approval'
-    ).length
-  : 0;
+const pendingClosureAccounts = accountList.filter(
+  (item) => String(item.status || '').trim() === 'Pending Closure Approval'
+).length;
 const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
 const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
+const closedAccounts = accountList.filter(
+  (item) => String(item.status || '').trim() === 'Closed'
+).length;
 
   const totalAssignedValue = outstanding + totalCollected;
   const collectionRate = totalAssignedValue > 0 ? (totalCollected / totalAssignedValue) * 100 : 0;
@@ -657,20 +659,23 @@ const collectorPerformance = collectors.map((collector) => {
     ).length;
 
     return {
-      collector,
-      assignedAccounts: collectorAccounts.length,
-      totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-      totalCollected: collectorCollected,
-      openPtps: collectorOpenPtpAccounts.size,
-      keptPtps: collectorKeptPtps,
-      brokenPtps: collectorBrokenPtps,
-      ptpKeptRate:
-        collectorResolvedPtps > 0
-          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-          : '0.0%',
-      callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
-        .length,
-    };
+  collector,
+  assignedAccounts: collectorAccounts.length,
+  totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+  totalCollected: collectorCollected,
+  openPtps: collectorOpenPtpAccounts.size,
+  keptPtps: collectorKeptPtps,
+  brokenPtps: collectorBrokenPtps,
+  ptpKeptRate:
+    collectorResolvedPtps > 0
+      ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+      : '0.0%',
+  callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
+    .length,
+  closedAccounts: collectorAccounts.filter(
+    (account) => String(account.status || '').trim() === 'Closed'
+  ).length,
+};
   });
 
   const accountProducts = Array.from(
@@ -717,13 +722,14 @@ const collectorPerformance = collectors.map((collector) => {
 
   const portfolioAnalysisGroups = [
     {
-      category: 'Accounts',
-      rows: [
-        { metric: isAgent ? 'My Accounts' : 'Total Accounts', value: totalAccounts.toLocaleString() },
-        { metric: 'Paid Accounts', value: paidAccounts.toLocaleString() },
-        { metric: 'Open Accounts', value: openAccounts.toLocaleString() },
-      ],
-    },
+  category: 'Accounts',
+  rows: [
+    { metric: isAgent ? 'My Accounts' : 'Total Accounts', value: totalAccounts.toLocaleString() },
+    { metric: 'Paid Accounts', value: paidAccounts.toLocaleString() },
+    { metric: 'Open Accounts', value: openAccounts.toLocaleString() },
+    { metric: 'Closed Accounts', value: closedAccounts.toLocaleString() },
+  ],
+},
     {
       category: 'Exposure',
       rows: [
@@ -1365,28 +1371,30 @@ setSecondaryLoading(true);
               <div>
                 <h2 className="section-title mb-3">Collector Scorecard</h2>
                 <DataTable
-                  headers={[
-                    'Collector',
-                    'Assigned',
-                    'Total Collected',
-                    'Open PTP Accounts',
-                    'Kept PTPs',
-                    'Broken PTPs',
-                    'PTP Kept Rate',
-                    'Callbacks',
-                  ]}
-                >
+  headers={[
+    'Collector',
+    'Assigned',
+    'Total Collected',
+    'Open PTP Accounts',
+    'Kept PTPs',
+    'Broken PTPs',
+    'PTP Kept Rate',
+    'Callbacks',
+    'Closed Accounts',
+  ]}
+>
                   {secondary.collectorPerformance.map((item) => (
                     <tr key={item.collector}>
-                      <td className="px-4 py-3 font-medium">{item.collector}</td>
-                      <td className="px-4 py-3">{item.assignedAccounts}</td>
-                      <td className="px-4 py-3">{currency(item.totalCollected)}</td>
-                      <td className="px-4 py-3">{item.openPtps}</td>
-                      <td className="px-4 py-3">{item.keptPtps}</td>
-                      <td className="px-4 py-3">{item.brokenPtps}</td>
-                      <td className="px-4 py-3">{item.ptpKeptRate}</td>
-                      <td className="px-4 py-3">{item.callbacks}</td>
-                    </tr>
+  <td className="px-4 py-3 font-medium">{item.collector}</td>
+  <td className="px-4 py-3">{item.assignedAccounts}</td>
+  <td className="px-4 py-3">{currency(item.totalCollected)}</td>
+  <td className="px-4 py-3">{item.openPtps}</td>
+  <td className="px-4 py-3">{item.keptPtps}</td>
+  <td className="px-4 py-3">{item.brokenPtps}</td>
+  <td className="px-4 py-3">{item.ptpKeptRate}</td>
+  <td className="px-4 py-3">{item.callbacks}</td>
+  <td className="px-4 py-3">{item.closedAccounts}</td>
+</tr>
                   ))}
                 </DataTable>
               </div>
