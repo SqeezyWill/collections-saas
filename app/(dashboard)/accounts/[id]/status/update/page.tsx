@@ -550,13 +550,31 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       notes ? `Notes: ${notes}` : '',
     ].filter(Boolean);
 
-    const { error: noteError } = await supabase.from('notes').insert({
-      company_id: account.company_id,
-      account_id: id,
-      author_id: '11111111-1111-1111-1111-111111111111',
-      created_by_name: 'System User',
-      body: noteLines.join('\n'),
-    });
+    const {
+  data: { session },
+} = await supabase.auth.getSession();
+
+const userId = String(session?.user?.id || '').trim();
+
+let noteAuthorName = 'System User';
+
+if (userId) {
+  const { data: noteProfile } = await supabase
+    .from('user_profiles')
+    .select('name')
+    .eq('id', userId)
+    .maybeSingle();
+
+  noteAuthorName = String(noteProfile?.name || '').trim() || 'System User';
+}
+
+const { error: noteError } = await supabase.from('notes').insert({
+  company_id: account.company_id,
+  account_id: id,
+  author_id: userId || '11111111-1111-1111-1111-111111111111',
+  created_by_name: noteAuthorName,
+  body: noteLines.join('\n'),
+});
 
     if (noteError) {
       throw new Error(noteError.message);

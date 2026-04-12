@@ -698,6 +698,8 @@ const canCloseOrReopen = isAdminRole || !isAgent;
 const canEditBalances = isAdminRole || !isAgent;
 
 const collectorScope = String(profile.name || '').trim();
+const actingUserId = String(profile.id || '').trim() || '11111111-1111-1111-1111-111111111111';
+const actingUserName = String(profile.name || '').trim() || 'System User';
 
   async function reEvaluateStrategy() {
     'use server';
@@ -765,54 +767,78 @@ const collectorScope = String(profile.name || '').trim();
   }
 
   async function closeAccount() {
-    'use server';
+  'use server';
 
-    if (!supabaseAdmin) {
-      throw new Error('Supabase admin is not configured.');
-    }
-
-    if (!canCloseOrReopen) {
-      throw new Error('You do not have permission to close accounts.');
-    }
-
-    const { data: currentAccount, error: readError } = await supabaseAdmin
-      .from('accounts')
-      .select('id,status,company_id')
-      .eq('id', id)
-      .maybeSingle();
-
-    if (readError || !currentAccount) {
-      throw new Error(readError?.message || 'Account not found.');
-    }
-
-    if (isClosedStatus(currentAccount.status)) {
-      redirect(`/accounts/${id}`);
-    }
-
-    const today = new Date().toISOString().slice(0, 10);
-
-    const { error: updateError } = await supabaseAdmin
-      .from('accounts')
-      .update({
-        status: 'Closed',
-        last_action_date: today,
-      })
-      .eq('id', id);
-
-    if (updateError) {
-      throw new Error(updateError.message);
-    }
-
-    await supabaseAdmin.from('notes').insert({
-      company_id: currentAccount.company_id,
-      account_id: id,
-      author_id: '11111111-1111-1111-1111-111111111111',
-      created_by_name: 'System User',
-      body: 'Admin action: Account closed. Notes and account changes are now locked until reopened.',
-    });
-
-    redirect(`/accounts/${id}`);
+  if (!supabaseAdmin) {
+    throw new Error('Supabase admin is not configured.');
   }
+
+  if (!canCloseOrReopen) {
+    throw new Error('You do not have permission to close accounts.');
+  }
+
+  const { data: currentAccount, error: readError } = await supabaseAdmin
+    .from('accounts')
+    .select('id,status,company_id,collector_name')
+    .eq('id', id)
+    .maybeSingle();
+
+  if (readError || !currentAccount) {
+    throw new Error(readError?.message || 'Account not found.');
+  }
+
+  if (isClosedStatus(currentAccount.status)) {
+    redirect('/accounts?status=Pending%20Closure%20Approval');
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+
+  const { error: updateError } = await supabaseAdmin
+    .from('accounts')
+    .update({
+      status: 'Closed',
+      last_action_date: today,
+    })
+    .eq('id', id);
+
+  if (updateError) {
+    throw new Error(updateError.message);
+  }
+
+  await supabaseAdmin.from('notes').insert({
+    company_id: currentAccount.company_id,
+    account_id: id,
+    author_id: '11111111-1111-1111-1111-111111111111',
+    created_by_name: 'System User',
+    body: 'Admin action: Account closed. Notes and account changes are now locked until reopened.',
+  });
+
+  let nextPendingQuery = supabaseAdmin
+    .from('accounts')
+    .select('id')
+    .eq('company_id', currentAccount.company_id)
+    .eq('status', 'Pending Closure Approval')
+    .neq('id', id)
+    .order('last_action_date', { ascending: true, nullsFirst: true })
+    .order('created_at', { ascending: true })
+    .limit(1);
+
+  if (isAgent && collectorScope) {
+    nextPendingQuery = nextPendingQuery.eq('collector_name', collectorScope);
+  }
+
+  const { data: nextPending, error: nextPendingError } = await nextPendingQuery.maybeSingle();
+
+  if (nextPendingError) {
+    throw new Error(nextPendingError.message);
+  }
+
+  if (nextPending?.id) {
+    redirect(`/accounts/${nextPending.id}`);
+  }
+
+  redirect('/accounts?status=Pending%20Closure%20Approval');
+}
 
   async function reopenAccount() {
     'use server';
@@ -854,12 +880,12 @@ const collectorScope = String(profile.name || '').trim();
     }
 
     await supabaseAdmin.from('notes').insert({
-      company_id: currentAccount.company_id,
-      account_id: id,
-      author_id: '11111111-1111-1111-1111-111111111111',
-      created_by_name: 'System User',
-      body: 'Admin action: Account reopened. Notes and account updates are enabled again.',
-    });
+  company_id: currentAccount.company_id,
+  account_id: id,
+  author_id: actingUserId,
+  created_by_name: actingUserName,
+  body: 'Admin action: Account reopened. Notes and account updates are enabled again.',
+});
 
     redirect(`/accounts/${id}`);
   }
@@ -940,10 +966,11 @@ const collectorScope = String(profile.name || '').trim();
     }
 
     await supabaseAdmin.from('notes').insert({
-      company_id: currentAccount.company_id,
-      account_id: targetAccountId,
-      created_by_name: 'System User',
-      body: [
+  company_id: currentAccount.company_id,
+  account_id: targetAccountId,
+  author_id: actingUserId,
+  created_by_name: actingUserName,
+  body: [
         'Admin account totals correction applied.',
         `Previous Balance: ${currency(Number(currentAccount.balance || 0))}`,
         `New Balance: ${currency(newBalance)}`,
@@ -1311,12 +1338,21 @@ const collectorScope = String(profile.name || '').trim();
   return (
     <div className="space-y-6">
       <div>
-        <Link
-          href="/accounts"
-          className="mb-3 inline-flex text-sm font-medium text-slate-500 hover:text-slate-700"
-        >
-          ← Back to Portfolio
-        </Link>
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+  <Link
+    href="/accounts"
+    className="inline-flex text-sm font-medium text-slate-500 hover:text-slate-700"
+  >
+    ← Back to Portfolio
+  </Link>
+
+  <Link
+    href="/accounts?status=Pending%20Closure%20Approval"
+    className="inline-flex text-sm font-medium text-blue-600 hover:text-blue-800"
+  >
+    Pending Closure Queue
+  </Link>
+</div>
 
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
