@@ -336,8 +336,9 @@ function buildPrimaryDashboardState(input: {
   payments: DashboardPaymentRow[];
   normalizedPtps: Array<DashboardPtpRow & { effectiveStatus: string; effectiveKeptAmount: number }>;
   isAgent: boolean;
+  useFreshPendingClosureCounts: boolean;
 }): PrimaryDashboardState {
-  const { accountList, payments, normalizedPtps, isAgent } = input;
+  const { accountList, payments, normalizedPtps, isAgent, useFreshPendingClosureCounts } = input;
 
   const totalAccounts = accountList.length;
   const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
@@ -404,9 +405,11 @@ function buildPrimaryDashboardState(input: {
   return diff !== null && diff <= -3;
 });
 
-const pendingClosureAccounts = accountList.filter(
-  (item) => String(item.status || '').trim() === 'Pending Closure Approval'
-).length;
+const pendingClosureAccounts = useFreshPendingClosureCounts
+  ? accountList.filter(
+      (item) => String(item.status || '').trim() === 'Pending Closure Approval'
+    ).length
+  : 0;
 
 const brokenPtpAccounts = normalizedPtps.filter(
   (ptp) => ptp.effectiveStatus === 'Broken'
@@ -570,8 +573,9 @@ function buildSecondaryDashboardState(input: {
   accountList: DashboardAccountRow[];
   normalizedPtps: Array<DashboardPtpRow & { effectiveStatus: string; effectiveKeptAmount: number }>;
   isAgent: boolean;
+  useFreshPendingClosureCounts: boolean;
 }): SecondaryDashboardState {
-  const { accountList, normalizedPtps, isAgent } = input;
+  const { accountList, normalizedPtps, isAgent, useFreshPendingClosureCounts } = input;
 
   const totalAccounts = accountList.length;
   const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
@@ -604,9 +608,11 @@ function buildSecondaryDashboardState(input: {
   const ptpsDueToday = dueTodayPtpAccountIds.size;
 
   const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
-const pendingClosureAccounts = accountList.filter(
-  (item) => String(item.status || '').trim() === 'Pending Closure Approval'
-).length;
+const pendingClosureAccounts = useFreshPendingClosureCounts
+  ? accountList.filter(
+      (item) => String(item.status || '').trim() === 'Pending Closure Approval'
+    ).length
+  : 0;
 const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
 const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
 
@@ -764,11 +770,12 @@ export default function DashboardPage() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [loadingData, setLoadingData] = useState(true);
   const [cacheHydrated, setCacheHydrated] = useState(false);
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [restoredFromCache, setRestoredFromCache] = useState(false);
-  const [resolvedCompanyId, setResolvedCompanyId] = useState('');
-  const [secondaryReady, setSecondaryReady] = useState(false);
-  const [secondaryLoading, setSecondaryLoading] = useState(false);
+const [isRefreshing, setIsRefreshing] = useState(false);
+const [restoredFromCache, setRestoredFromCache] = useState(false);
+const [resolvedCompanyId, setResolvedCompanyId] = useState('');
+const [secondaryReady, setSecondaryReady] = useState(false);
+const [secondaryLoading, setSecondaryLoading] = useState(false);
+const [hasFreshDashboardData, setHasFreshDashboardData] = useState(false);
 
   const normalizedProfileRole = normalizeRole(profile?.role);
   const normalizedProfileName = normalizeName(profile?.name);
@@ -807,14 +814,15 @@ export default function DashboardPage() {
       }
 
       if (
-        parsed?.profile ||
-        Array.isArray(parsed?.accountList) ||
-        Array.isArray(parsed?.payments) ||
-        Array.isArray(parsed?.ptps)
-      ) {
-        setRestoredFromCache(true);
-        setLoadingData(false);
-      }
+  parsed?.profile ||
+  Array.isArray(parsed?.accountList) ||
+  Array.isArray(parsed?.payments) ||
+  Array.isArray(parsed?.ptps)
+) {
+  setRestoredFromCache(true);
+  setHasFreshDashboardData(false);
+  setLoadingData(false);
+}
     } catch {
       // ignore cache errors
     } finally {
@@ -949,18 +957,19 @@ export default function DashboardPage() {
         if (!mounted) return;
 
         setProfile(resolvedProfile);
-        setResolvedCompanyId(companyId);
-        setAccountList(accountsRows as DashboardAccountRow[]);
-        setPayments(paymentsRows as DashboardPaymentRow[]);
-        setPtps(ptpRows as DashboardPtpRow[]);
-        setSessionError(null);
-        setDataError(null);
-        setLoadingProfile(false);
-        setLoadingData(false);
-        setIsRefreshing(false);
-        setRestoredFromCache(false);
-        setSecondaryReady(false);
-        setSecondaryLoading(true);
+setResolvedCompanyId(companyId);
+setAccountList(accountsRows as DashboardAccountRow[]);
+setPayments(paymentsRows as DashboardPaymentRow[]);
+setPtps(ptpRows as DashboardPtpRow[]);
+setSessionError(null);
+setDataError(null);
+setLoadingProfile(false);
+setLoadingData(false);
+setIsRefreshing(false);
+setRestoredFromCache(false);
+setHasFreshDashboardData(true);
+setSecondaryReady(false);
+setSecondaryLoading(true);
       } catch (error: any) {
         if (!mounted) return;
 
@@ -1089,25 +1098,27 @@ export default function DashboardPage() {
   }, [ptps, paymentsByAccountId]);
 
   const primary = useMemo(
-    () =>
-      buildPrimaryDashboardState({
-        accountList,
-        payments,
-        normalizedPtps,
-        isAgent,
-      }),
-    [accountList, payments, normalizedPtps, isAgent]
-  );
+  () =>
+    buildPrimaryDashboardState({
+      accountList,
+      payments,
+      normalizedPtps,
+      isAgent,
+      useFreshPendingClosureCounts: hasFreshDashboardData,
+    }),
+  [accountList, payments, normalizedPtps, isAgent, hasFreshDashboardData]
+);
 
   const secondary = useMemo(
-    () =>
-      buildSecondaryDashboardState({
-        accountList,
-        normalizedPtps,
-        isAgent,
-      }),
-    [accountList, normalizedPtps, isAgent]
-  );
+  () =>
+    buildSecondaryDashboardState({
+      accountList,
+      normalizedPtps,
+      isAgent,
+      useFreshPendingClosureCounts: hasFreshDashboardData,
+    }),
+  [accountList, normalizedPtps, isAgent, hasFreshDashboardData]
+);
 
   if (
     (loadingProfile || loadingData) &&
