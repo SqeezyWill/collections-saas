@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { getRequestUserProfile } from '@/lib/server-auth';
 import { currency, formatDate } from '@/lib/utils';
 
 type PageProps = {
@@ -141,31 +142,25 @@ export default async function NotesHistoryPage({ params, searchParams }: PagePro
       redirect(`/accounts/${id}/notes/new`);
     }
 
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    const authResult = await getRequestUserProfile();
 
-    const userId = String(session?.user?.id || '').trim();
+const userId =
+  'error' in authResult
+    ? '11111111-1111-1111-1111-111111111111'
+    : String(authResult.id || '').trim() || '11111111-1111-1111-1111-111111111111';
 
-    let noteAuthorName = 'System User';
+const noteAuthorName =
+  'error' in authResult
+    ? 'System User'
+    : String(authResult.name || '').trim() || 'System User';
 
-    if (userId) {
-      const { data: noteProfile } = await supabase
-        .from('user_profiles')
-        .select('name')
-        .eq('id', userId)
-        .maybeSingle();
-
-      noteAuthorName = String(noteProfile?.name || '').trim() || 'System User';
-    }
-
-    const { error } = await supabase.from('notes').insert({
-      company_id: account.company_id ?? 'b4f07164-1706-4904-a304-b38efb88ebf3',
-      account_id: id,
-      author_id: userId || '11111111-1111-1111-1111-111111111111',
-      created_by_name: noteAuthorName,
-      body: noteDetails,
-    });
+const { error } = await supabase.from('notes').insert({
+  company_id: account.company_id ?? 'b4f07164-1706-4904-a304-b38efb88ebf3',
+  account_id: id,
+  author_id: userId,
+  created_by_name: noteAuthorName,
+  body: noteDetails,
+});
 
     if (error) {
       throw new Error(error.message);
