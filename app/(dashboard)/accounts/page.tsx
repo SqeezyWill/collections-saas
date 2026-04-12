@@ -1413,7 +1413,7 @@ export default function AccountsPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" open>
+        <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
           <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-slate-900">Saved Views</h2>
