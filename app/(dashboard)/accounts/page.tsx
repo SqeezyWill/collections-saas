@@ -99,17 +99,17 @@ const SAVED_VIEWS = [
     buildHref: () => '/accounts?status=Paid',
   },
   {
-  key: 'escalated',
-  label: 'Escalated Accounts',
-  helper: 'Accounts needing management attention',
-  buildHref: () => '/accounts?status=Escalated',
-},
-{
-  key: 'pending_closure',
-  label: 'Pending Closure Approval',
-  helper: 'Accounts awaiting admin closure decision',
-  buildHref: () => '/accounts?status=Pending%20Closure%20Approval',
-},
+    key: 'escalated',
+    label: 'Escalated Accounts',
+    helper: 'Accounts needing management attention',
+    buildHref: () => '/accounts?status=Escalated',
+  },
+  {
+    key: 'pending_closure',
+    label: 'Pending Closure Approval',
+    helper: 'Accounts awaiting admin closure decision',
+    buildHref: () => '/accounts?status=Pending%20Closure%20Approval',
+  },
 ] as const;
 
 type UserProfile = {
@@ -1413,15 +1413,20 @@ export default function AccountsPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <div className="mb-4">
-            <h2 className="text-lg font-semibold text-slate-900">Saved Views</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Jump quickly into common operational worklists.
-            </p>
-          </div>
+        <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" open>
+          <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-900">Saved Views</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Jump quickly into common operational worklists.
+              </p>
+            </div>
+            <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+              Expand
+            </span>
+          </summary>
 
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {SAVED_VIEWS.map((view) => {
               const href = view.buildHref();
               const isActive = isSavedViewActive(view.key);
@@ -1444,18 +1449,23 @@ export default function AccountsPage() {
               );
             })}
           </div>
-        </div>
+        </details>
 
         {canUseBulkActions ? (
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-4">
-              <h2 className="text-lg font-semibold text-slate-900">Bulk Selection</h2>
-              <p className="mt-1 text-sm text-slate-500">
-                Work on selected accounts faster from the current page.
-              </p>
-            </div>
+          <details className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <summary className="flex cursor-pointer list-none items-start justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900">Bulk Selection</h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  Work on selected accounts faster from the current page.
+                </p>
+              </div>
+              <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+                Expand
+              </span>
+            </summary>
 
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs uppercase tracking-wide text-slate-500">Selected</p>
                 <p className="mt-2 text-2xl font-semibold text-slate-900">{selectedIds.length}</p>
@@ -1553,7 +1563,7 @@ export default function AccountsPage() {
                 {bulkMessage}
               </p>
             ) : null}
-          </div>
+          </details>
         ) : (
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-4">
