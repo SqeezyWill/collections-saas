@@ -686,14 +686,18 @@ if ('error' in authResult) {
 }
 
   const normalizedRole = normalizeRole(profile.role);
-  const isAgent = normalizedRole === 'agent';
-  const canManageAssignments =
-    normalizedRole === 'super_admin' || normalizedRole === 'admin';
-  const canCloseOrReopen =
-    normalizedRole === 'super_admin' || normalizedRole === 'admin';
-  const canEditBalances =
-    normalizedRole === 'super_admin' || normalizedRole === 'admin';
-  const collectorScope = String(profile.name || '').trim();
+const isAgent = normalizedRole === 'agent';
+const isAdminRole =
+  normalizedRole === 'admin' ||
+  normalizedRole === 'super_admin' ||
+  normalizedRole === 'superadmin' ||
+  normalizedRole.includes('admin');
+
+const canManageAssignments = isAdminRole;
+const canCloseOrReopen = isAdminRole;
+const canEditBalances = isAdminRole;
+
+const collectorScope = String(profile.name || '').trim();
 
   async function reEvaluateStrategy() {
     'use server';
