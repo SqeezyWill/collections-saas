@@ -694,8 +694,8 @@ const isAdminRole =
   normalizedRole.includes('admin');
 
 const canManageAssignments = isAdminRole;
-const canCloseOrReopen = isAdminRole;
-const canEditBalances = isAdminRole;
+const canCloseOrReopen = isAdminRole || !isAgent;
+const canEditBalances = isAdminRole || !isAgent;
 
 const collectorScope = String(profile.name || '').trim();
 
