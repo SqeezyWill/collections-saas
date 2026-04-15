@@ -136,6 +136,9 @@ type AccountRow = {
   status: string | null;
   days_late_lastinstallment?: number | string | null;
   dpd?: number | string | null;
+  created_at?: string | null;
+  uploaded_at?: string | null;
+  outsource_date?: string | null;
   last_action_date: string | null;
   next_action_date?: string | null;
   identification: string | null;
@@ -200,16 +203,86 @@ function toNumberOrNull(value: unknown) {
   return Number.isFinite(num) ? num : null;
 }
 
+function parseDateLike(value: unknown): Date | null {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw || raw === '0') return null;
+
+  const isoOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoOnly) {
+    const year = Number(isoOnly[1]);
+    const month = Number(isoOnly[2]);
+    const day = Number(isoOnly[3]);
+    const parsed = new Date(year, month - 1, day);
+
+    if (
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  const ddmmyyyy = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (ddmmyyyy) {
+    const day = Number(ddmmyyyy[1]);
+    const month = Number(ddmmyyyy[2]);
+    const year = Number(ddmmyyyy[3]);
+    const parsed = new Date(year, month - 1, day);
+
+    if (
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function diffInDays(from: Date, to: Date) {
+  const start = startOfLocalDay(from).getTime();
+  const end = startOfLocalDay(to).getTime();
+  return Math.floor((end - start) / 86400000);
+}
+
+function getDpdAnchorDate(row: Partial<AccountRow>) {
+  return (
+    parseDateLike(row.created_at) ||
+    parseDateLike(row.uploaded_at) ||
+    parseDateLike(row.outsource_date) ||
+    null
+  );
+}
+
 function getDaysLate(row: Partial<AccountRow>) {
   if (isClosedStatus(row.status)) return 0;
 
-  const lastInstallment = toNumberOrNull(row.days_late_lastinstallment);
-  if (lastInstallment !== null) return lastInstallment;
+  const baseDpd =
+    toNumberOrNull(row.dpd) ??
+    toNumberOrNull(row.days_late_lastinstallment) ??
+    0;
 
-  const dpd = toNumberOrNull(row.dpd);
-  if (dpd !== null) return dpd;
+  const anchor = getDpdAnchorDate(row);
+  if (!anchor) return Math.max(0, baseDpd);
 
-  return 0;
+  const today = new Date();
+  const elapsed = Math.max(0, diffInDays(anchor, today));
+
+  return Math.max(0, baseDpd + elapsed);
 }
 
 function buildSearchClause(searchField: SearchField, safeSearch: string) {
