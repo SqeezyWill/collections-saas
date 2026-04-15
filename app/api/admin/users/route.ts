@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { requireSuperAdminRole } from '@/lib/server-auth';
+import { getRequestUserProfile } from '@/lib/server-auth';
 
 const PROFILE_TABLE = 'user_profiles';
 const COMPANIES_TABLE = 'companies';
@@ -66,13 +66,18 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
     }
 
-    const auth = await requireSuperAdminRole(req);
-    if ('error' in auth) {
-      return NextResponse.json(
-        { error: auth.error || 'Unauthorized' },
-        { status: auth.status || 401 }
-      );
-    }
+    const auth = await getRequestUserProfile(req);
+if ('error' in auth) {
+  return NextResponse.json(
+    { error: auth.error || 'Unauthorized' },
+    { status: auth.status || 401 }
+  );
+}
+
+const normalizedRole = normalizeRole(auth.role);
+if (normalizedRole !== 'super_admin' && normalizedRole !== 'admin') {
+  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+}
 
     const companyId = await resolveFixedCompanyId();
 
@@ -111,13 +116,18 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Supabase admin is not configured.' }, { status: 500 });
     }
 
-    const auth = await requireSuperAdminRole(req);
-    if ('error' in auth) {
-      return NextResponse.json(
-        { error: auth.error || 'Unauthorized' },
-        { status: auth.status || 401 }
-      );
-    }
+    const auth = await getRequestUserProfile(req);
+if ('error' in auth) {
+  return NextResponse.json(
+    { error: auth.error || 'Unauthorized' },
+    { status: auth.status || 401 }
+  );
+}
+
+const normalizedRole = normalizeRole(auth.role);
+if (normalizedRole !== 'super_admin') {
+  return NextResponse.json({ error: 'Only super admins can create users.' }, { status: 401 });
+}
 
     const body = await req.json().catch(() => null);
 
