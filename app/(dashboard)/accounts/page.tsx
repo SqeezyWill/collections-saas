@@ -132,6 +132,7 @@ type AccountRow = {
   product_code: string | null;
   collector_name: string | null;
   balance: number | null;
+  total_due?: number | null;
   amount_paid: number | null;
   status: string | null;
   days_late_lastinstallment?: number | string | null;
@@ -1230,7 +1231,7 @@ export default function AccountsPage() {
     setSelectedIds([]);
   }
 
-  async function handleBulkAction(action: 'export' | 'mark_review' | 'assign') {
+  async function handleBulkAction(action: 'export' | 'mark_review' | 'assign' | 'close_selected') {
     if (!supabase) {
       setBulkMessage('Supabase is not configured.');
       return;
@@ -1317,56 +1318,132 @@ export default function AccountsPage() {
     }
 
     if (action === 'assign') {
-      if (!bulkAssignCollector.trim()) {
-        setBulkMessage('Please choose an agent first.');
-        return;
-      }
+  if (!bulkAssignCollector.trim()) {
+    setBulkMessage('Please choose an agent first.');
+    return;
+  }
 
-      setActionLoading(true);
-      setBulkMessage(null);
+  setActionLoading(true);
+  setBulkMessage(null);
 
-      try {
-        const assignDate = todayDateString();
-        const selectedAgentName = bulkAssignCollector.trim();
+  try {
+    const assignDate = todayDateString();
+    const selectedAgentName = bulkAssignCollector.trim();
 
-        const { error: assignError } = await supabase
-          .from('accounts')
-          .update({
-            collector_name: selectedAgentName,
-            last_action_date: assignDate,
-          })
-          .in('id', selectedIds);
+    const { error: assignError } = await supabase
+      .from('accounts')
+      .update({
+        collector_name: selectedAgentName,
+        last_action_date: assignDate,
+      })
+      .in('id', selectedIds);
 
-        if (assignError) {
-          throw new Error(assignError.message);
-        }
+    if (assignError) {
+      throw new Error(assignError.message);
+    }
 
-        if (profile?.company_id) {
-          const noteRows = selectedIds.map((accountId) => ({
-            company_id: profile.company_id,
-            account_id: accountId,
-            created_by_name: profile.name || 'System User',
-            body: `Bulk action: Account reassigned to ${selectedAgentName}.`,
-          }));
+    if (profile?.company_id) {
+      const noteRows = selectedIds.map((accountId) => ({
+        company_id: profile.company_id,
+        account_id: accountId,
+        created_by_name: profile.name || 'System User',
+        body: `Bulk action: Account reassigned to ${selectedAgentName}.`,
+      }));
 
-          const { error: notesError } = await supabase.from('notes').insert(noteRows);
-          if (notesError) {
-            throw new Error(notesError.message);
-          }
-        }
-
-        setBulkMessage(
-          `Reassigned ${selectedIds.length} account(s) to ${selectedAgentName}.`
-        );
-        setSelectedIds([]);
-        setBulkAssignCollector('');
-        setReloadKey((prev) => prev + 1);
-      } catch (error: any) {
-        setBulkMessage(error?.message || 'Failed to reassign selected accounts.');
-      } finally {
-        setActionLoading(false);
+      const { error: notesError } = await supabase.from('notes').insert(noteRows);
+      if (notesError) {
+        throw new Error(notesError.message);
       }
     }
+
+    setBulkMessage(
+      `Reassigned ${selectedIds.length} account(s) to ${selectedAgentName}.`
+    );
+    setSelectedIds([]);
+    setBulkAssignCollector('');
+    setReloadKey((prev) => prev + 1);
+  } catch (error: any) {
+    setBulkMessage(error?.message || 'Failed to reassign selected accounts.');
+  } finally {
+    setActionLoading(false);
+  }
+
+  return;
+}
+
+if (action === 'close_selected') {
+  setActionLoading(true);
+  setBulkMessage(null);
+
+  try {
+    const selectedRows = rows.filter((row) => selectedIds.includes(row.id));
+
+    const eligibleRows = selectedRows.filter((row) => {
+      const balance = Number(row.balance || 0);
+      const totalDue = Number(row.total_due || 0);
+      return !isClosedStatus(row.status) && balance <= 0 && totalDue <= 0;
+    });
+
+    const skippedRows = selectedRows.filter((row) => {
+      const balance = Number(row.balance || 0);
+      const totalDue = Number(row.total_due || 0);
+      return isClosedStatus(row.status) || balance > 0 || totalDue > 0;
+    });
+
+    if (eligibleRows.length === 0) {
+      setBulkMessage(
+        'No selected accounts were eligible for closure. Only accounts with both balance and total due at 0 can be closed.'
+      );
+      return;
+    }
+
+    const closeDate = todayDateString();
+    const eligibleIds = eligibleRows.map((row) => row.id);
+
+    const { error: closeError } = await supabase
+      .from('accounts')
+      .update({
+        status: 'Closed',
+        last_action_date: closeDate,
+        dpd: 0,
+        days_late_lastinstallment: 0,
+      })
+      .in('id', eligibleIds);
+
+    if (closeError) {
+      throw new Error(closeError.message);
+    }
+
+    if (profile?.company_id) {
+      const noteRows = eligibleIds.map((accountId) => ({
+        company_id: profile.company_id,
+        account_id: accountId,
+        created_by_name: profile.name || 'System User',
+        body: 'Bulk admin closure applied for zero-balance account.',
+      }));
+
+      const { error: notesError } = await supabase.from('notes').insert(noteRows);
+      if (notesError) {
+        throw new Error(notesError.message);
+      }
+    }
+
+    setBulkMessage(
+      skippedRows.length > 0
+        ? `Closed ${eligibleRows.length} account(s). Skipped ${skippedRows.length} account(s) because they were already closed or did not have both balance and total due at 0.`
+        : `Closed ${eligibleRows.length} account(s).`
+    );
+
+    setSelectedIds([]);
+    setReloadKey((prev) => prev + 1);
+  } catch (error: any) {
+    setBulkMessage(error?.message || 'Failed to close selected accounts.');
+  } finally {
+    setActionLoading(false);
+  }
+
+  return;
+}
   }
 
   function isSavedViewActive(viewKey: string) {
@@ -1558,42 +1635,51 @@ export default function AccountsPage() {
             </div>
 
             <div className="mt-4 flex flex-wrap gap-3">
-              <button
-                type="button"
-                onClick={toggleSelectPage}
-                disabled={actionLoading || bulkFilteredActionLoading}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                {allCurrentPageSelected ? 'Unselect Page' : 'Select Page'}
-              </button>
+  <button
+    type="button"
+    onClick={toggleSelectPage}
+    disabled={actionLoading || bulkFilteredActionLoading}
+    className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+  >
+    {allCurrentPageSelected ? 'Unselect Page' : 'Select Page'}
+  </button>
 
-              <button
-                type="button"
-                onClick={clearSelection}
-                disabled={actionLoading || bulkFilteredActionLoading}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                Clear Selection
-              </button>
+  <button
+    type="button"
+    onClick={clearSelection}
+    disabled={actionLoading || bulkFilteredActionLoading}
+    className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+  >
+    Clear Selection
+  </button>
 
-              <button
-                type="button"
-                onClick={() => handleBulkAction('export')}
-                disabled={actionLoading || bulkFilteredActionLoading}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                Bulk Export
-              </button>
+  <button
+    type="button"
+    onClick={() => handleBulkAction('export')}
+    disabled={actionLoading || bulkFilteredActionLoading}
+    className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+  >
+    Bulk Export
+  </button>
 
-              <button
-                type="button"
-                onClick={() => handleBulkAction('mark_review')}
-                disabled={actionLoading || bulkFilteredActionLoading}
-                className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              >
-                Mark for Review
-              </button>
-            </div>
+  <button
+    type="button"
+    onClick={() => handleBulkAction('mark_review')}
+    disabled={actionLoading || bulkFilteredActionLoading}
+    className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+  >
+    Mark for Review
+  </button>
+
+  <button
+    type="button"
+    onClick={() => handleBulkAction('close_selected')}
+    disabled={actionLoading || bulkFilteredActionLoading}
+    className="rounded-xl border border-emerald-300 bg-white px-4 py-3 text-sm font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50"
+  >
+    Close Selected Accounts
+  </button>
+</div>
 
             <div className="mt-4 flex flex-wrap items-center gap-3">
               <select
