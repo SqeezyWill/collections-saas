@@ -152,20 +152,38 @@ export default function PTPDispositionForm({
   const [nextAction, setNextAction] = useState('');
   const [ptpAmount, setPtpAmount] = useState('');
   const [ptpDueDate, setPtpDueDate] = useState('');
+  const [pushForClosure, setPushForClosure] = useState(false);
 
   const showPtpFields = contactStatus === 'Promise To Pay';
   const isDebtCleared = contactStatus === 'Debt Cleared';
 
-  const interactionOutcome = useMemo(
-    () =>
+  const interactionOutcome = useMemo(() => {
+    const derived =
       deriveInteractionOutcome({
         contactType,
         contactStatus,
         nonPaymentReason,
         nextAction,
-      }) || initialInteractionOutcome,
-    [contactType, contactStatus, nonPaymentReason, nextAction, initialInteractionOutcome]
-  );
+      }) || initialInteractionOutcome;
+
+    if (pushForClosure) {
+      return 'Pending Closure Approval';
+    }
+
+    return derived;
+  }, [
+    contactType,
+    contactStatus,
+    nonPaymentReason,
+    nextAction,
+    initialInteractionOutcome,
+    pushForClosure,
+  ]);
+
+  const showClosurePrompt =
+    contactStatus === 'Debt Cleared' ||
+    interactionOutcome === 'Paid' ||
+    nonPaymentReason === 'Already Paid';
 
   return (
     <div className="space-y-6">
@@ -223,6 +241,28 @@ export default function PTPDispositionForm({
               ))}
             </select>
           </div>
+
+          {showClosurePrompt ? (
+            <div className="md:col-span-2 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <label className="flex items-start gap-3 text-sm text-amber-800">
+                <input
+                  type="checkbox"
+                  name="push_for_closure"
+                  value="yes"
+                  checked={pushForClosure}
+                  onChange={(e) => setPushForClosure(e.target.checked)}
+                  className="mt-1 h-4 w-4 rounded border-amber-300"
+                />
+                <span>
+                  Balance appears cleared. Push this account for admin closure approval.
+                  When selected, the account will move to{' '}
+                  <span className="font-medium">Pending Closure Approval</span> and a note
+                  will be written that the agent pushed the account for closure because the
+                  client balance is 0.
+                </span>
+              </label>
+            </div>
+          ) : null}
 
           <div>
             <label className="mb-2 block text-sm font-medium text-slate-700">
