@@ -19,7 +19,7 @@ const AVAILABLE_COLUMNS = [
   { key: 'product', label: 'Product Name' },
   { key: 'product_code', label: 'Product Category' },
   { key: 'collector_name', label: 'Collector' },
-  { key: 'balance', label: 'Balance' },
+  { key: 'balance', label: 'Outstanding' },
   { key: 'amount_paid', label: 'Amount paid' },
   { key: 'status', label: 'Status' },
   { key: 'days_late', label: 'Days Late' },
@@ -284,6 +284,12 @@ function getDaysLate(row: Partial<AccountRow>) {
   const elapsed = Math.max(0, diffInDays(anchor, today));
 
   return Math.max(0, baseDpd + elapsed);
+}
+
+function getOutstandingAmount(row: Partial<AccountRow>) {
+  const balance = Math.max(0, Number(row.balance || 0));
+  const totalDue = Math.max(0, Number(row.total_due || 0));
+  return Math.max(balance, totalDue);
 }
 
 function buildSearchClause(searchField: SearchField, safeSearch: string) {
@@ -1157,9 +1163,9 @@ export default function AccountsPage() {
   ]);
 
   const totalBalance = useMemo(
-    () => rows.reduce((sum, row) => sum + Number(row.balance || 0), 0),
-    [rows]
-  );
+  () => rows.reduce((sum, row) => sum + getOutstandingAmount(row), 0),
+  [rows]
+);
 
   const totalPaid = useMemo(
     () => rows.reduce((sum, row) => sum + Number(row.amount_paid || 0), 0),
@@ -1198,12 +1204,12 @@ export default function AccountsPage() {
       : '';
 
   const selectedBalance = useMemo(
-    () =>
-      rows
-        .filter((row) => selectedIds.includes(row.id))
-        .reduce((sum, row) => sum + Number(row.balance || 0), 0),
-    [rows, selectedIds]
-  );
+  () =>
+    rows
+      .filter((row) => selectedIds.includes(row.id))
+      .reduce((sum, row) => sum + getOutstandingAmount(row), 0),
+  [rows, selectedIds]
+);
 
   const currentPageIds = useMemo(() => rows.map((row) => row.id), [rows]);
 
