@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { getRequestUserProfile } from '@/lib/server-auth';
 import PTPDispositionForm from './PTPDispositionForm';
 
 type PageProps = {
@@ -390,6 +391,7 @@ export default async function UpdateStatusPage({ params }: PageProps) {
     const nextAction = String(formData.get('next_action') || '').trim();
     const nextActionDateRaw = String(formData.get('next_action_date') || '').trim();
     const notes = String(formData.get('notes') || '').trim();
+    const pushForClosure = String(formData.get('push_for_closure') || '').trim() === 'yes';
 
     const ptpAmountRaw = String(formData.get('ptp_amount') || '').trim();
     const ptpDueDate = String(formData.get('ptp_due_date') || '').trim();
@@ -412,12 +414,16 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       throw new Error('PTP amount must be a valid number greater than zero.');
     }
 
-    const interactionOutcome = deriveInteractionOutcome({
+    let interactionOutcome = deriveInteractionOutcome({
       contactType,
       contactStatus,
       nonPaymentReason,
       nextAction,
     });
+
+    if (pushForClosure) {
+      interactionOutcome = 'Pending Closure Approval';
+    }
 
     const effectiveNextActionDate = isPtp ? ptpDueDate : nextActionDateRaw;
 
@@ -533,6 +539,16 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       console.error('Strategy reassignment skipped after status update:', strategyError);
     }
 
+    const authResult = await getRequestUserProfile();
+    const userId =
+      'error' in authResult
+        ? '11111111-1111-1111-1111-111111111111'
+        : String(authResult.id || '').trim() || '11111111-1111-1111-1111-111111111111';
+    const noteAuthorName =
+      'error' in authResult
+        ? 'System User'
+        : String(authResult.name || '').trim() || 'System User';
+
     const noteLines = [
       `Interaction Outcome: ${interactionOutcome}`,
       contactType ? `Contact Type: ${contactType}` : '',
@@ -547,34 +563,19 @@ export default async function UpdateStatusPage({ params }: PageProps) {
       isDebtCleared
         ? 'Admin Review: Account marked as Debt Cleared and awaiting admin close decision.'
         : '',
+      pushForClosure
+        ? 'Agent pushed account for closure as client balance is 0.'
+        : '',
       notes ? `Notes: ${notes}` : '',
     ].filter(Boolean);
 
-    const {
-  data: { session },
-} = await supabase.auth.getSession();
-
-const userId = String(session?.user?.id || '').trim();
-
-let noteAuthorName = 'System User';
-
-if (userId) {
-  const { data: noteProfile } = await supabase
-    .from('user_profiles')
-    .select('name')
-    .eq('id', userId)
-    .maybeSingle();
-
-  noteAuthorName = String(noteProfile?.name || '').trim() || 'System User';
-}
-
-const { error: noteError } = await supabase.from('notes').insert({
-  company_id: account.company_id,
-  account_id: id,
-  author_id: userId || '11111111-1111-1111-1111-111111111111',
-  created_by_name: noteAuthorName,
-  body: noteLines.join('\n'),
-});
+    const { error: noteError } = await supabase.from('notes').insert({
+      company_id: account.company_id,
+      account_id: id,
+      author_id: userId,
+      created_by_name: noteAuthorName,
+      body: noteLines.join('\n'),
+    });
 
     if (noteError) {
       throw new Error(noteError.message);

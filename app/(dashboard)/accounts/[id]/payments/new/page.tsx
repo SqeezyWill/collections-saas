@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { supabase } from '@/lib/supabase';
+import { getRequestUserProfile } from '@/lib/server-auth';
 import { currency, formatDate } from '@/lib/utils';
 
 type PageProps = {
@@ -44,6 +45,7 @@ async function savePayment(formData: FormData) {
 
   const paymentChannel = normalizeText(formData.get('paymentChannel'));
   const transactionCode = normalizeText(formData.get('transactionCode'));
+  const pushForClosure = String(formData.get('pushForClosure') || '').trim() === 'yes';
 
   const amount = Number(amountRaw);
   const postedOn = todayDateString();
@@ -51,6 +53,16 @@ async function savePayment(formData: FormData) {
   if (!accountId || !companyId || !product || !paidOn || !Number.isFinite(amount) || amount <= 0) {
     throw new Error('Please provide a valid amount and payment date.');
   }
+
+  const authResult = await getRequestUserProfile();
+  const actingUserId =
+    'error' in authResult
+      ? '11111111-1111-1111-1111-111111111111'
+      : String(authResult.id || '').trim() || '11111111-1111-1111-1111-111111111111';
+  const actingUserName =
+    'error' in authResult
+      ? 'System User'
+      : String(authResult.name || '').trim() || 'System User';
 
   const { data: account, error: fetchError } = await supabase
     .from('accounts')
@@ -200,17 +212,18 @@ async function savePayment(formData: FormData) {
   }
 
   let derivedStatus = String(account.status || 'Open').trim() || 'Open';
-  const isNowClosed = newBalance <= 0 && newTotalDue <= 0;
+  const isNowZeroBalance = newBalance <= 0 && newTotalDue <= 0;
 
-  if (isNowClosed) {
-    derivedStatus = 'Closed';
+  if (isNowZeroBalance) {
+    derivedStatus = pushForClosure ? 'Pending Closure Approval' : 'Paid';
   } else if ((remainingOpenPtps || []).length > 0) {
     derivedStatus = 'PTP';
   } else if (
     normalizeStatus(account.status) === 'ptp' ||
     normalizeStatus(account.status) === 'promise to pay' ||
     normalizeStatus(account.status) === 'paid' ||
-    normalizeStatus(account.status) === 'closed'
+    normalizeStatus(account.status) === 'closed' ||
+    normalizeStatus(account.status) === 'pending closure approval'
   ) {
     derivedStatus = 'Open';
   }
@@ -225,7 +238,7 @@ async function savePayment(formData: FormData) {
     status: derivedStatus,
   };
 
-  if (isNowClosed) {
+  if (isNowZeroBalance) {
     accountUpdatePayload.dpd = 0;
     accountUpdatePayload.days_late_lastinstallment = 0;
   }
@@ -251,13 +264,16 @@ async function savePayment(formData: FormData) {
     paymentChannel ? `Channel: ${paymentChannel}` : '',
     transactionCode ? `Transaction Code: ${transactionCode}` : '',
     ptpOutcomeNote,
+    isNowZeroBalance && pushForClosure
+      ? 'Agent pushed account for closure as client balance is 0.'
+      : '',
   ].filter(Boolean);
 
   const { error: noteError } = await supabase.from('notes').insert({
     company_id: companyId,
     account_id: accountId,
-    author_id: '11111111-1111-1111-1111-111111111111',
-    created_by_name: 'System User',
+    author_id: actingUserId,
+    created_by_name: actingUserName,
     body: noteParts.join(' | '),
   });
 
@@ -425,6 +441,22 @@ export default async function NewPaymentPage({ params }: PageProps) {
                   className="w-full rounded-xl border border-slate-300 px-4 py-3 text-sm text-slate-900 outline-none focus:border-slate-400 focus:ring-2 focus:ring-slate-200"
                 />
               </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <label className="flex items-start gap-3 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  name="pushForClosure"
+                  value="yes"
+                  className="mt-1 h-4 w-4 rounded border-slate-300"
+                />
+                <span>
+                  If this payment clears the account to zero, push it for admin closure approval.
+                  A note will be added that the agent pushed the account for closure because the
+                  client balance is 0.
+                </span>
+              </label>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
