@@ -1800,62 +1800,67 @@ const actingUserName = String(profile.name || '').trim() || 'System User';
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Assigned Strategy</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              The collection workflow plan currently applied to this account.
-            </p>
-          </div>
+      <details className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+  <summary className="flex cursor-pointer list-none flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+    <div>
+      <h2 className="text-lg font-semibold text-slate-900">Assigned Strategy</h2>
+      <p className="mt-1 text-sm text-slate-500">
+        The collection workflow plan currently applied to this account.
+      </p>
+    </div>
 
-          {canManageAssignments && !isClosed ? <AccountStrategyActions accountId={id} /> : null}
+    <div className="flex items-center gap-3">
+      {canManageAssignments && !isClosed ? <AccountStrategyActions accountId={id} /> : null}
+      <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+        Expand
+      </span>
+    </div>
+  </summary>
+
+  <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+    {assignedStrategy ? (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-semibold text-slate-900">{assignedStrategy.name}</span>
+          <span
+            className={[
+              'inline-flex rounded-full px-3 py-1 text-xs font-medium',
+              assignedStrategy.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700',
+            ].join(' ')}
+          >
+            {assignedStrategy.is_active ? 'Active' : 'Inactive'}
+          </span>
+          <span className="text-xs text-slate-400">{assignedStrategy.id}</span>
         </div>
 
-        <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          {assignedStrategy ? (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-semibold text-slate-900">{assignedStrategy.name}</span>
-                <span
-                  className={[
-                    'inline-flex rounded-full px-3 py-1 text-xs font-medium',
-                    assignedStrategy.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-700',
-                  ].join(' ')}
-                >
-                  {assignedStrategy.is_active ? 'Active' : 'Inactive'}
-                </span>
-                <span className="text-xs text-slate-400">{assignedStrategy.id}</span>
-              </div>
+        {assignedStrategy.description ? (
+          <p className="text-sm text-slate-600">{assignedStrategy.description}</p>
+        ) : null}
 
-              {assignedStrategy.description ? (
-                <p className="text-sm text-slate-600">{assignedStrategy.description}</p>
-              ) : null}
-
-              <div className="flex flex-wrap gap-4 pt-2 text-sm text-slate-600">
-                <span>
-                  <span className="font-medium text-slate-700">Steps:</span> {stepsCount}
-                </span>
-                <span>
-                  <span className="font-medium text-slate-700">Assigned:</span>{' '}
-                  {strategyAssignment?.assigned_at ? formatDate(strategyAssignment.assigned_at) : '-'}
-                </span>
-                <span>
-                  <span className="font-medium text-slate-700">Source:</span>{' '}
-                  {strategyAssignment?.source || '-'}
-                </span>
-              </div>
-            </div>
-          ) : (
-            <div className="text-sm text-slate-600">
-              <p className="font-medium text-slate-800">No strategy assigned yet.</p>
-              <p className="mt-1">
-                Strategy controls are available to admin and super admin users only.
-              </p>
-            </div>
-          )}
+        <div className="flex flex-wrap gap-4 pt-2 text-sm text-slate-600">
+          <span>
+            <span className="font-medium text-slate-700">Steps:</span> {stepsCount}
+          </span>
+          <span>
+            <span className="font-medium text-slate-700">Assigned:</span>{' '}
+            {strategyAssignment?.assigned_at ? formatDate(strategyAssignment.assigned_at) : '-'}
+          </span>
+          <span>
+            <span className="font-medium text-slate-700">Source:</span>{' '}
+            {strategyAssignment?.source || '-'}
+          </span>
         </div>
       </div>
+    ) : (
+      <div className="text-sm text-slate-600">
+        <p className="font-medium text-slate-800">No strategy assigned yet.</p>
+        <p className="mt-1">
+          Strategy controls are available to admin and super admin users only.
+        </p>
+      </div>
+    )}
+  </div>
+</details>
 
       <div className="grid gap-6 xl:grid-cols-2">
         <div className="space-y-4">
@@ -1882,51 +1887,56 @@ const actingUserName = String(profile.name || '').trim() || 'System User';
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-slate-900">Account Timeline</h2>
-            <p className="mt-1 text-sm text-slate-500">
-              Unified chronological view of recent actions, payments, PTPs and notes.
-            </p>
-          </div>
-          {isClosed ? (
-            <span className="text-sm font-medium text-slate-400">Add timeline note locked</span>
-          ) : (
-            <Link
-              href={`/accounts/${id}/notes/new`}
-              className="text-sm font-medium text-slate-600 hover:text-slate-900"
-            >
-              Add timeline note
-            </Link>
-          )}
-        </div>
+      <details className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+  <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+    <div>
+      <h2 className="text-lg font-semibold text-slate-900">Account Timeline</h2>
+      <p className="mt-1 text-sm text-slate-500">
+        Unified chronological view of recent actions, payments, PTPs and notes.
+      </p>
+    </div>
+    <div className="flex items-center gap-3">
+      {isClosed ? (
+        <span className="text-sm font-medium text-slate-400">Add timeline note locked</span>
+      ) : (
+        <Link
+          href={`/accounts/${id}/notes/new`}
+          className="text-sm font-medium text-slate-600 hover:text-slate-900"
+        >
+          Add timeline note
+        </Link>
+      )}
+      <span className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
+        Expand
+      </span>
+    </div>
+  </summary>
 
-        <div className="mt-4 space-y-3">
-          {timeline.length > 0 ? (
-            timeline.map((item) => (
-              <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="text-sm font-semibold text-slate-900">{item.title}</p>
-                      <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${item.tone}`}>
-                        {item.badge}
-                      </span>
-                    </div>
-                    <p className="mt-1 whitespace-pre-line text-sm text-slate-600">{item.subtitle}</p>
-                  </div>
-                  <p className="text-xs text-slate-500">{formatDate(item.date)}</p>
-                </div>
+  <div className="mt-4 space-y-3">
+    {timeline.length > 0 ? (
+      timeline.map((item) => (
+        <div key={item.id} className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-slate-900">{item.title}</p>
+                <span className={`inline-flex rounded-full px-3 py-1 text-xs font-medium ${item.tone}`}>
+                  {item.badge}
+                </span>
               </div>
-            ))
-          ) : (
-            <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
-              No recent account activity to show yet.
+              <p className="mt-1 whitespace-pre-line text-sm text-slate-600">{item.subtitle}</p>
             </div>
-          )}
+            <p className="text-xs text-slate-500">{formatDate(item.date)}</p>
+          </div>
         </div>
+      ))
+    ) : (
+      <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-500">
+        No recent account activity to show yet.
       </div>
+    )}
+  </div>
+</details>
 
       <div className="grid gap-6 xl:grid-cols-2">
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
