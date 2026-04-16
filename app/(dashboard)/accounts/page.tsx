@@ -292,6 +292,26 @@ function getOutstandingAmount(row: Partial<AccountRow>) {
   return Math.max(balance, totalDue);
 }
 
+function matchesOutstandingRange(
+  row: Partial<AccountRow>,
+  minBalance: string,
+  maxBalance: string
+) {
+  const outstanding = getOutstandingAmount(row);
+
+  if (minBalance) {
+    const min = Number(minBalance);
+    if (Number.isFinite(min) && outstanding < min) return false;
+  }
+
+  if (maxBalance) {
+    const max = Number(maxBalance);
+    if (Number.isFinite(max) && outstanding > max) return false;
+  }
+
+  return true;
+}
+
 function buildSearchClause(searchField: SearchField, safeSearch: string) {
   switch (searchField) {
     case 'cfid':
@@ -578,11 +598,11 @@ export default function AccountsPage() {
 
     while (true) {
       let query = supabase
-        .from('accounts')
-        .select('id')
-        .eq('company_id', companyId)
-        .neq('status', 'Closed')
-        .order('created_at', { ascending: false });
+  .from('accounts')
+  .select('id,balance,total_due')
+  .eq('company_id', companyId)
+  .neq('status', 'Closed')
+  .order('created_at', { ascending: false });
 
       if (restrictToCollector) {
         query = query.eq('collector_name', restrictToCollector);
@@ -617,13 +637,11 @@ export default function AccountsPage() {
       }
 
       if (collector && !restrictToCollector) query = query.eq('collector_name', collector);
-      if (status) query = query.eq('status', status);
-      if (minBalance) query = query.gte('balance', Number(minBalance));
-      if (maxBalance) query = query.lte('balance', Number(maxBalance));
-      if (daysLateMin) query = query.gte('days_late_lastinstallment', Number(daysLateMin));
-      if (daysLateMax) query = query.lte('days_late_lastinstallment', Number(daysLateMax));
-      if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
-      if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
+if (status) query = query.eq('status', status);
+if (daysLateMin) query = query.gte('days_late_lastinstallment', Number(daysLateMin));
+if (daysLateMax) query = query.lte('days_late_lastinstallment', Number(daysLateMax));
+if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
+if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
 
       const { data, error } = await query.range(from, from + PAGE_FETCH_SIZE - 1);
 
@@ -632,11 +650,15 @@ export default function AccountsPage() {
       }
 
       const batch = data ?? [];
-      collectedIds.push(...batch.map((row: any) => String(row.id)).filter(Boolean));
+const filteredBatch = batch.filter((row: any) =>
+  matchesOutstandingRange(row, minBalance, maxBalance)
+);
 
-      if (batch.length < PAGE_FETCH_SIZE) {
-        break;
-      }
+collectedIds.push(...filteredBatch.map((row: any) => String(row.id)).filter(Boolean));
+
+if (batch.length < PAGE_FETCH_SIZE) {
+  break;
+}
 
       from += PAGE_FETCH_SIZE;
     }
@@ -1027,27 +1049,32 @@ export default function AccountsPage() {
         }
 
         if (collector && !restrictToCollector) query = query.eq('collector_name', collector);
-        if (status) query = query.eq('status', status);
-        if (minBalance) query = query.gte('balance', Number(minBalance));
-        if (maxBalance) query = query.lte('balance', Number(maxBalance));
-        if (daysLateMin) query = query.gte('days_late_lastinstallment', Number(daysLateMin));
-        if (daysLateMax) query = query.lte('days_late_lastinstallment', Number(daysLateMax));
-        if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
-        if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
+if (status) query = query.eq('status', status);
+if (daysLateMin) query = query.gte('days_late_lastinstallment', Number(daysLateMin));
+if (daysLateMax) query = query.lte('days_late_lastinstallment', Number(daysLateMax));
+if (lastActionFrom) query = query.gte('last_action_date', lastActionFrom);
+if (lastActionTo) query = query.lte('last_action_date', lastActionTo);
 
-        const from = (effectivePage - 1) * pageSize;
-        const to = from + pageSize - 1;
-        query = query.range(from, to);
+const { data, error } = await query;
 
-        const { data, error, count } = await query;
+if (error) {
+  throw new Error(error.message);
+}
 
-        if (error) {
-          throw new Error(error.message);
-        }
+const outstandingFilteredRows = ((data ?? []) as AccountRow[]).filter((row) =>
+  matchesOutstandingRange(row, minBalance, maxBalance)
+);
+
+const computedTotalAccounts = outstandingFilteredRows.length;
+const from = (effectivePage - 1) * pageSize;
+const to = from + pageSize;
+const pagedRows = showingAll
+  ? outstandingFilteredRows
+  : outstandingFilteredRows.slice(from, to);
 
         if (!mounted) return;
-        setRows((data ?? []) as AccountRow[]);
-        setTotalAccounts(count ?? 0);
+setRows(pagedRows);
+setTotalAccounts(computedTotalAccounts);
       } catch (e: any) {
         if (!mounted) return;
         setErrorMsg(e?.message || 'Failed to load accounts.');
