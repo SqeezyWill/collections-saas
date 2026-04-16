@@ -1970,8 +1970,8 @@ if (action === 'close_selected') {
               <td className="px-4 py-3">{row.collector_name || '-'}</td>
             ) : null}
             {finalColumns.includes('balance') ? (
-              <td className="px-4 py-3">{currency(Number(row.balance || 0))}</td>
-            ) : null}
+  <td className="px-4 py-3">{currency(getOutstandingAmount(row))}</td>
+) : null}
             {finalColumns.includes('amount_paid') ? (
               <td className="px-4 py-3">{currency(Number(row.amount_paid || 0))}</td>
             ) : null}
