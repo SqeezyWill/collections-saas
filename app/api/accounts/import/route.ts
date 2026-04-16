@@ -622,6 +622,10 @@ export async function POST(req: NextRequest) {
     const portfolioCategory = normalizePortfolioCategory(row['loan_type']);
     const productCode = normalizeStrategyProductCode();
 
+    const totalDue = toNumber(row['total_due']) ?? 0;
+    const balance = toNumber(row['Outstanding_balance']) ?? 0;
+    const effectiveOutstanding = Math.max(balance, totalDue);
+
     const payload = {
       company_id: companyId,
       cfid,
@@ -646,10 +650,11 @@ export async function POST(req: NextRequest) {
       last_installment_date: toDate(row['last_installment_date']),
       days_late_lastinstallment: toInteger(row['days_late_lastinstallment']),
       duration: toInteger(row['duration']),
-      outsourced_amount: toNumber(row['total_due']),
-      total_due: toNumber(row['total_due']),
+      outsourced_amount: totalDue,
+      total_due: totalDue,
       amount_paid: toNumber(row['repaid_amounts']) ?? 0,
-      balance: toNumber(row['Outstanding_balance']) ?? 0,
+      balance: balance,
+      effective_outstanding: effectiveOutstanding,
       dpd: toInteger(row['days_late']) ?? 0,
       collector_name: cleanText(row['officer']),
       held_by: cleanText(row['officer']),
