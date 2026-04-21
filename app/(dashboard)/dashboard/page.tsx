@@ -30,7 +30,7 @@ type DashboardAccountRow = {
   last_action_date: string | null;
   dpd?: number | string | null;
   created_at?: string | null;
-  uploaded_at?: string | null;
+  funded_date?: string | null;
   outsource_date?: string | null;
 };
 
@@ -254,9 +254,9 @@ function diffInDays(from: Date, to: Date) {
 
 function getDpdAnchorDate(row: Partial<DashboardAccountRow>) {
   return (
-    parseDateLike(row.created_at) ||
-    parseDateLike(row.uploaded_at) ||
+    parseDateLike(row.funded_date) ||
     parseDateLike(row.outsource_date) ||
+    parseDateLike(row.created_at) ||
     null
   );
 }
@@ -369,7 +369,7 @@ async function fetchAllRows(
       query = supabase
         .from('accounts')
         .select(
-          'id,balance,total_due,amount_paid,status,collector_name,product,next_action_date,last_action_date,dpd,created_at,uploaded_at,outsource_date'
+          'id,balance,total_due,amount_paid,status,collector_name,product,next_action_date,last_action_date,dpd,created_at,funded_date,outsource_date'
         )
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
