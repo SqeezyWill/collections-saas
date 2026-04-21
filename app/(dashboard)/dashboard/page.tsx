@@ -20,6 +20,7 @@ type UserProfile = {
 type DashboardAccountRow = {
   id: string;
   balance: number | null;
+  total_due?: number | null;
   amount_paid: number | null;
   status: string | null;
   collector_name: string | null;
@@ -27,6 +28,10 @@ type DashboardAccountRow = {
   product_name?: string | null;
   next_action_date: string | null;
   last_action_date: string | null;
+  dpd?: number | string | null;
+  created_at?: string | null;
+  uploaded_at?: string | null;
+  outsource_date?: string | null;
 };
 
 type DashboardPaymentRow = {
@@ -104,6 +109,15 @@ type SecondaryDashboardState = {
   portfolioAnalysisGroups: Array<{
     category: string;
     rows: Array<{ metric: string; value: string }>;
+  }>;
+  parReport: Array<{
+    bucket: string;
+    accountsCount: number;
+    accountsValue: number;
+    collectedCount: number;
+    collectedValue: number;
+    transitionedCount: number;
+    transitionedValue: number;
   }>;
 };
 
@@ -194,6 +208,88 @@ function formatPercent(value: number) {
   return `${value.toFixed(1)}%`;
 }
 
+function toNumberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function parseDateLike(value: unknown): Date | null {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw || raw === '0') return null;
+
+  const isoOnly = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoOnly) {
+    const year = Number(isoOnly[1]);
+    const month = Number(isoOnly[2]);
+    const day = Number(isoOnly[3]);
+    const parsed = new Date(year, month - 1, day);
+
+    if (
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== day
+    ) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function diffInDays(from: Date, to: Date) {
+  const start = startOfLocalDay(from).getTime();
+  const end = startOfLocalDay(to).getTime();
+  return Math.floor((end - start) / 86400000);
+}
+
+function getDpdAnchorDate(row: Partial<DashboardAccountRow>) {
+  return (
+    parseDateLike(row.created_at) ||
+    parseDateLike(row.uploaded_at) ||
+    parseDateLike(row.outsource_date) ||
+    null
+  );
+}
+
+function getCurrentDpd(row: Partial<DashboardAccountRow>) {
+  if (String(row.status || '').trim().toLowerCase() === 'closed') return 0;
+
+  const baseDpd = toNumberOrNull(row.dpd) ?? 0;
+  const anchor = getDpdAnchorDate(row);
+
+  if (!anchor) return Math.max(0, baseDpd);
+
+  const today = new Date();
+  const elapsed = Math.max(0, diffInDays(anchor, today));
+
+  return Math.max(0, baseDpd + elapsed);
+}
+
+function getOutstandingAmount(row: Partial<DashboardAccountRow>) {
+  const balance = Math.max(0, Number(row.balance || 0));
+  const totalDue = Math.max(0, Number(row.total_due || 0));
+  return Math.max(balance, totalDue);
+}
+
+function getParBucket(dpd: number) {
+  if (dpd >= 1 && dpd <= 7) return { key: '1_7', label: '1-7', order: 1 };
+  if (dpd >= 8 && dpd <= 15) return { key: '8_15', label: '8-15', order: 2 };
+  if (dpd >= 16 && dpd <= 30) return { key: '16_30', label: '16-30', order: 3 };
+  if (dpd >= 31 && dpd <= 60) return { key: '31_60', label: '31-60', order: 4 };
+  if (dpd >= 61 && dpd <= 90) return { key: '61_90', label: '61-90', order: 5 };
+  return null;
+}
+
 function resolvePtpOutcomeFromPayments(
   ptp: DashboardPtpRow,
   payments: Array<{ amount: number | null; paid_on: string | null }>
@@ -273,7 +369,7 @@ async function fetchAllRows(
       query = supabase
         .from('accounts')
         .select(
-          'id,balance,amount_paid,status,collector_name,product,next_action_date,last_action_date'
+          'id,balance,total_due,amount_paid,status,collector_name,product,next_action_date,last_action_date,dpd,created_at,uploaded_at,outsource_date'
         )
         .eq('company_id', companyId)
         .order('created_at', { ascending: false })
@@ -342,7 +438,7 @@ function buildPrimaryDashboardState(input: {
   const { accountList, payments, normalizedPtps, isAgent, useFreshPendingClosureCounts } = input;
 
   const totalAccounts = accountList.length;
-  const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
+  const outstanding = accountList.reduce((sum, item) => sum + getOutstandingAmount(item), 0);
   const totalCollected = accountList.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const collectedThisMonthFromPayments = payments
@@ -401,20 +497,20 @@ function buildPrimaryDashboardState(input: {
   );
 
   const staleAccounts = accountList.filter((item) => {
-  if (!item.last_action_date) return true;
-  const diff = diffDaysFromToday(item.last_action_date);
-  return diff !== null && diff <= -3;
-});
+    if (!item.last_action_date) return true;
+    const diff = diffDaysFromToday(item.last_action_date);
+    return diff !== null && diff <= -3;
+  });
 
-const pendingClosureAccounts = useFreshPendingClosureCounts
-  ? accountList.filter(
-      (item) => String(item.status || '').trim() === 'Pending Closure Approval'
-    ).length
-  : 0;
+  const pendingClosureAccounts = useFreshPendingClosureCounts
+    ? accountList.filter(
+        (item) => String(item.status || '').trim() === 'Pending Closure Approval'
+      ).length
+    : 0;
 
-const brokenPtpAccounts = normalizedPtps.filter(
-  (ptp) => ptp.effectiveStatus === 'Broken'
-);
+  const brokenPtpAccounts = normalizedPtps.filter(
+    (ptp) => ptp.effectiveStatus === 'Broken'
+  );
 
   const todayWorkQueue = [
     {
@@ -458,21 +554,21 @@ const brokenPtpAccounts = normalizedPtps.filter(
         : 'Callback actions missed and still pending',
     },
     {
-  title: isAgent ? 'My Stale Accounts' : 'Stale Accounts',
-  count: staleAccounts.length,
-  href: '/accounts',
-  helper: isAgent
-    ? 'Assigned accounts with no recent action in 3+ days'
-    : 'Accounts with no recent action in 3+ days',
-},
-{
-  title: isAgent ? 'My Pending Closures' : 'Pending Closure Approval',
-  count: pendingClosureAccounts,
-  href: '/accounts?status=Pending%20Closure%20Approval',
-  helper: isAgent
-    ? 'Assigned accounts awaiting admin closure decision'
-    : 'Accounts awaiting admin closure decision',
-},
+      title: isAgent ? 'My Stale Accounts' : 'Stale Accounts',
+      count: staleAccounts.length,
+      href: '/accounts',
+      helper: isAgent
+        ? 'Assigned accounts with no recent action in 3+ days'
+        : 'Accounts with no recent action in 3+ days',
+    },
+    {
+      title: isAgent ? 'My Pending Closures' : 'Pending Closure Approval',
+      count: pendingClosureAccounts,
+      href: '/accounts?status=Pending%20Closure%20Approval',
+      helper: isAgent
+        ? 'Assigned accounts awaiting admin closure decision'
+        : 'Accounts awaiting admin closure decision',
+    },
   ];
 
   const alerts = [
@@ -495,17 +591,17 @@ const brokenPtpAccounts = normalizedPtps.filter(
       href: '/accounts?filter=ptps-due-today',
     },
     {
-  title: isAgent ? 'Your stale accounts' : 'Stale accounts',
-  count: staleAccounts.length,
-  tone: staleAccounts.length > 0 ? 'amber' : 'slate',
-  href: '/accounts',
-},
-{
-  title: isAgent ? 'Pending closures in your portfolio' : 'Pending closure approvals',
-  count: pendingClosureAccounts,
-  tone: pendingClosureAccounts > 0 ? 'blue' : 'slate',
-  href: '/accounts?status=Pending%20Closure%20Approval',
-},
+      title: isAgent ? 'Your stale accounts' : 'Stale accounts',
+      count: staleAccounts.length,
+      tone: staleAccounts.length > 0 ? 'amber' : 'slate',
+      href: '/accounts',
+    },
+    {
+      title: isAgent ? 'Pending closures in your portfolio' : 'Pending closure approvals',
+      count: pendingClosureAccounts,
+      tone: pendingClosureAccounts > 0 ? 'blue' : 'slate',
+      href: '/accounts?status=Pending%20Closure%20Approval',
+    },
   ];
 
   const quickViews = [
@@ -541,17 +637,17 @@ const brokenPtpAccounts = normalizedPtps.filter(
       helper: isAgent ? 'Track payment activity on your accounts' : 'Track payment activity',
     },
     {
-  label: isAgent ? 'My Portfolio View' : 'Portfolio View',
-  href: '/accounts',
-  helper: isAgent ? 'Open your assigned accounts portfolio' : 'Open the full collections portfolio',
-},
-{
-  label: isAgent ? 'My Pending Closures' : 'Pending Closure Approval',
-  href: '/accounts?status=Pending%20Closure%20Approval',
-  helper: isAgent
-    ? 'Open assigned accounts awaiting admin closure decision'
-    : 'Open all accounts awaiting admin closure decision',
-},
+      label: isAgent ? 'My Portfolio View' : 'Portfolio View',
+      href: '/accounts',
+      helper: isAgent ? 'Open your assigned accounts portfolio' : 'Open the full collections portfolio',
+    },
+    {
+      label: isAgent ? 'My Pending Closures' : 'Pending Closure Approval',
+      href: '/accounts?status=Pending%20Closure%20Approval',
+      helper: isAgent
+        ? 'Open assigned accounts awaiting admin closure decision'
+        : 'Open all accounts awaiting admin closure decision',
+    },
   ];
 
   return {
@@ -580,7 +676,7 @@ function buildSecondaryDashboardState(input: {
   const { accountList, payments, normalizedPtps, isAgent, useFreshPendingClosureCounts } = input;
 
   const totalAccounts = accountList.length;
-  const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
+  const outstanding = accountList.reduce((sum, item) => sum + getOutstandingAmount(item), 0);
   const totalCollected = accountList.reduce((sum, item) => sum + Number(item.amount_paid || 0), 0);
 
   const keptPtps = normalizedPtps.filter((ptp) => ptp.effectiveStatus === 'Kept').length;
@@ -610,14 +706,14 @@ function buildSecondaryDashboardState(input: {
   const ptpsDueToday = dueTodayPtpAccountIds.size;
 
   const escalatedAccounts = accountList.filter((item) => item.status === 'Escalated').length;
-const pendingClosureAccounts = accountList.filter(
-  (item) => String(item.status || '').trim() === 'Pending Closure Approval'
-).length;
-const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
-const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
-const closedAccounts = accountList.filter(
-  (item) => String(item.status || '').trim() === 'Closed'
-).length;
+  const pendingClosureAccounts = accountList.filter(
+    (item) => String(item.status || '').trim() === 'Pending Closure Approval'
+  ).length;
+  const paidAccounts = accountList.filter((item) => Number(item.amount_paid || 0) > 0).length;
+  const openAccounts = accountList.filter((item) => Number(item.amount_paid || 0) <= 0).length;
+  const closedAccounts = accountList.filter(
+    (item) => String(item.status || '').trim() === 'Closed'
+  ).length;
 
   const totalAssignedValue = outstanding + totalCollected;
   const collectionRate = totalAssignedValue > 0 ? (totalCollected / totalAssignedValue) * 100 : 0;
@@ -625,7 +721,7 @@ const closedAccounts = accountList.filter(
   const ptpConversionRate =
     normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
 
-    const accountCollectorById = new Map<string, string>();
+  const accountCollectorById = new Map<string, string>();
 
   for (const account of accountList) {
     const accountId = String(account.id || '').trim();
@@ -682,7 +778,7 @@ const closedAccounts = accountList.filter(
     return {
       collector,
       assignedAccounts: collectorAccounts.length,
-      totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+      totalBalance: collectorAccounts.reduce((sum, item) => sum + getOutstandingAmount(item), 0),
       totalCollected: collectorCollected,
       openPtps: collectorOpenPtpAccounts.size,
       keptPtps: collectorKeptPtps,
@@ -716,7 +812,7 @@ const closedAccounts = accountList.filter(
     return {
       product,
       accounts: productAccounts.length,
-      balance: productAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+      balance: productAccounts.reduce((sum, item) => sum + getOutstandingAmount(item), 0),
     };
   });
 
@@ -741,16 +837,73 @@ const closedAccounts = accountList.filter(
     };
   });
 
+  const parBuckets = [
+    { key: '1_7', label: '1-7', order: 1 },
+    { key: '8_15', label: '8-15', order: 2 },
+    { key: '16_30', label: '16-30', order: 3 },
+    { key: '31_60', label: '31-60', order: 4 },
+    { key: '61_90', label: '61-90', order: 5 },
+  ];
+
+  const parReport = parBuckets.map((bucket) => {
+    const bucketAccounts = accountList.filter((account) => {
+      const currentDpd = getCurrentDpd(account);
+      const currentBucket = getParBucket(currentDpd);
+      return currentBucket?.key === bucket.key;
+    });
+
+    const accountsCount = bucketAccounts.length;
+    const accountsValue = bucketAccounts.reduce(
+      (sum, account) => sum + getOutstandingAmount(account),
+      0
+    );
+
+    const collectedAccounts = bucketAccounts.filter(
+      (account) => Number(account.amount_paid || 0) > 0
+    );
+
+    const collectedCount = collectedAccounts.length;
+    const collectedValue = collectedAccounts.reduce(
+      (sum, account) => sum + Number(account.amount_paid || 0),
+      0
+    );
+
+    const transitionedAccounts = bucketAccounts.filter((account) => {
+      const baseDpd = Math.max(0, toNumberOrNull(account.dpd) ?? 0);
+      const originalBucket = getParBucket(baseDpd);
+      const currentBucket = getParBucket(getCurrentDpd(account));
+
+      if (!originalBucket || !currentBucket) return false;
+      return currentBucket.order > originalBucket.order;
+    });
+
+    const transitionedCount = transitionedAccounts.length;
+    const transitionedValue = transitionedAccounts.reduce(
+      (sum, account) => sum + getOutstandingAmount(account),
+      0
+    );
+
+    return {
+      bucket: bucket.label,
+      accountsCount,
+      accountsValue,
+      collectedCount,
+      collectedValue,
+      transitionedCount,
+      transitionedValue,
+    };
+  });
+
   const portfolioAnalysisGroups = [
     {
-  category: 'Accounts',
-  rows: [
-    { metric: isAgent ? 'My Accounts' : 'Total Accounts', value: totalAccounts.toLocaleString() },
-    { metric: 'Paid Accounts', value: paidAccounts.toLocaleString() },
-    { metric: 'Open Accounts', value: openAccounts.toLocaleString() },
-    { metric: 'Closed Accounts', value: closedAccounts.toLocaleString() },
-  ],
-},
+      category: 'Accounts',
+      rows: [
+        { metric: isAgent ? 'My Accounts' : 'Total Accounts', value: totalAccounts.toLocaleString() },
+        { metric: 'Paid Accounts', value: paidAccounts.toLocaleString() },
+        { metric: 'Open Accounts', value: openAccounts.toLocaleString() },
+        { metric: 'Closed Accounts', value: closedAccounts.toLocaleString() },
+      ],
+    },
     {
       category: 'Exposure',
       rows: [
@@ -771,12 +924,12 @@ const closedAccounts = accountList.filter(
       ],
     },
     {
-  category: 'Follow-up',
-  rows: [
-    { metric: 'Escalated Accounts', value: escalatedAccounts.toLocaleString() },
-    { metric: 'Pending Closure Approval', value: pendingClosureAccounts.toLocaleString() },
-  ],
-},
+      category: 'Follow-up',
+      rows: [
+        { metric: 'Escalated Accounts', value: escalatedAccounts.toLocaleString() },
+        { metric: 'Pending Closure Approval', value: pendingClosureAccounts.toLocaleString() },
+      ],
+    },
   ];
 
   return {
@@ -784,6 +937,7 @@ const closedAccounts = accountList.filter(
     accountCoverage,
     paymentCoverage,
     portfolioAnalysisGroups,
+    parReport,
   };
 }
 
@@ -797,12 +951,12 @@ export default function DashboardPage() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [loadingData, setLoadingData] = useState(true);
   const [cacheHydrated, setCacheHydrated] = useState(false);
-const [isRefreshing, setIsRefreshing] = useState(false);
-const [restoredFromCache, setRestoredFromCache] = useState(false);
-const [resolvedCompanyId, setResolvedCompanyId] = useState('');
-const [secondaryReady, setSecondaryReady] = useState(false);
-const [secondaryLoading, setSecondaryLoading] = useState(false);
-const [hasFreshDashboardData, setHasFreshDashboardData] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [restoredFromCache, setRestoredFromCache] = useState(false);
+  const [resolvedCompanyId, setResolvedCompanyId] = useState('');
+  const [secondaryReady, setSecondaryReady] = useState(false);
+  const [secondaryLoading, setSecondaryLoading] = useState(false);
+  const [hasFreshDashboardData, setHasFreshDashboardData] = useState(false);
 
   const normalizedProfileRole = normalizeRole(profile?.role);
   const normalizedProfileName = normalizeName(profile?.name);
@@ -841,15 +995,15 @@ const [hasFreshDashboardData, setHasFreshDashboardData] = useState(false);
       }
 
       if (
-  parsed?.profile ||
-  Array.isArray(parsed?.accountList) ||
-  Array.isArray(parsed?.payments) ||
-  Array.isArray(parsed?.ptps)
-) {
-  setRestoredFromCache(true);
-  setHasFreshDashboardData(false);
-  setLoadingData(false);
-}
+        parsed?.profile ||
+        Array.isArray(parsed?.accountList) ||
+        Array.isArray(parsed?.payments) ||
+        Array.isArray(parsed?.ptps)
+      ) {
+        setRestoredFromCache(true);
+        setHasFreshDashboardData(false);
+        setLoadingData(false);
+      }
     } catch {
       // ignore cache errors
     } finally {
@@ -984,19 +1138,19 @@ const [hasFreshDashboardData, setHasFreshDashboardData] = useState(false);
         if (!mounted) return;
 
         setProfile(resolvedProfile);
-setResolvedCompanyId(companyId);
-setAccountList(accountsRows as DashboardAccountRow[]);
-setPayments(paymentsRows as DashboardPaymentRow[]);
-setPtps(ptpRows as DashboardPtpRow[]);
-setSessionError(null);
-setDataError(null);
-setLoadingProfile(false);
-setLoadingData(false);
-setIsRefreshing(false);
-setRestoredFromCache(false);
-setHasFreshDashboardData(true);
-setSecondaryReady(false);
-setSecondaryLoading(true);
+        setResolvedCompanyId(companyId);
+        setAccountList(accountsRows as DashboardAccountRow[]);
+        setPayments(paymentsRows as DashboardPaymentRow[]);
+        setPtps(ptpRows as DashboardPtpRow[]);
+        setSessionError(null);
+        setDataError(null);
+        setLoadingProfile(false);
+        setLoadingData(false);
+        setIsRefreshing(false);
+        setRestoredFromCache(false);
+        setHasFreshDashboardData(true);
+        setSecondaryReady(false);
+        setSecondaryLoading(true);
       } catch (error: any) {
         if (!mounted) return;
 
@@ -1125,28 +1279,28 @@ setSecondaryLoading(true);
   }, [ptps, paymentsByAccountId]);
 
   const primary = useMemo(
-  () =>
-    buildPrimaryDashboardState({
-      accountList,
-      payments,
-      normalizedPtps,
-      isAgent,
-      useFreshPendingClosureCounts: hasFreshDashboardData,
-    }),
-  [accountList, payments, normalizedPtps, isAgent, hasFreshDashboardData]
-);
+    () =>
+      buildPrimaryDashboardState({
+        accountList,
+        payments,
+        normalizedPtps,
+        isAgent,
+        useFreshPendingClosureCounts: hasFreshDashboardData,
+      }),
+    [accountList, payments, normalizedPtps, isAgent, hasFreshDashboardData]
+  );
 
   const secondary = useMemo(
-  () =>
-    buildSecondaryDashboardState({
-      accountList,
-      payments,
-      normalizedPtps,
-      isAgent,
-      useFreshPendingClosureCounts: hasFreshDashboardData,
-    }),
-  [accountList, payments, normalizedPtps, isAgent, hasFreshDashboardData]
-);
+    () =>
+      buildSecondaryDashboardState({
+        accountList,
+        payments,
+        normalizedPtps,
+        isAgent,
+        useFreshPendingClosureCounts: hasFreshDashboardData,
+      }),
+    [accountList, payments, normalizedPtps, isAgent, hasFreshDashboardData]
+  );
 
   if (
     (loadingProfile || loadingData) &&
@@ -1352,108 +1506,143 @@ setSecondaryLoading(true);
       ) : null}
 
       {secondaryReady ? (
-        <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
-          <div className="space-y-6">
-            <div>
-              <h2 className="section-title mb-3">Portfolio Analysis Summary</h2>
-              <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50">
-                    <tr className="border-b border-slate-200">
-                      <th className="px-4 py-3 text-left font-semibold text-slate-700">Metric</th>
-                      <th className="px-4 py-3 text-left font-semibold text-slate-700">Value</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {secondary.portfolioAnalysisGroups.flatMap((group) => [
-                      <tr key={`${group.category}-header`} className="border-b border-slate-200">
-                        <td
-                          colSpan={2}
-                          className="bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-900"
-                        >
-                          {group.category}
-                        </td>
-                      </tr>,
-                      ...group.rows.map((row) => (
-                        <tr
-                          key={`${group.category}-${row.metric}`}
-                          className="border-b border-slate-100 last:border-b-0"
-                        >
-                          <td className="px-4 py-3 text-slate-700">{row.metric}</td>
-                          <td className="px-4 py-3 font-medium text-slate-900">{row.value}</td>
-                        </tr>
-                      )),
-                    ])}
-                  </tbody>
-                </table>
-              </div>
+        <div className="space-y-6">
+          <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="mb-4">
+              <h2 className="text-lg font-semibold text-slate-900">PAR Report</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                Portfolio at Risk by delinquency bucket, including collections and forward transitions.
+              </p>
             </div>
 
-            {!isAgent ? (
-              <div>
-                <h2 className="section-title mb-3">Collector Scorecard</h2>
-                <DataTable
-  headers={[
-    'Collector',
-    'Assigned',
-    'Total Collected',
-    'Open PTP Accounts',
-    'Kept PTPs',
-    'Broken PTPs',
-    'PTP Kept Rate',
-    'Callbacks',
-    'Closed Accounts',
-  ]}
->
-                  {secondary.collectorPerformance.map((item) => (
-                    <tr key={item.collector}>
-  <td className="px-4 py-3 font-medium">{item.collector}</td>
-  <td className="px-4 py-3">{item.assignedAccounts}</td>
-  <td className="px-4 py-3">{currency(item.totalCollected)}</td>
-  <td className="px-4 py-3">{item.openPtps}</td>
-  <td className="px-4 py-3">{item.keptPtps}</td>
-  <td className="px-4 py-3">{item.brokenPtps}</td>
-  <td className="px-4 py-3">{item.ptpKeptRate}</td>
-  <td className="px-4 py-3">{item.callbacks}</td>
-  <td className="px-4 py-3">{item.closedAccounts}</td>
-</tr>
-                  ))}
-                </DataTable>
-              </div>
-            ) : null}
+            <DataTable
+              headers={[
+                'Bucket',
+                'Accounts Count',
+                'Accounts Value',
+                'Collected Count',
+                'Collected Value',
+                'Transitioned Count',
+                'Transitioned Value',
+              ]}
+            >
+              {secondary.parReport.map((row) => (
+                <tr key={row.bucket}>
+                  <td className="px-4 py-3 font-medium">{row.bucket}</td>
+                  <td className="px-4 py-3">{row.accountsCount}</td>
+                  <td className="px-4 py-3">{currency(row.accountsValue)}</td>
+                  <td className="px-4 py-3">{row.collectedCount}</td>
+                  <td className="px-4 py-3">{currency(row.collectedValue)}</td>
+                  <td className="px-4 py-3">{row.transitionedCount}</td>
+                  <td className="px-4 py-3">{currency(row.transitionedValue)}</td>
+                </tr>
+              ))}
+            </DataTable>
           </div>
 
-          <div className="space-y-6">
-            <div className="card p-6">
-              <h2 className="section-title">Accounts Coverage by Product</h2>
-              <div className="mt-4">
-                <DataTable headers={['Product', 'Accounts', 'Balance']}>
-                  {secondary.accountCoverage.map((row) => (
-                    <tr key={row.product}>
-                      <td className="px-4 py-3 font-medium">{row.product}</td>
-                      <td className="px-4 py-3">{row.accounts}</td>
-                      <td className="px-4 py-3">{currency(row.balance)}</td>
-                    </tr>
-                  ))}
-                </DataTable>
+          <div className="grid gap-6 xl:grid-cols-[1.4fr_1fr]">
+            <div className="space-y-6">
+              <div>
+                <h2 className="section-title mb-3">Portfolio Analysis Summary</h2>
+                <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <table className="min-w-full text-sm">
+                    <thead className="bg-slate-50">
+                      <tr className="border-b border-slate-200">
+                        <th className="px-4 py-3 text-left font-semibold text-slate-700">Metric</th>
+                        <th className="px-4 py-3 text-left font-semibold text-slate-700">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {secondary.portfolioAnalysisGroups.flatMap((group) => [
+                        <tr key={`${group.category}-header`} className="border-b border-slate-200">
+                          <td
+                            colSpan={2}
+                            className="bg-slate-100 px-4 py-3 text-sm font-semibold text-slate-900"
+                          >
+                            {group.category}
+                          </td>
+                        </tr>,
+                        ...group.rows.map((row) => (
+                          <tr
+                            key={`${group.category}-${row.metric}`}
+                            className="border-b border-slate-100 last:border-b-0"
+                          >
+                            <td className="px-4 py-3 text-slate-700">{row.metric}</td>
+                            <td className="px-4 py-3 font-medium text-slate-900">{row.value}</td>
+                          </tr>
+                        )),
+                      ])}
+                    </tbody>
+                  </table>
+                </div>
               </div>
+
+              {!isAgent ? (
+                <div>
+                  <h2 className="section-title mb-3">Collector Scorecard</h2>
+                  <DataTable
+                    headers={[
+                      'Collector',
+                      'Assigned',
+                      'Total Collected',
+                      'Open PTP Accounts',
+                      'Kept PTPs',
+                      'Broken PTPs',
+                      'PTP Kept Rate',
+                      'Callbacks',
+                      'Closed Accounts',
+                    ]}
+                  >
+                    {secondary.collectorPerformance.map((item) => (
+                      <tr key={item.collector}>
+                        <td className="px-4 py-3 font-medium">{item.collector}</td>
+                        <td className="px-4 py-3">{item.assignedAccounts}</td>
+                        <td className="px-4 py-3">{currency(item.totalCollected)}</td>
+                        <td className="px-4 py-3">{item.openPtps}</td>
+                        <td className="px-4 py-3">{item.keptPtps}</td>
+                        <td className="px-4 py-3">{item.brokenPtps}</td>
+                        <td className="px-4 py-3">{item.ptpKeptRate}</td>
+                        <td className="px-4 py-3">{item.callbacks}</td>
+                        <td className="px-4 py-3">{item.closedAccounts}</td>
+                      </tr>
+                    ))}
+                  </DataTable>
+                </div>
+              ) : null}
             </div>
 
-            <div className="card p-6">
-              <h2 className="section-title">Payments Coverage by Product</h2>
-              <div className="mt-4">
-                <DataTable headers={['Product', 'Payments', 'Collected', 'Coverage']}>
-                  {secondary.paymentCoverage.map((row) => (
-                    <tr key={row.product}>
-                      <td className="px-4 py-3 font-medium">{row.product}</td>
-                      <td className="px-4 py-3">{row.paymentsCount}</td>
-                      <td className="px-4 py-3">{currency(row.collected)}</td>
-                      <td className="px-4 py-3">
-                        {row.hasPayments ? 'Payments logged' : 'No payments logged yet'}
-                      </td>
-                    </tr>
-                  ))}
-                </DataTable>
+            <div className="space-y-6">
+              <div className="card p-6">
+                <h2 className="section-title">Accounts Coverage by Product</h2>
+                <div className="mt-4">
+                  <DataTable headers={['Product', 'Accounts', 'Balance']}>
+                    {secondary.accountCoverage.map((row) => (
+                      <tr key={row.product}>
+                        <td className="px-4 py-3 font-medium">{row.product}</td>
+                        <td className="px-4 py-3">{row.accounts}</td>
+                        <td className="px-4 py-3">{currency(row.balance)}</td>
+                      </tr>
+                    ))}
+                  </DataTable>
+                </div>
+              </div>
+
+              <div className="card p-6">
+                <h2 className="section-title">Payments Coverage by Product</h2>
+                <div className="mt-4">
+                  <DataTable headers={['Product', 'Payments', 'Collected', 'Coverage']}>
+                    {secondary.paymentCoverage.map((row) => (
+                      <tr key={row.product}>
+                        <td className="px-4 py-3 font-medium">{row.product}</td>
+                        <td className="px-4 py-3">{row.paymentsCount}</td>
+                        <td className="px-4 py-3">{currency(row.collected)}</td>
+                        <td className="px-4 py-3">
+                          {row.hasPayments ? 'Payments logged' : 'No payments logged yet'}
+                        </td>
+                      </tr>
+                    ))}
+                  </DataTable>
+                </div>
               </div>
             </div>
           </div>
