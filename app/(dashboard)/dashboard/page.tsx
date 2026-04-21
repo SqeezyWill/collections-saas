@@ -572,11 +572,12 @@ const brokenPtpAccounts = normalizedPtps.filter(
 
 function buildSecondaryDashboardState(input: {
   accountList: DashboardAccountRow[];
+  payments: DashboardPaymentRow[];
   normalizedPtps: Array<DashboardPtpRow & { effectiveStatus: string; effectiveKeptAmount: number }>;
   isAgent: boolean;
   useFreshPendingClosureCounts: boolean;
 }): SecondaryDashboardState {
-  const { accountList, normalizedPtps, isAgent, useFreshPendingClosureCounts } = input;
+  const { accountList, payments, normalizedPtps, isAgent, useFreshPendingClosureCounts } = input;
 
   const totalAccounts = accountList.length;
   const outstanding = accountList.reduce((sum, item) => sum + Number(item.balance || 0), 0);
@@ -624,21 +625,41 @@ const closedAccounts = accountList.filter(
   const ptpConversionRate =
     normalizedPtps.length > 0 ? (keptPtps / normalizedPtps.length) * 100 : 0;
 
+    const accountCollectorById = new Map<string, string>();
+
+  for (const account of accountList) {
+    const accountId = String(account.id || '').trim();
+    if (!accountId) continue;
+    accountCollectorById.set(
+      accountId,
+      normalizeName(account.collector_name) || 'Unassigned'
+    );
+  }
+
   const collectors = Array.from(
-  new Set(accountList.map((item) => normalizeName(item.collector_name) || 'Unassigned'))
-);
+    new Set([
+      ...accountList.map((item) => normalizeName(item.collector_name) || 'Unassigned'),
+      ...payments.map((item) => normalizeName(item.collector_name) || '').filter(Boolean),
+    ])
+  ).sort((a, b) => a.localeCompare(b));
 
-const collectorPerformance = collectors.map((collector) => {
-  const collectorAccounts = accountList.filter(
-    (item) => (normalizeName(item.collector_name) || 'Unassigned') === collector
-  );
-
-    const collectorCollected = collectorAccounts.reduce(
-      (sum, item) => sum + Number(item.amount_paid || 0),
-      0
+  const collectorPerformance = collectors.map((collector) => {
+    const collectorAccounts = accountList.filter(
+      (item) => (normalizeName(item.collector_name) || 'Unassigned') === collector
     );
 
-    const collectorPtps = normalizedPtps.filter((ptp) => ptp.collector_name === collector);
+    const collectorCollected = payments
+      .filter((payment) => (normalizeName(payment.collector_name) || 'Unassigned') === collector)
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+    const collectorPtps = normalizedPtps.filter((ptp) => {
+      const accountId = String(ptp.account_id || '').trim();
+      const currentOwner = accountId
+        ? accountCollectorById.get(accountId)
+        : normalizeName(ptp.collector_name) || 'Unassigned';
+
+      return (currentOwner || 'Unassigned') === collector;
+    });
 
     const collectorOpenPtpAccounts = new Set(
       collectorPtps
@@ -659,23 +680,23 @@ const collectorPerformance = collectors.map((collector) => {
     ).length;
 
     return {
-  collector,
-  assignedAccounts: collectorAccounts.length,
-  totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
-  totalCollected: collectorCollected,
-  openPtps: collectorOpenPtpAccounts.size,
-  keptPtps: collectorKeptPtps,
-  brokenPtps: collectorBrokenPtps,
-  ptpKeptRate:
-    collectorResolvedPtps > 0
-      ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
-      : '0.0%',
-  callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
-    .length,
-  closedAccounts: collectorAccounts.filter(
-    (account) => String(account.status || '').trim() === 'Closed'
-  ).length,
-};
+      collector,
+      assignedAccounts: collectorAccounts.length,
+      totalBalance: collectorAccounts.reduce((sum, item) => sum + Number(item.balance || 0), 0),
+      totalCollected: collectorCollected,
+      openPtps: collectorOpenPtpAccounts.size,
+      keptPtps: collectorKeptPtps,
+      brokenPtps: collectorBrokenPtps,
+      ptpKeptRate:
+        collectorResolvedPtps > 0
+          ? formatPercent((collectorKeptPtps / collectorResolvedPtps) * 100)
+          : '0.0%',
+      callbacks: collectorAccounts.filter((account) => account.status === 'Callback Requested')
+        .length,
+      closedAccounts: collectorAccounts.filter(
+        (account) => String(account.status || '').trim() === 'Closed'
+      ).length,
+    };
   });
 
   const accountProducts = Array.from(
@@ -1119,11 +1140,12 @@ setSecondaryLoading(true);
   () =>
     buildSecondaryDashboardState({
       accountList,
+      payments,
       normalizedPtps,
       isAgent,
       useFreshPendingClosureCounts: hasFreshDashboardData,
     }),
-  [accountList, normalizedPtps, isAgent, hasFreshDashboardData]
+  [accountList, payments, normalizedPtps, isAgent, hasFreshDashboardData]
 );
 
   if (
