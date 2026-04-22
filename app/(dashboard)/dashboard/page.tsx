@@ -263,16 +263,7 @@ function getDpdAnchorDate(row: Partial<DashboardAccountRow>) {
 
 function getCurrentDpd(row: Partial<DashboardAccountRow>) {
   if (String(row.status || '').trim().toLowerCase() === 'closed') return 0;
-
-  const baseDpd = toNumberOrNull(row.dpd) ?? 0;
-  const anchor = getDpdAnchorDate(row);
-
-  if (!anchor) return Math.max(0, baseDpd);
-
-  const today = new Date();
-  const elapsed = Math.max(0, diffInDays(anchor, today));
-
-  return Math.max(0, baseDpd + elapsed);
+  return Math.max(0, toNumberOrNull(row.dpd) ?? 0);
 }
 
 function getOutstandingAmount(row: Partial<DashboardAccountRow>) {
@@ -287,6 +278,14 @@ function getParBucket(dpd: number) {
   if (dpd >= 16 && dpd <= 30) return { key: '16_30', label: '16-30', order: 3 };
   if (dpd >= 31 && dpd <= 60) return { key: '31_60', label: '31-60', order: 4 };
   if (dpd >= 61 && dpd <= 90) return { key: '61_90', label: '61-90', order: 5 };
+  return null;
+}
+
+function getBucketEntryDpd(bucketKey: string) {
+  if (bucketKey === '8_15') return 8;
+  if (bucketKey === '16_30') return 16;
+  if (bucketKey === '31_60') return 31;
+  if (bucketKey === '61_90') return 61;
   return null;
 }
 
@@ -868,20 +867,18 @@ function buildSecondaryDashboardState(input: {
       0
     );
 
-    const transitionedAccounts = bucketAccounts.filter((account) => {
-      const baseDpd = Math.max(0, toNumberOrNull(account.dpd) ?? 0);
-      const originalBucket = getParBucket(baseDpd);
-      const currentBucket = getParBucket(getCurrentDpd(account));
+    const bucketEntryDpd = getBucketEntryDpd(bucket.key);
 
-      if (!originalBucket || !currentBucket) return false;
-      return currentBucket.order > originalBucket.order;
-    });
+const transitionedAccounts =
+  bucketEntryDpd === null
+    ? []
+    : bucketAccounts.filter((account) => getCurrentDpd(account) === bucketEntryDpd);
 
-    const transitionedCount = transitionedAccounts.length;
-    const transitionedValue = transitionedAccounts.reduce(
-      (sum, account) => sum + getOutstandingAmount(account),
-      0
-    );
+const transitionedCount = transitionedAccounts.length;
+const transitionedValue = transitionedAccounts.reduce(
+  (sum, account) => sum + getOutstandingAmount(account),
+  0
+);
 
     return {
       bucket: bucket.label,
@@ -1511,20 +1508,20 @@ export default function DashboardPage() {
             <div className="mb-4">
               <h2 className="text-lg font-semibold text-slate-900">PAR Report</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Portfolio at Risk by delinquency bucket, including collections and forward transitions.
-              </p>
+  Portfolio at Risk by delinquency bucket, including collections and accounts entering each bucket from the immediately previous bucket.
+</p>
             </div>
 
             <DataTable
               headers={[
-                'Bucket',
-                'Accounts Count',
-                'Accounts Value',
-                'Collected Count',
-                'Collected Value',
-                'Transitioned Count',
-                'Transitioned Value',
-              ]}
+  'Bucket',
+  'Accounts Count',
+  'Accounts Value',
+  'Collected Count',
+  'Collected Value',
+  'From Previous Bucket Count',
+  'From Previous Bucket Value',
+]}
             >
               {secondary.parReport.map((row) => (
                 <tr key={row.bucket}>
